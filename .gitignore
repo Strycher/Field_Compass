@@ -1,0 +1,66 @@
+# Arduino IDE
+*.ino.eep
+*.ino.elf
+*.ino.hex
+*.ino.bin
+*.ino.map
+*.ino.with_bootloader.bin
+*.ino.with_bootloader.hex
+
+# Arduino build artifacts
+/build/
+*.bin
+*.elf
+*.hex
+
+# Arduino IDE preferences (user-specific)
+.arduino15/
+
+# VS Code Arduino extension
+.vscode/arduino.json
+.vscode/c_cpp_properties.json
+
+# Compiled Object files
+*.o
+*.obj
+*.lo
+*.slo
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled libraries
+*.so
+*.dylib
+*.dll
+*.lai
+*.la
+*.a
+*.lib
+
+# Prerequisites/dependency files
+*.d
+
+# Executables
+*.exe
+*.out
+*.app
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary/generated files
+*.tmp
+*.temp
+*.log
+
+# Project-specific temporary files
+/add-validation-checklists.py
+/fix-priorities.py
+/backlog-with-validation.json
+/issues.json
+/project-items.json
+PHASE*.md
