@@ -1,8 +1,9 @@
 /*
- * Field Compass - TFT Display Firmware
+ * Field Compass - Dual Display Firmware
  *
  * Hardware:
  * - Adafruit ESP32-S3 Feather 8MB w.FL
+ * - Adafruit SH1107 OLED FeatherWing 128x64 (I2C)
  * - Adafruit ST7789 2.0" TFT 320x240 (SPI via EYESPI breakout)
  * - Adafruit Ultimate GPS FeatherWing PA1616D (Serial)
  * - Adafruit BME688 (I2C - STEMMA QT)
@@ -15,8 +16,9 @@
  * 4. IMU/Compass (heading, orientation, acceleration)
  *
  * Navigation: Button A = prev screen, Button B = next screen
+ * Display Sleep: OLED 3 min, TFT 15 min (button press wakes)
  *
- * Issues: #44
+ * Issues: #44, #46
  */
 
 #include <Wire.h>
@@ -25,6 +27,7 @@
 #include <time.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
+#include <Adafruit_SH110X.h>
 #include <Adafruit_BME680.h>
 #include <Adafruit_LSM6DSOX.h>
 #include <Adafruit_LIS3MDL.h>
@@ -78,8 +81,9 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 // WiFi reconnect interval (ms)
 #define WIFI_RECONNECT_INTERVAL 30000
 
-// Display sleep timeout (ms) - 15 minutes for TFT (low burn-in risk)
-#define DISPLAY_SLEEP_TIMEOUT 900000
+// Display sleep timeouts (ms)
+#define TFT_SLEEP_TIMEOUT  900000   // 15 minutes for TFT (low burn-in risk)
+#define OLED_SLEEP_TIMEOUT 180000   // 3 minutes for OLED (high burn-in risk)
 
 // Colors (RGB565)
 #define COLOR_BG        0x0000  // Black
@@ -94,6 +98,9 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 
 // TFT Display
 Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
+
+// OLED Display
+Adafruit_SH1107 oled = Adafruit_SH1107(64, 128, &Wire);
 
 // Sensors
 Adafruit_BME680 bme;
@@ -113,8 +120,12 @@ unsigned long lastButtonPress = 0;
 unsigned long lastWiFiAttempt = 0;
 
 // Display sleep state
-bool displaySleeping = false;
+bool tftSleeping = false;
+bool oledSleeping = false;
 unsigned long lastActivityTime = 0;
+
+// OLED availability
+bool oledAvailable = false;
 
 // Sensor availability flags
 bool bmeAvailable = false;
@@ -166,7 +177,7 @@ void setup() {
   delay(1000);
 
   Serial.println("=================================");
-  Serial.println("Field Compass TFT v0.4");
+  Serial.println("Field Compass Dual v0.5");
   Serial.println("=================================\n");
 
   // Initialize SPI for TFT
@@ -186,8 +197,8 @@ void setup() {
   tft.println("Field Compass");
   tft.setTextSize(2);
   tft.setTextColor(COLOR_TEXT);
-  tft.setCursor(100, 90);
-  tft.println("v0.4 TFT");
+  tft.setCursor(90, 90);
+  tft.println("v0.5 Dual");
   tft.setTextSize(1);
   tft.setCursor(40, 140);
   tft.setTextColor(COLOR_DIM);
@@ -197,6 +208,7 @@ void setup() {
   scanI2C();
 
   // Initialize all hardware
+  initOLED();
   initGPS();
   initBME688();
   initIMU();
@@ -285,6 +297,26 @@ void initTFT() {
   tft.fillScreen(COLOR_BG);
 
   Serial.println("OK (320x240)");
+}
+
+void initOLED() {
+  Serial.print("Initializing OLED... ");
+
+  if (!oled.begin(0x3C, true)) {
+    if (!oled.begin(0x3D, true)) {
+      Serial.println("NOT FOUND");
+      return;
+    }
+  }
+
+  oled.setRotation(1);
+  oled.clearDisplay();
+  oled.setTextSize(1);
+  oled.setTextColor(SH110X_WHITE);
+  oled.display();
+
+  oledAvailable = true;
+  Serial.println("OK (128x64)");
 }
 
 void initGPS() {
@@ -440,31 +472,56 @@ void checkWiFi() {
 
 // ============== Display Sleep Functions ==============
 
-void sleepDisplay() {
-  if (displaySleeping) return;
+void sleepTFT() {
+  if (tftSleeping) return;
 
-  displaySleeping = true;
+  tftSleeping = true;
   tft.enableSleep(true);
-  Serial.println("Display sleeping");
+  Serial.println("TFT sleeping");
 }
 
-void wakeDisplay() {
-  if (!displaySleeping) return;
+void wakeTFT() {
+  if (!tftSleeping) return;
 
-  displaySleeping = false;
+  tftSleeping = false;
   tft.enableSleep(false);
-  lastActivityTime = millis();
   tft.fillScreen(COLOR_BG);  // Clear screen on wake
-  Serial.println("Display woke up");
+  Serial.println("TFT woke up");
+}
+
+void sleepOLED() {
+  if (oledSleeping || !oledAvailable) return;
+
+  oledSleeping = true;
+  oled.oled_command(SH110X_DISPLAYOFF);
+  Serial.println("OLED sleeping");
+}
+
+void wakeOLED() {
+  if (!oledSleeping || !oledAvailable) return;
+
+  oledSleeping = false;
+  oled.oled_command(SH110X_DISPLAYON);
+  Serial.println("OLED woke up");
+}
+
+void wakeAllDisplays() {
+  lastActivityTime = millis();
+  wakeTFT();
+  wakeOLED();
 }
 
 void checkDisplaySleep() {
-  // Don't sleep if already sleeping
-  if (displaySleeping) return;
+  unsigned long elapsed = millis() - lastActivityTime;
 
-  // Check if timeout exceeded
-  if (millis() - lastActivityTime > DISPLAY_SLEEP_TIMEOUT) {
-    sleepDisplay();
+  // Check OLED sleep (3 minutes)
+  if (!oledSleeping && oledAvailable && elapsed > OLED_SLEEP_TIMEOUT) {
+    sleepOLED();
+  }
+
+  // Check TFT sleep (15 minutes)
+  if (!tftSleeping && elapsed > TFT_SLEEP_TIMEOUT) {
+    sleepTFT();
   }
 }
 
@@ -483,9 +540,9 @@ void handleButtons() {
 
   if (!buttonA && !buttonB && !buttonC) return;  // No button pressed
 
-  // If display is sleeping, wake it and consume the button press
-  if (displaySleeping) {
-    wakeDisplay();
+  // If any display is sleeping, wake all and consume the button press
+  if (tftSleeping || oledSleeping) {
+    wakeAllDisplays();
     lastButtonPress = now;
     return;  // Don't process button action on wake
   }
@@ -651,30 +708,35 @@ void readIMU() {
 void updateDisplay() {
   static unsigned long lastUpdate = 0;
 
-  // Don't update display when sleeping
-  if (displaySleeping) return;
-
   // Update every 500ms to reduce flicker
   if (millis() - lastUpdate < 500) return;
   lastUpdate = millis();
 
-  switch (currentScreen) {
-    case SCREEN_OPS:
-      drawScreenOps();
-      break;
-    case SCREEN_GPS:
-      drawScreenGPS();
-      break;
-    case SCREEN_ENV:
-      drawScreenEnv();
-      break;
-    case SCREEN_IMU:
-      drawScreenIMU();
-      break;
+  // Update TFT display (if not sleeping)
+  if (!tftSleeping) {
+    switch (currentScreen) {
+      case SCREEN_OPS:
+        drawScreenOps();
+        break;
+      case SCREEN_GPS:
+        drawScreenGPS();
+        break;
+      case SCREEN_ENV:
+        drawScreenEnv();
+        break;
+      case SCREEN_IMU:
+        drawScreenIMU();
+        break;
+    }
+
+    // Draw screen indicator at bottom
+    drawNavBar();
   }
 
-  // Draw screen indicator at bottom
-  drawNavBar();
+  // Update OLED display (if available and not sleeping)
+  if (oledAvailable && !oledSleeping) {
+    updateOLED();
+  }
 }
 
 void drawHeader(const char* title) {
@@ -953,4 +1015,184 @@ const char* getCardinal(float heading) {
   if (heading >= 202.5 && heading < 247.5) return "SW";
   if (heading >= 247.5 && heading < 292.5) return "W";
   return "NW";
+}
+
+// ============== OLED Display Functions ==============
+
+void updateOLED() {
+  oled.clearDisplay();
+
+  // Show different content based on current screen (mirroring TFT)
+  switch (currentScreen) {
+    case SCREEN_OPS:
+      drawOLEDScreenOps();
+      break;
+    case SCREEN_GPS:
+      drawOLEDScreenGPS();
+      break;
+    case SCREEN_ENV:
+      drawOLEDScreenEnv();
+      break;
+    case SCREEN_IMU:
+      drawOLEDScreenIMU();
+      break;
+  }
+
+  // Draw screen indicator
+  drawOLEDNavBar();
+
+  oled.display();
+}
+
+void drawOLEDScreenOps() {
+  char buf[32];
+
+  oled.setTextSize(1);
+  oled.setCursor(0, 0);
+  oled.print("OPERATIONAL");
+
+  // Time
+  oled.setCursor(0, 12);
+  if (gpsData.timeValid) {
+    int hour = gpsData.hour + (GMT_OFFSET_SEC / 3600);
+    if (hour < 0) hour += 24;
+    if (hour >= 24) hour -= 24;
+    sprintf(buf, "Time: %02d:%02d:%02d", hour, gpsData.minute, gpsData.second);
+  } else if (ntpSynced) {
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+      strftime(buf, sizeof(buf), "Time: %H:%M:%S", &timeinfo);
+    }
+  } else {
+    sprintf(buf, "Time: --:--:--");
+  }
+  oled.print(buf);
+
+  // Uptime
+  unsigned long totalSec = millis() / 1000;
+  int hours = (totalSec % 86400) / 3600;
+  int mins = (totalSec % 3600) / 60;
+  int secs = totalSec % 60;
+  oled.setCursor(0, 24);
+  sprintf(buf, "Up: %02d:%02d:%02d", hours, mins, secs);
+  oled.print(buf);
+
+  // WiFi
+  oled.setCursor(0, 36);
+  if (wifiConnected) {
+    oled.print("WiFi: OK");
+  } else {
+    oled.print("WiFi: --");
+  }
+
+  // Battery
+  oled.setCursor(0, 48);
+  if (batteryAvailable) {
+    sprintf(buf, "Batt: %.0f%%", battery.cellPercent());
+  } else {
+    sprintf(buf, "Batt: --");
+  }
+  oled.print(buf);
+}
+
+void drawOLEDScreenGPS() {
+  char buf[32];
+
+  oled.setTextSize(1);
+  oled.setCursor(0, 0);
+  oled.print("GPS");
+
+  if (gpsData.valid) {
+    oled.setCursor(0, 12);
+    sprintf(buf, "Lat: %.5f", gpsData.latitude);
+    oled.print(buf);
+
+    oled.setCursor(0, 24);
+    sprintf(buf, "Lon: %.5f", gpsData.longitude);
+    oled.print(buf);
+
+    oled.setCursor(0, 36);
+    sprintf(buf, "Alt: %.1fm", gpsData.altitude);
+    oled.print(buf);
+
+    oled.setCursor(0, 48);
+    oled.print("Status: Fix OK");
+  } else if (gpsData.receiving) {
+    oled.setCursor(0, 20);
+    oled.print("Acquiring fix...");
+    oled.setCursor(0, 36);
+    oled.print("Need sky view");
+  } else {
+    oled.setCursor(0, 28);
+    oled.print("No GPS data");
+  }
+}
+
+void drawOLEDScreenEnv() {
+  char buf[32];
+
+  oled.setTextSize(1);
+  oled.setCursor(0, 0);
+  oled.print("ENVIRONMENT");
+
+  if (bmeAvailable) {
+    float tempF = envData.temperature * 9.0 / 5.0 + 32.0;
+
+    oled.setCursor(0, 12);
+    sprintf(buf, "Temp: %.1fF", tempF);
+    oled.print(buf);
+
+    oled.setCursor(0, 24);
+    sprintf(buf, "Humid: %.1f%%", envData.humidity);
+    oled.print(buf);
+
+    oled.setCursor(0, 36);
+    sprintf(buf, "Press: %.0fhPa", envData.pressure);
+    oled.print(buf);
+
+    oled.setCursor(0, 48);
+    sprintf(buf, "Gas: %.0fkOhm", envData.gasResistance);
+    oled.print(buf);
+  } else {
+    oled.setCursor(0, 28);
+    oled.print("BME688 not found");
+  }
+}
+
+void drawOLEDScreenIMU() {
+  char buf[32];
+
+  oled.setTextSize(1);
+  oled.setCursor(0, 0);
+  oled.print("IMU/COMPASS");
+
+  if (imuAvailable && magAvailable) {
+    oled.setCursor(0, 12);
+    sprintf(buf, "Hdg: %.0f %s", imuData.heading, getCardinal(imuData.heading));
+    oled.print(buf);
+
+    oled.setCursor(0, 24);
+    sprintf(buf, "Roll: %.0f", imuData.roll);
+    oled.print(buf);
+
+    oled.setCursor(0, 36);
+    sprintf(buf, "Pitch: %.0f", imuData.pitch);
+    oled.print(buf);
+
+    oled.setCursor(0, 48);
+    sprintf(buf, "Accel: %.2f", imuData.accelMag);
+    oled.print(buf);
+  } else {
+    oled.setCursor(0, 28);
+    oled.print("IMU not found");
+  }
+}
+
+void drawOLEDNavBar() {
+  // Draw screen number indicator at bottom right
+  oled.setCursor(100, 56);
+  oled.setTextSize(1);
+  char buf[8];
+  sprintf(buf, "[%d/4]", currentScreen + 1);
+  oled.print(buf);
 }
