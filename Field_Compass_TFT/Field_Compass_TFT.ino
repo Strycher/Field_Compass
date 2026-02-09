@@ -78,6 +78,9 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 // WiFi reconnect interval (ms)
 #define WIFI_RECONNECT_INTERVAL 30000
 
+// Display sleep timeout (ms) - 15 minutes for TFT (low burn-in risk)
+#define DISPLAY_SLEEP_TIMEOUT 900000
+
 // Colors (RGB565)
 #define COLOR_BG        0x0000  // Black
 #define COLOR_TEXT      0xFFFF  // White
@@ -108,6 +111,10 @@ unsigned long lastButtonPress = 0;
 
 // WiFi reconnect tracking
 unsigned long lastWiFiAttempt = 0;
+
+// Display sleep state
+bool displaySleeping = false;
+unsigned long lastActivityTime = 0;
 
 // Sensor availability flags
 bool bmeAvailable = false;
@@ -203,6 +210,9 @@ void setup() {
 
   Serial.println("\nSetup complete!\n");
 
+  // Initialize activity timer for display sleep
+  lastActivityTime = millis();
+
   // Clear screen for main display
   tft.fillScreen(COLOR_BG);
 }
@@ -213,10 +223,13 @@ void loop() {
   // Handle button navigation
   handleButtons();
 
+  // Check display sleep timeout
+  checkDisplaySleep();
+
   // Check WiFi and attempt reconnect if needed
   checkWiFi();
 
-  // Update sensor data
+  // Update sensor data (even when display sleeping)
   readGPS();
   if (bmeAvailable) readBME688();
   if (imuAvailable && magAvailable) readIMU();
@@ -425,6 +438,36 @@ void checkWiFi() {
   }
 }
 
+// ============== Display Sleep Functions ==============
+
+void sleepDisplay() {
+  if (displaySleeping) return;
+
+  displaySleeping = true;
+  tft.enableSleep(true);
+  Serial.println("Display sleeping");
+}
+
+void wakeDisplay() {
+  if (!displaySleeping) return;
+
+  displaySleeping = false;
+  tft.enableSleep(false);
+  lastActivityTime = millis();
+  tft.fillScreen(COLOR_BG);  // Clear screen on wake
+  Serial.println("Display woke up");
+}
+
+void checkDisplaySleep() {
+  // Don't sleep if already sleeping
+  if (displaySleeping) return;
+
+  // Check if timeout exceeded
+  if (millis() - lastActivityTime > DISPLAY_SLEEP_TIMEOUT) {
+    sleepDisplay();
+  }
+}
+
 // ============== Button Handling ==============
 
 void handleButtons() {
@@ -433,8 +476,25 @@ void handleButtons() {
   // Debounce check
   if (now - lastButtonPress < DEBOUNCE_MS) return;
 
+  // Check if any button is pressed
+  bool buttonA = !digitalRead(BUTTON_A);
+  bool buttonB = !digitalRead(BUTTON_B);
+  bool buttonC = !digitalRead(BUTTON_C);
+
+  if (!buttonA && !buttonB && !buttonC) return;  // No button pressed
+
+  // If display is sleeping, wake it and consume the button press
+  if (displaySleeping) {
+    wakeDisplay();
+    lastButtonPress = now;
+    return;  // Don't process button action on wake
+  }
+
+  // Reset activity timer on any button press
+  lastActivityTime = now;
+
   // Button A - Previous screen
-  if (!digitalRead(BUTTON_A)) {
+  if (buttonA) {
     currentScreen--;
     if (currentScreen < 0) currentScreen = NUM_SCREENS - 1;
     lastButtonPress = now;
@@ -444,7 +504,7 @@ void handleButtons() {
   }
 
   // Button B - Next screen
-  if (!digitalRead(BUTTON_B)) {
+  if (buttonB) {
     currentScreen++;
     if (currentScreen >= NUM_SCREENS) currentScreen = 0;
     lastButtonPress = now;
@@ -454,7 +514,7 @@ void handleButtons() {
   }
 
   // Button C - Reserved
-  if (!digitalRead(BUTTON_C)) {
+  if (buttonC) {
     lastButtonPress = now;
     // No action yet
   }
@@ -590,6 +650,9 @@ void readIMU() {
 
 void updateDisplay() {
   static unsigned long lastUpdate = 0;
+
+  // Don't update display when sleeping
+  if (displaySleeping) return;
 
   // Update every 500ms to reduce flicker
   if (millis() - lastUpdate < 500) return;
