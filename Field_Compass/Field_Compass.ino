@@ -30,9 +30,9 @@
 #include <Adafruit_SH110X.h>
 #include <bsec2.h>
 
-// BSEC2 config for BME688 at 3.3V, 3-second sample rate, 4-day calibration
+// BSEC2 IAQ config for BME680/688 at 3.3V, 3-second sample rate, 4-day calibration
 const uint8_t bsec2_config[] = {
-  #include "config/bme688/bme688_sel_33v_3s_4d/bsec_selectivity.txt"
+  #include "config/bme680/bme680_iaq_33v_3s_4d/bsec_iaq.txt"
 };
 
 #include <Adafruit_LSM6DSOX.h>
@@ -364,7 +364,11 @@ void bsecDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bs
         envData.humidity = output.signal;
         break;
       case BSEC_OUTPUT_RAW_PRESSURE:
-        envData.pressure = output.signal / 100.0;  // Pa to hPa
+        #if DEBUG_BSEC
+        Serial.print("Raw pressure: ");
+        Serial.println(output.signal);
+        #endif
+        envData.pressure = output.signal;  // Already in hPa with BME680 IAQ config
         break;
       case BSEC_OUTPUT_CO2_EQUIVALENT:
         envData.co2Equivalent = output.signal;
@@ -405,7 +409,7 @@ void initBME688() {
     }
   }
 
-  // Load BSEC2 config for BME688
+  // Load BSEC2 IAQ config
   if (!envSensor.setConfig(bsec2_config)) {
     Serial.println("CONFIG FAILED");
     Serial.print("  BSEC status: ");
