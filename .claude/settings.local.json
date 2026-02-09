@@ -4,7 +4,31 @@
       "Bash(powershell:*)",
       "Bash(gh label:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(git tag:*)",
+      "Bash(git push:*)",
+      "Bash(gh issue create:*)",
+      "Bash(gh issue comment:*)",
+      "Bash(gh project:*)",
+      "Bash(gh issue list:*)",
+      "Bash(for i in 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25)",
+      "Bash(do)",
+      "Bash(echo:*)",
+      "Bash(done)",
+      "Bash(for i in 26 27 28 29 30 31 32 33 34 35 36 37 38 39)",
+      "WebFetch(domain:learn.adafruit.com)",
+      "Bash(gh issue close 26 --comment \"$\\(cat <<''EOF''\n## Resolution\n\nButton mapping confirmed working correctly with original GPIO assignments:\n\n| Physical Button | GPIO | Function |\n|-----------------|------|----------|\n| A \\(leftmost\\) | 9 | Navigate backwards |\n| B \\(middle\\) | 6 | Navigate forwards |\n| C \\(rightmost\\) | 5 | Reserved |\n\nThe initial report of \"reversed\" buttons was due to confusion about expected behavior, not incorrect GPIO mapping.\n\n**Note:** ESP32-S3 Feather uses the same OLED FeatherWing button mapping as M0/M4/nRF52840 boards \\(GPIO 9, 6, 5\\), NOT the standard ESP32 mapping \\(GPIO 15, 32, 14\\). Using standard ESP32 pins causes boot loop since GPIO 32 doesn''t exist on ESP32-S3.\n\n## Testing\n- ✅ Button A navigates backwards\n- ✅ Button B navigates forwards\n- ✅ Button C no action \\(reserved\\)\n- ✅ No reboot loops\nEOF\n\\)\")",
+      "WebFetch(domain:cdn-learn.adafruit.com)",
+      "Bash(gh project item-list:*)",
+      "Bash(gh project list:*)",
+      "Bash(gh project field-list:*)",
+      "Bash(gh api:*)",
+      "Bash(gh project item-add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd hardware specifications documentation\n\nDocuments complete BOM, pin assignments, I2C device map,\nsensor specs, and power budget. Tracks pending hardware\norders \\(Adalogger, FRAM\\) for issue #40.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(gh issue close:*)",
+      "Bash(gh issue edit:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd TFT display firmware framework \\(ST7789 320x240\\)\n\n- New Field_Compass_TFT sketch for EYESPI breakout\n- Pin mapping: TCS=A0\\(18\\), DC=A1\\(17\\), RST=A2\\(12\\), TSCS=A3\\(14\\)\n- Color UI with headers, nav bar, status colors\n- WiFi auto-reconnect logic \\(30s interval\\) - addresses #42\n- Mobile hotspot \\(SM-N950UD60\\) added as third network\n- Updated HARDWARE.md with TFT + EYESPI specs\n\nIssue #44\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(gh api graphql:*)"
     ]
   }
 }

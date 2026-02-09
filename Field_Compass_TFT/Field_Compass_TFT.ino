@@ -591,8 +591,8 @@ void readIMU() {
 void updateDisplay() {
   static unsigned long lastUpdate = 0;
 
-  // Update every 250ms
-  if (millis() - lastUpdate < 250) return;
+  // Update every 500ms to reduce flicker
+  if (millis() - lastUpdate < 500) return;
   lastUpdate = millis();
 
   switch (currentScreen) {
@@ -658,7 +658,9 @@ void drawLabel(int x, int y, const char* label) {
   tft.print(label);
 }
 
-void drawValue(int x, int y, const char* value, uint16_t color = COLOR_VALUE) {
+void drawValue(int x, int y, const char* value, uint16_t color = COLOR_VALUE, int clearWidth = 200) {
+  // Clear the value area first to prevent ghosting
+  tft.fillRect(x, y, clearWidth, 18, COLOR_BG);
   tft.setTextColor(color);
   tft.setTextSize(2);
   tft.setCursor(x, y);
