@@ -65,6 +65,9 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 // Debounce time in ms
 #define DEBOUNCE_MS 200
 
+// Display sleep timeout (ms) - 3 minutes for OLED (high burn-in risk)
+#define DISPLAY_SLEEP_TIMEOUT 180000
+
 // ============== Global Objects ==============
 
 // Display
@@ -83,6 +86,10 @@ int currentScreen = SCREEN_OPS;
 
 // Button debounce
 unsigned long lastButtonPress = 0;
+
+// Display sleep state
+bool displaySleeping = false;
+unsigned long lastActivityTime = 0;
 
 // Sensor availability flags
 bool bmeAvailable = false;
@@ -157,6 +164,9 @@ void setup() {
   pinMode(BUTTON_C, INPUT_PULLUP);
 
   Serial.println("\nSetup complete!\n");
+
+  // Initialize activity timer for display sleep
+  lastActivityTime = millis();
 }
 
 // ============== Main Loop ==============
@@ -165,7 +175,10 @@ void loop() {
   // Handle button navigation
   handleButtons();
 
-  // Update sensor data
+  // Check display sleep timeout
+  checkDisplaySleep();
+
+  // Update sensor data (even when display sleeping)
   readGPS();
   if (bmeAvailable) readBME688();
   if (imuAvailable && magAvailable) readIMU();
@@ -368,6 +381,35 @@ void initWiFi() {
   }
 }
 
+// ============== Display Sleep Functions ==============
+
+void sleepDisplay() {
+  if (displaySleeping) return;
+
+  displaySleeping = true;
+  display.oled_command(SH110X_DISPLAYOFF);
+  Serial.println("Display sleeping");
+}
+
+void wakeDisplay() {
+  if (!displaySleeping) return;
+
+  displaySleeping = false;
+  display.oled_command(SH110X_DISPLAYON);
+  lastActivityTime = millis();
+  Serial.println("Display woke up");
+}
+
+void checkDisplaySleep() {
+  // Don't sleep if already sleeping
+  if (displaySleeping) return;
+
+  // Check if timeout exceeded
+  if (millis() - lastActivityTime > DISPLAY_SLEEP_TIMEOUT) {
+    sleepDisplay();
+  }
+}
+
 // ============== Button Handling ==============
 
 void handleButtons() {
@@ -376,8 +418,25 @@ void handleButtons() {
   // Debounce check
   if (now - lastButtonPress < DEBOUNCE_MS) return;
 
+  // Check if any button is pressed
+  bool buttonA = !digitalRead(BUTTON_A);
+  bool buttonB = !digitalRead(BUTTON_B);
+  bool buttonC = !digitalRead(BUTTON_C);
+
+  if (!buttonA && !buttonB && !buttonC) return;  // No button pressed
+
+  // If display is sleeping, wake it and consume the button press
+  if (displaySleeping) {
+    wakeDisplay();
+    lastButtonPress = now;
+    return;  // Don't process button action on wake
+  }
+
+  // Reset activity timer on any button press
+  lastActivityTime = now;
+
   // Button A - Previous screen
-  if (!digitalRead(BUTTON_A)) {
+  if (buttonA) {
     currentScreen--;
     if (currentScreen < 0) currentScreen = NUM_SCREENS - 1;
     lastButtonPress = now;
@@ -386,7 +445,7 @@ void handleButtons() {
   }
 
   // Button B - Next screen
-  if (!digitalRead(BUTTON_B)) {
+  if (buttonB) {
     currentScreen++;
     if (currentScreen >= NUM_SCREENS) currentScreen = 0;
     lastButtonPress = now;
@@ -395,7 +454,7 @@ void handleButtons() {
   }
 
   // Button C - Reserved
-  if (!digitalRead(BUTTON_C)) {
+  if (buttonC) {
     lastButtonPress = now;
     // No action
   }
@@ -541,6 +600,9 @@ void readIMU() {
 
 void updateDisplay() {
   static unsigned long lastUpdate = 0;
+
+  // Don't update display when sleeping
+  if (displaySleeping) return;
 
   // Update every 250ms
   if (millis() - lastUpdate < 250) return;
