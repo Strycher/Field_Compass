@@ -11,7 +11,8 @@
 | LSM6DSOX + LIS3MDL 9-DoF | [4517](https://www.adafruit.com/product/4517) | 1 | I2C | 0x6A, 0x1C | Have |
 | Adalogger FeatherWing | [2922](https://www.adafruit.com/product/2922) | 1 | SPI + I2C | 0x68 (RTC) | **Order** |
 | SPI FRAM 256KB (MB85RS2MTA) | [4718](https://www.adafruit.com/product/4718) | 1 | SPI | - | **Order** |
-| ST7789 TFT Display | TBD | 1 | SPI | - | Future |
+| ST7789 TFT 2.0" 320x240 | [4311](https://www.adafruit.com/product/4311) | 1 | SPI | - | Have |
+| EYESPI Breakout 18-pin | [5613](https://www.adafruit.com/product/5613) | 1 | - | - | Have |
 | CR1220 Battery (GPS) | - | 1 | - | - | Have |
 | CR1220 Battery (RTC) | - | 1 | - | - | **Order** |
 
@@ -55,14 +56,18 @@
 | RX | Arduino RX constant |
 | TX | Arduino TX constant |
 
-### SPI Bus (SD + FRAM)
-| Pin | Function |
-|-----|----------|
-| SCK | SPI Clock |
-| MOSI | Controller Out |
-| MISO | Controller In |
-| GPIO TBD | SD Card CS |
-| GPIO TBD | FRAM CS |
+### SPI Bus (TFT + SD + FRAM)
+| Pin | Function | GPIO |
+|-----|----------|------|
+| SCK | SPI Clock | HW SPI |
+| MOSI (MO) | Controller Out | HW SPI |
+| MISO (MI) | Controller In | HW SPI |
+| A0 | TFT CS (TCS) | 18 |
+| A1 | TFT DC | 17 |
+| A2 | TFT RST | 12 |
+| A3 | Touch CS (TSCS) | 14 |
+| TBD | SD Card CS | TBD |
+| TBD | FRAM CS | TBD |
 
 ## I2C Device Map
 
@@ -174,3 +179,4 @@
 |------|--------|
 | 2025-02-03 | Initial hardware spec document |
 | 2025-02-03 | Added Adalogger + FRAM (pending order) |
+| 2025-02-09 | Added ST7789 TFT + EYESPI breakout |
