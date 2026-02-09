@@ -789,6 +789,11 @@ const char* getIaqAccuracyText(uint8_t accuracy) {
   }
 }
 
+// Convert hPa to inHg (inches of mercury)
+float hPaToInHg(float hPa) {
+  return hPa * 0.02953;
+}
+
 void readIMU() {
   sensors_event_t accel, gyro, temp, mag;
 
@@ -1074,9 +1079,9 @@ void drawScreenEnv() {
     drawValue(valueX, y, buf, color);
     y += lineH;
 
-    // Pressure
+    // Pressure (station/absolute)
     drawLabel(labelX, y, "Press:");
-    sprintf(buf, "%.1f hPa", envData.pressure);
+    sprintf(buf, "%.1f hPa (%.2f\")", envData.pressure, hPaToInHg(envData.pressure));
     drawValue(valueX, y, buf);
 
   } else {
@@ -1273,7 +1278,7 @@ void drawOLEDScreenEnv() {
     oled.print(buf);
 
     oled.setCursor(0, 46);
-    sprintf(buf, "%.0fhPa", envData.pressure);
+    sprintf(buf, "%.0fhPa %.2f\"", envData.pressure, hPaToInHg(envData.pressure));
     oled.print(buf);
   } else {
     oled.setCursor(0, 28);
