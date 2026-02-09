@@ -6,19 +6,19 @@
  * - Adafruit SH1107 OLED FeatherWing 128x64 (I2C)
  * - Adafruit ST7789 2.0" TFT 320x240 (SPI via EYESPI breakout)
  * - Adafruit Ultimate GPS FeatherWing PA1616D (Serial)
- * - Adafruit BME688 (I2C - STEMMA QT)
+ * - Adafruit BME688 (I2C - STEMMA QT) with BSEC2
  * - Adafruit LSM6DSOX + LIS3MDL 9-DoF IMU (I2C - STEMMA QT)
  *
  * Screens:
  * 1. Operational Info (time, uptime, WiFi, battery)
  * 2. GPS Info (coordinates, altitude, address)
- * 3. BME688 Environmental (temp, humidity, pressure, air quality)
+ * 3. BME688 Environmental (temp, humidity, pressure, IAQ, CO2)
  * 4. IMU/Compass (heading, orientation, acceleration)
  *
  * Navigation: Button A = prev screen, Button B = next screen
  * Display Sleep: OLED 3 min, TFT 15 min (button press wakes)
  *
- * Issues: #44, #46
+ * Issues: #44, #46, #47
  */
 
 #include <Wire.h>
@@ -28,7 +28,13 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 #include <Adafruit_SH110X.h>
-#include <Adafruit_BME680.h>
+#include <bsec2.h>
+
+// BSEC2 config for BME688 at 3.3V, 3-second sample rate, 4-day calibration
+const uint8_t bsec2_config[] = {
+  #include "config/bme688/bme688_sel_33v_3s_4d/bsec_selectivity.txt"
+};
+
 #include <Adafruit_LSM6DSOX.h>
 #include <Adafruit_LIS3MDL.h>
 #include <Adafruit_MAX1704X.h>
@@ -64,6 +70,11 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 #define GPS_RX RX
 #define GPS_TX TX
 
+// Debug flags (set to 1 to enable)
+#define DEBUG_GPS   0  // GPS NMEA sentence logging
+#define DEBUG_BSEC  0  // BSEC2 readings logging
+#define DEBUG_SLEEP 0  // Display sleep/wake logging
+
 // Screen settings
 #define NUM_SCREENS 4
 #define SCREEN_OPS 0
@@ -85,6 +96,8 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 #define TFT_SLEEP_TIMEOUT  900000   // 15 minutes for TFT (low burn-in risk)
 #define OLED_SLEEP_TIMEOUT 180000   // 3 minutes for OLED (high burn-in risk)
 
+// BSEC sample rate: BSEC_SAMPLE_RATE_LP = 3 sec, BSEC_SAMPLE_RATE_ULP = 5 min
+
 // Colors (RGB565)
 #define COLOR_BG        0x0000  // Black
 #define COLOR_TEXT      0xFFFF  // White
@@ -103,7 +116,7 @@ Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
 Adafruit_SH1107 oled = Adafruit_SH1107(64, 128, &Wire);
 
 // Sensors
-Adafruit_BME680 bme;
+Bsec2 envSensor;
 Adafruit_LSM6DSOX lsm;
 Adafruit_LIS3MDL lis;
 Adafruit_MAX17048 battery;
@@ -162,12 +175,16 @@ struct {
   float accelMag = 0;
 } imuData;
 
-// BME688 data
+// BME688 data (via BSEC2)
 struct {
-  float temperature = 0;
-  float humidity = 0;
-  float pressure = 0;
-  float gasResistance = 0;
+  float temperature = 0;      // Compensated temperature (C)
+  float humidity = 0;         // Compensated humidity (%)
+  float pressure = 0;         // Pressure (hPa)
+  float iaq = 0;              // Indoor Air Quality (0-500)
+  float co2Equivalent = 0;    // CO2 equivalent (ppm)
+  float bvocEquivalent = 0;   // Breath VOC equivalent (ppm)
+  float gasResistance = 0;    // Raw gas resistance (kOhm)
+  uint8_t iaqAccuracy = 0;    // 0=INIT, 1=LEARN, 2=CAL, 3=OK
 } envData;
 
 // ============== Setup ==============
@@ -177,7 +194,7 @@ void setup() {
   delay(1000);
 
   Serial.println("=================================");
-  Serial.println("Field Compass Dual v0.5");
+  Serial.println("Field Compass Dual v0.6");
   Serial.println("=================================\n");
 
   // Initialize SPI for TFT
@@ -198,7 +215,7 @@ void setup() {
   tft.setTextSize(2);
   tft.setTextColor(COLOR_TEXT);
   tft.setCursor(90, 90);
-  tft.println("v0.5 Dual");
+  tft.println("v0.6 BSEC2");
   tft.setTextSize(1);
   tft.setCursor(40, 140);
   tft.setTextColor(COLOR_DIM);
@@ -329,25 +346,97 @@ void initGPS() {
   Serial.println("OK (9600 baud)");
 }
 
-void initBME688() {
-  Serial.print("Initializing BME688... ");
+// BSEC2 callback - called when new sensor data is available
+void bsecDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bsec) {
+  if (!outputs.nOutputs) return;
 
-  if (!bme.begin(0x77)) {
-    if (!bme.begin(0x76)) {
+  for (uint8_t i = 0; i < outputs.nOutputs; i++) {
+    const bsecData output = outputs.output[i];
+    switch (output.sensor_id) {
+      case BSEC_OUTPUT_IAQ:
+        envData.iaq = output.signal;
+        envData.iaqAccuracy = output.accuracy;
+        break;
+      case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE:
+        envData.temperature = output.signal;
+        break;
+      case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY:
+        envData.humidity = output.signal;
+        break;
+      case BSEC_OUTPUT_RAW_PRESSURE:
+        envData.pressure = output.signal / 100.0;  // Pa to hPa
+        break;
+      case BSEC_OUTPUT_CO2_EQUIVALENT:
+        envData.co2Equivalent = output.signal;
+        break;
+      case BSEC_OUTPUT_BREATH_VOC_EQUIVALENT:
+        envData.bvocEquivalent = output.signal;
+        break;
+      case BSEC_OUTPUT_RAW_GAS:
+        envData.gasResistance = output.signal / 1000.0;  // Ohm to kOhm
+        break;
+    }
+  }
+}
+
+void initBME688() {
+  Serial.print("Initializing BME688 (BSEC2)... ");
+
+  // BSEC2 sensor outputs to subscribe to
+  bsecSensor sensorList[] = {
+    BSEC_OUTPUT_IAQ,
+    BSEC_OUTPUT_RAW_PRESSURE,
+    BSEC_OUTPUT_RAW_GAS,
+    BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE,
+    BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY,
+    BSEC_OUTPUT_CO2_EQUIVALENT,
+    BSEC_OUTPUT_BREATH_VOC_EQUIVALENT
+  };
+
+  // Try primary address (0x77), then secondary (0x76)
+  if (!envSensor.begin(0x77, Wire)) {
+    if (!envSensor.begin(0x76, Wire)) {
       Serial.println("NOT FOUND");
+      Serial.print("  BSEC status: ");
+      Serial.println(envSensor.status);
+      Serial.print("  Sensor status: ");
+      Serial.println(envSensor.sensor.status);
       return;
     }
   }
 
-  // Configure oversampling and filter
-  bme.setTemperatureOversampling(BME680_OS_8X);
-  bme.setHumidityOversampling(BME680_OS_2X);
-  bme.setPressureOversampling(BME680_OS_4X);
-  bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
-  bme.setGasHeater(320, 150);  // 320°C for 150ms
+  // Load BSEC2 config for BME688
+  if (!envSensor.setConfig(bsec2_config)) {
+    Serial.println("CONFIG FAILED");
+    Serial.print("  BSEC status: ");
+    Serial.println(envSensor.status);
+    return;
+  }
+
+  // Set temperature offset for self-heating compensation
+  envSensor.setTemperatureOffset(3.0);  // Adjust based on testing
+
+  // Subscribe to desired outputs (LP = 3 second sample rate)
+  if (!envSensor.updateSubscription(sensorList, sizeof(sensorList) / sizeof(sensorList[0]), BSEC_SAMPLE_RATE_LP)) {
+    Serial.println("SUBSCRIPTION FAILED");
+    Serial.print("  BSEC status: ");
+    Serial.println(envSensor.status);
+    return;
+  }
+
+  // Attach callback for new data
+  envSensor.attachCallback(bsecDataCallback);
 
   bmeAvailable = true;
   Serial.println("OK");
+  Serial.print("  BSEC version: ");
+  Serial.print(envSensor.version.major);
+  Serial.print(".");
+  Serial.print(envSensor.version.minor);
+  Serial.print(".");
+  Serial.print(envSensor.version.major_bugfix);
+  Serial.print(".");
+  Serial.println(envSensor.version.minor_bugfix);
 }
 
 void initIMU() {
@@ -477,7 +566,9 @@ void sleepTFT() {
 
   tftSleeping = true;
   tft.enableSleep(true);
+  #if DEBUG_SLEEP
   Serial.println("TFT sleeping");
+  #endif
 }
 
 void wakeTFT() {
@@ -486,7 +577,9 @@ void wakeTFT() {
   tftSleeping = false;
   tft.enableSleep(false);
   tft.fillScreen(COLOR_BG);  // Clear screen on wake
+  #if DEBUG_SLEEP
   Serial.println("TFT woke up");
+  #endif
 }
 
 void sleepOLED() {
@@ -494,7 +587,9 @@ void sleepOLED() {
 
   oledSleeping = true;
   oled.oled_command(SH110X_DISPLAYOFF);
+  #if DEBUG_SLEEP
   Serial.println("OLED sleeping");
+  #endif
 }
 
 void wakeOLED() {
@@ -502,7 +597,9 @@ void wakeOLED() {
 
   oledSleeping = false;
   oled.oled_command(SH110X_DISPLAYON);
+  #if DEBUG_SLEEP
   Serial.println("OLED woke up");
+  #endif
 }
 
 void wakeAllDisplays() {
@@ -556,8 +653,6 @@ void handleButtons() {
     if (currentScreen < 0) currentScreen = NUM_SCREENS - 1;
     lastButtonPress = now;
     tft.fillScreen(COLOR_BG);  // Clear screen on change
-    Serial.print("Screen: ");
-    Serial.println(currentScreen + 1);
   }
 
   // Button B - Next screen
@@ -566,8 +661,6 @@ void handleButtons() {
     if (currentScreen >= NUM_SCREENS) currentScreen = 0;
     lastButtonPress = now;
     tft.fillScreen(COLOR_BG);  // Clear screen on change
-    Serial.print("Screen: ");
-    Serial.println(currentScreen + 1);
   }
 
   // Button C - Reserved
@@ -586,6 +679,9 @@ void readGPS() {
 
     if (c == '\n') {
       gpsBuffer[gpsBufferIndex] = '\0';
+      #if DEBUG_GPS
+      Serial.println(gpsBuffer);
+      #endif
       parseNMEA(gpsBuffer);
       gpsBufferIndex = 0;
     } else if (c != '\r' && gpsBufferIndex < sizeof(gpsBuffer) - 1) {
@@ -668,11 +764,24 @@ void parseNMEA(char* sentence) {
 // ============== Sensor Reading ==============
 
 void readBME688() {
-  if (bme.performReading()) {
-    envData.temperature = bme.temperature;
-    envData.humidity = bme.humidity;
-    envData.pressure = bme.pressure / 100.0;
-    envData.gasResistance = bme.gas_resistance / 1000.0;
+  // BSEC2 runs via callback, just need to call run() to process
+  if (!envSensor.run()) {
+    // Check for errors only if status is negative
+    if (envSensor.status < BSEC_OK) {
+      Serial.print("BSEC error: ");
+      Serial.println(envSensor.status);
+    }
+  }
+}
+
+// Helper function to get IAQ accuracy as short text
+const char* getIaqAccuracyText(uint8_t accuracy) {
+  switch (accuracy) {
+    case 0: return "INIT";
+    case 1: return "LEARN";
+    case 2: return "CAL";
+    case 3: return "OK";
+    default: return "?";
   }
 }
 
@@ -922,40 +1031,49 @@ void drawScreenGPS() {
 void drawScreenEnv() {
   drawHeader("ENVIRONMENT");
 
-  int y = 50;
+  int y = 45;
   int labelX = 20;
-  int valueX = 120;
-  int lineH = 35;
-  char buf[32];
+  int valueX = 110;
+  int lineH = 32;
+  char buf[40];
 
   if (bmeAvailable) {
-    // Temperature
+    // Temperature (compensated)
     float tempF = envData.temperature * 9.0 / 5.0 + 32.0;
     drawLabel(labelX, y, "Temp:");
     sprintf(buf, "%.1fF (%.1fC)", tempF, envData.temperature);
     drawValue(valueX, y, buf);
     y += lineH;
 
-    // Humidity
+    // Humidity (compensated)
     drawLabel(labelX, y, "Humid:");
     sprintf(buf, "%.1f%%", envData.humidity);
     drawValue(valueX, y, buf);
+    y += lineH;
+
+    // IAQ with accuracy indicator
+    drawLabel(labelX, y, "IAQ:");
+    sprintf(buf, "%.0f [%s]", envData.iaq, getIaqAccuracyText(envData.iaqAccuracy));
+    // Color based on IAQ: 0-50 good, 51-100 moderate, 101-150 poor, 151-200 unhealthy, >200 very unhealthy
+    uint16_t color = COLOR_VALUE;
+    if (envData.iaq > 200) color = COLOR_ERROR;
+    else if (envData.iaq > 100) color = COLOR_WARN;
+    drawValue(valueX, y, buf, color);
+    y += lineH;
+
+    // CO2 equivalent
+    drawLabel(labelX, y, "CO2:");
+    sprintf(buf, "%.0f ppm", envData.co2Equivalent);
+    color = COLOR_VALUE;
+    if (envData.co2Equivalent > 2000) color = COLOR_ERROR;
+    else if (envData.co2Equivalent > 1000) color = COLOR_WARN;
+    drawValue(valueX, y, buf, color);
     y += lineH;
 
     // Pressure
     drawLabel(labelX, y, "Press:");
     sprintf(buf, "%.1f hPa", envData.pressure);
     drawValue(valueX, y, buf);
-    y += lineH;
-
-    // Gas/Air Quality
-    drawLabel(labelX, y, "Gas:");
-    sprintf(buf, "%.1f kOhm", envData.gasResistance);
-    // Color based on resistance (higher = better)
-    uint16_t color = COLOR_VALUE;
-    if (envData.gasResistance < 50) color = COLOR_ERROR;
-    else if (envData.gasResistance < 100) color = COLOR_WARN;
-    drawValue(valueX, y, buf, color);
 
   } else {
     tft.setTextColor(COLOR_ERROR);
@@ -1138,20 +1256,20 @@ void drawOLEDScreenEnv() {
   if (bmeAvailable) {
     float tempF = envData.temperature * 9.0 / 5.0 + 32.0;
 
-    oled.setCursor(0, 12);
-    sprintf(buf, "Temp: %.1fF", tempF);
+    oled.setCursor(0, 10);
+    sprintf(buf, "%.1fF %.1f%%", tempF, envData.humidity);
     oled.print(buf);
 
-    oled.setCursor(0, 24);
-    sprintf(buf, "Humid: %.1f%%", envData.humidity);
+    oled.setCursor(0, 22);
+    sprintf(buf, "IAQ:%.0f [%s]", envData.iaq, getIaqAccuracyText(envData.iaqAccuracy));
     oled.print(buf);
 
-    oled.setCursor(0, 36);
-    sprintf(buf, "Press: %.0fhPa", envData.pressure);
+    oled.setCursor(0, 34);
+    sprintf(buf, "CO2:%.0fppm", envData.co2Equivalent);
     oled.print(buf);
 
-    oled.setCursor(0, 48);
-    sprintf(buf, "Gas: %.0fkOhm", envData.gasResistance);
+    oled.setCursor(0, 46);
+    sprintf(buf, "%.0fhPa", envData.pressure);
     oled.print(buf);
   } else {
     oled.setCursor(0, 28);
