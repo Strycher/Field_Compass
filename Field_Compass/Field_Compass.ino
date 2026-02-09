@@ -92,8 +92,8 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 // WiFi reconnect interval (ms)
 #define WIFI_RECONNECT_INTERVAL 30000
 
-// Display sleep timeouts (ms)
-#define TFT_SLEEP_TIMEOUT  900000   // 15 minutes for TFT (low burn-in risk)
+// Display sleep timeouts (ms, 0 = disabled)
+#define TFT_SLEEP_TIMEOUT  0        // 0 = always on (LCD has no burn-in risk)
 #define OLED_SLEEP_TIMEOUT 180000   // 3 minutes for OLED (high burn-in risk)
 
 // BSEC sample rate: BSEC_SAMPLE_RATE_LP = 3 sec, BSEC_SAMPLE_RATE_ULP = 5 min
@@ -615,13 +615,13 @@ void wakeAllDisplays() {
 void checkDisplaySleep() {
   unsigned long elapsed = millis() - lastActivityTime;
 
-  // Check OLED sleep (3 minutes)
-  if (!oledSleeping && oledAvailable && elapsed > OLED_SLEEP_TIMEOUT) {
+  // Check OLED sleep (0 = disabled)
+  if (OLED_SLEEP_TIMEOUT > 0 && !oledSleeping && oledAvailable && elapsed > OLED_SLEEP_TIMEOUT) {
     sleepOLED();
   }
 
-  // Check TFT sleep (15 minutes)
-  if (!tftSleeping && elapsed > TFT_SLEEP_TIMEOUT) {
+  // Check TFT sleep (0 = disabled, LCD has no burn-in risk)
+  if (TFT_SLEEP_TIMEOUT > 0 && !tftSleeping && elapsed > TFT_SLEEP_TIMEOUT) {
     sleepTFT();
   }
 }
