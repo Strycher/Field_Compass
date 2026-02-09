@@ -8,6 +8,7 @@
 | GPS FeatherWing (PA1616D) | [3133](https://www.adafruit.com/product/3133) | 1 | UART | - | Have |
 | FeatherWing OLED 128x64 | [6313](https://www.adafruit.com/product/6313) | 1 | I2C | 0x3C | Have |
 | BME688 Breakout | [5046](https://www.adafruit.com/product/5046) | 1 | I2C | 0x77 | Have |
+| SHT41 Temp/Humidity | [5776](https://www.adafruit.com/product/5776) | 1 | I2C | 0x44 | **Order** |
 | LSM6DSOX + LIS3MDL 9-DoF | [4517](https://www.adafruit.com/product/4517) | 1 | I2C | 0x6A, 0x1C | Have |
 | Adalogger FeatherWing | [2922](https://www.adafruit.com/product/2922) | 1 | SPI + I2C | 0x68 (RTC) | **Order** |
 | SPI FRAM 256KB (MB85RS2MTA) | [4718](https://www.adafruit.com/product/4718) | 1 | SPI | - | **Order** |
@@ -76,9 +77,10 @@
 | 0x1C | LIS3MDL | Magnetometer |
 | 0x36 | MAX17048 | Battery Gauge (built-in) |
 | 0x3C | SSD1306 | OLED Display |
+| 0x44 | SHT41 | Temp/Humidity - **pending** |
 | 0x68 | PCF8523 | RTC (Adalogger) - **pending** |
 | 0x6A | LSM6DSOX | Accel/Gyro |
-| 0x77 | BME688 | Environmental |
+| 0x77 | BME688 | Gas/Pressure/Environment |
 
 ## Sensor Specifications
 
@@ -91,8 +93,20 @@
 | Gas | VOC detection | Relative |
 
 **Known Issues:**
-- Self-heating causes ~10°F offset (see #29)
-- Humidity readings can be unstable during warmup (see #30)
+- Self-heating from gas heater causes temperature offset
+- BSEC2 library complex to configure; may use simple library for gas/pressure only
+- Consider using SHT41 for accurate temp/humidity instead
+
+### SHT41 Temperature & Humidity Sensor
+| Measurement | Range | Accuracy |
+|-------------|-------|----------|
+| Temperature | -40 to +125°C | ±0.2°C typical |
+| Humidity | 0-100% RH | ±1.8% RH typical |
+
+**Notes:**
+- No self-heating issues (no gas heater)
+- Drop-in replaceable with SHT45 for better accuracy (±0.1°C)
+- Mount externally or in vented chamber for best accuracy
 
 ### LSM6DSOX 6-DoF IMU
 | Measurement | Range | Notes |
