@@ -1297,6 +1297,13 @@ void drawScreenOps() {
 void drawScreenGPS() {
   drawHeader("GPS");
 
+  // Clear content area if GPS validity state changed
+  static bool lastDrawnValid = false;
+  if (gpsData.valid != lastDrawnValid) {
+    tft.fillRect(0, 30, TFT_WIDTH, TFT_HEIGHT - 55, COLOR_BG);
+    lastDrawnValid = gpsData.valid;
+  }
+
   int y = 50;
   int labelX = 20;
   int valueX = 120;
