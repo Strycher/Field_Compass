@@ -67,7 +67,7 @@
 | A1 | TFT DC | 17 |
 | A2 | TFT RST | 12 |
 | A3 | Touch CS (TSCS) | 14 |
-| TBD | SD Card CS | TBD |
+| A4 | SD Card CS (SDCS) | 8 |
 | TBD | FRAM CS | TBD |
 
 ## I2C Device Map
