@@ -65,9 +65,9 @@
 | MISO (MI) | Controller In | HW SPI |
 | A0 | TFT CS (TCS) | 18 |
 | A1 | TFT DC | 17 |
-| A2 | TFT RST | 12 |
-| A3 | Touch CS (TSCS) | 14 |
-| A4 | SD Card CS (SDCS) | 8 |
+| A2 | TFT RST | 16 |
+| A3 | Touch CS (TSCS) | 15 |
+| A4 | SD Card CS (SDCS) | 14 |
 | TBD | FRAM CS | TBD |
 
 ## I2C Device Map
