@@ -58,9 +58,9 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 // TFT Display pins (EYESPI breakout)
 #define TFT_CS    18  // A0 -> TCS
 #define TFT_DC    17  // A1 -> DC
-#define TFT_RST   12  // A2 -> RST
-#define TOUCH_CS  14  // A3 -> TSCS (for future use)
-#define SD_CS     8   // A4 -> SDCS (TFT MicroSD slot)
+#define TFT_RST   16  // A2 -> RST
+#define TOUCH_CS  15  // A3 -> TSCS (for future use)
+#define SD_CS     14  // A4 -> SDCS (TFT MicroSD slot)
 
 // Button pins (directly wired, active LOW)
 #define BUTTON_A 9
