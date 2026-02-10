@@ -1334,6 +1334,9 @@ void drawScreenGPS() {
     drawValue(valueX, y, "Fix OK", COLOR_VALUE);
 
   } else if (gpsData.receiving) {
+    // Clear content area for acquiring state (uses raw print, not drawValue)
+    tft.fillRect(0, 30, TFT_WIDTH, TFT_HEIGHT - 55, COLOR_BG);
+
     tft.setTextColor(COLOR_WARN);
     tft.setTextSize(2);
     tft.setCursor(60, 80);
@@ -1353,6 +1356,9 @@ void drawScreenGPS() {
       tft.print(buf);
     }
   } else {
+    // Clear content area for no-data state
+    tft.fillRect(0, 30, TFT_WIDTH, TFT_HEIGHT - 55, COLOR_BG);
+
     tft.setTextColor(COLOR_ERROR);
     tft.setTextSize(2);
     tft.setCursor(80, 100);
