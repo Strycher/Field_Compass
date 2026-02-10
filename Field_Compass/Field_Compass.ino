@@ -98,6 +98,12 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 #define TFT_SLEEP_TIMEOUT  0        // 0 = always on (LCD has no burn-in risk)
 #define OLED_SLEEP_TIMEOUT 180000   // 3 minutes for OLED (high burn-in risk)
 
+// Weather logging configuration
+#define WEATHER_LOG_INTERVAL  300000   // 5 minutes in ms
+#define WEATHER_HISTORY_HOURS 24
+#define WEATHER_SAMPLES_MAX   288      // 24hrs * 12 samples/hr
+#define LOCATION_THRESHOLD    0.01     // ~1km in degrees
+
 // BSEC sample rate: BSEC_SAMPLE_RATE_LP = 3 sec, BSEC_SAMPLE_RATE_ULP = 5 min
 
 // Colors (RGB565)
@@ -190,6 +196,28 @@ struct {
   uint8_t iaqAccuracy = 0;    // 0=INIT, 1=LEARN, 2=CAL, 3=OK
 } envData;
 
+// Weather history for trend tracking
+struct WeatherReading {
+  uint32_t timestamp;
+  float lat, lon;
+  float pressure, temp, humidity;
+};
+
+WeatherReading weatherHistory[WEATHER_SAMPLES_MAX];
+int weatherHistoryCount = 0;
+int weatherHistoryHead = 0;
+unsigned long lastWeatherLog = 0;
+
+// Weather trend data
+struct {
+  float pressureChange3hr = 0;    // hPa change over 3 hours
+  float tempChange3hr = 0;        // °C change over 3 hours
+  float humidityChange3hr = 0;    // % change over 3 hours
+  bool locationChanged = false;   // Moved >1km since last reading
+  uint8_t trend = 0;              // 0=stable, 1=rising slow, 2=rising fast, 3=falling slow, 4=falling fast
+  const char* forecast = "Init";  // "Clear", "Rain Likely", etc.
+} weatherTrend;
+
 // ============== Setup ==============
 
 void setup() {
@@ -236,6 +264,11 @@ void setup() {
   initSD();
   initWiFi();
 
+  // Load weather history from SD
+  if (sdAvailable) {
+    loadWeatherHistory();
+  }
+
   // Setup buttons
   pinMode(BUTTON_A, INPUT_PULLUP);
   pinMode(BUTTON_B, INPUT_PULLUP);
@@ -266,6 +299,13 @@ void loop() {
   readGPS();
   if (bmeAvailable) readBME688();
   if (imuAvailable && magAvailable) readIMU();
+
+  // Weather logging (every 5 minutes)
+  if (sdAvailable && bmeAvailable && (millis() - lastWeatherLog > WEATHER_LOG_INTERVAL)) {
+    logWeatherReading();
+    calculateWeatherTrend();
+    lastWeatherLog = millis();
+  }
 
   // Update display based on current screen
   updateDisplay();
@@ -509,6 +549,265 @@ void initSD() {
   Serial.print("OK (");
   Serial.print(cardSize);
   Serial.println(" MB)");
+
+  // Create weather directory if needed
+  if (!SD.exists("/weather")) {
+    SD.mkdir("/weather");
+  }
+}
+
+// ============== Weather Logging Functions ==============
+
+// Get current timestamp from NTP or GPS
+uint32_t getCurrentTimestamp() {
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo)) {
+    time_t now;
+    time(&now);
+    return (uint32_t)now;
+  }
+  return 0;
+}
+
+// Get today's weather log filename
+void getWeatherFilename(char* buf, int daysAgo) {
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo)) {
+    time_t now;
+    time(&now);
+    now -= daysAgo * 86400;  // Subtract days
+    struct tm* t = localtime(&now);
+    sprintf(buf, "/weather/%04d-%02d-%02d.csv",
+            t->tm_year + 1900, t->tm_mon + 1, t->tm_mday);
+  } else {
+    sprintf(buf, "/weather/unknown.csv");
+  }
+}
+
+// Add reading to circular buffer
+void addToWeatherHistory(WeatherReading reading) {
+  weatherHistory[weatherHistoryHead] = reading;
+  weatherHistoryHead = (weatherHistoryHead + 1) % WEATHER_SAMPLES_MAX;
+  if (weatherHistoryCount < WEATHER_SAMPLES_MAX) {
+    weatherHistoryCount++;
+  }
+}
+
+// Get reading from N samples ago (0 = most recent)
+WeatherReading* getWeatherReading(int samplesAgo) {
+  if (samplesAgo >= weatherHistoryCount) return NULL;
+  int index = (weatherHistoryHead - 1 - samplesAgo + WEATHER_SAMPLES_MAX) % WEATHER_SAMPLES_MAX;
+  return &weatherHistory[index];
+}
+
+// Check if two locations are within threshold
+bool sameLocation(float lat1, float lon1, float lat2, float lon2) {
+  return (abs(lat1 - lat2) < LOCATION_THRESHOLD &&
+          abs(lon1 - lon2) < LOCATION_THRESHOLD);
+}
+
+// Log current weather reading to SD card
+void logWeatherReading() {
+  if (!sdAvailable || !bmeAvailable) return;
+
+  uint32_t timestamp = getCurrentTimestamp();
+  if (timestamp == 0) return;  // No valid time
+
+  // Get current GPS position (use 0,0 if no fix)
+  float lat = gpsData.valid ? gpsData.latitude : 0;
+  float lon = gpsData.valid ? gpsData.longitude : 0;
+
+  // Create reading
+  WeatherReading reading;
+  reading.timestamp = timestamp;
+  reading.lat = lat;
+  reading.lon = lon;
+  reading.pressure = envData.pressure;
+  reading.temp = envData.temperature;
+  reading.humidity = envData.humidity;
+
+  // Add to in-memory buffer
+  addToWeatherHistory(reading);
+
+  // Write to SD card
+  char filename[32];
+  getWeatherFilename(filename, 0);
+
+  File file = SD.open(filename, FILE_APPEND);
+  if (file) {
+    file.printf("%lu,%.4f,%.4f,%.2f,%.2f,%.2f\n",
+                timestamp, lat, lon,
+                reading.pressure, reading.temp, reading.humidity);
+    file.close();
+  }
+}
+
+// Load weather history from SD card on boot
+void loadWeatherHistory() {
+  if (!sdAvailable) return;
+
+  Serial.print("Loading weather history... ");
+
+  int loaded = 0;
+  uint32_t now = getCurrentTimestamp();
+  uint32_t cutoff = now - (WEATHER_HISTORY_HOURS * 3600);
+
+  // Load today's and yesterday's files
+  for (int daysAgo = 1; daysAgo >= 0; daysAgo--) {
+    char filename[32];
+    getWeatherFilename(filename, daysAgo);
+
+    if (!SD.exists(filename)) continue;
+
+    File file = SD.open(filename, FILE_READ);
+    if (!file) continue;
+
+    char line[80];
+    while (file.available()) {
+      int len = file.readBytesUntil('\n', line, sizeof(line) - 1);
+      line[len] = '\0';
+
+      WeatherReading reading;
+      if (sscanf(line, "%lu,%f,%f,%f,%f,%f",
+                 &reading.timestamp, &reading.lat, &reading.lon,
+                 &reading.pressure, &reading.temp, &reading.humidity) == 6) {
+        // Only load readings within history window
+        if (reading.timestamp >= cutoff) {
+          addToWeatherHistory(reading);
+          loaded++;
+        }
+      }
+    }
+    file.close();
+  }
+
+  Serial.print(loaded);
+  Serial.println(" readings");
+}
+
+// Calculate weather trend from history
+void calculateWeatherTrend() {
+  // Need at least some history
+  if (weatherHistoryCount < 2) {
+    weatherTrend.forecast = "Init";
+    return;
+  }
+
+  WeatherReading* current = getWeatherReading(0);
+  if (!current) return;
+
+  // Check for location change
+  WeatherReading* prev = getWeatherReading(1);
+  if (prev && (prev->lat != 0 || prev->lon != 0) && (current->lat != 0 || current->lon != 0)) {
+    weatherTrend.locationChanged = !sameLocation(current->lat, current->lon, prev->lat, prev->lon);
+  } else {
+    weatherTrend.locationChanged = false;
+  }
+
+  // Find reading from ~3 hours ago (36 samples at 5-min intervals)
+  int samples3hr = 36;
+  if (samples3hr > weatherHistoryCount - 1) {
+    samples3hr = weatherHistoryCount - 1;
+  }
+
+  WeatherReading* reading3hr = getWeatherReading(samples3hr);
+  if (!reading3hr) {
+    weatherTrend.forecast = "Learning";
+    return;
+  }
+
+  // Calculate changes
+  weatherTrend.pressureChange3hr = current->pressure - reading3hr->pressure;
+  weatherTrend.tempChange3hr = current->temp - reading3hr->temp;
+  weatherTrend.humidityChange3hr = current->humidity - reading3hr->humidity;
+
+  // Determine trend direction
+  float pChange = weatherTrend.pressureChange3hr;
+  if (pChange > 3.0) {
+    weatherTrend.trend = 2;  // Rising fast
+  } else if (pChange > 1.0) {
+    weatherTrend.trend = 1;  // Rising slow
+  } else if (pChange < -3.0) {
+    weatherTrend.trend = 4;  // Falling fast
+  } else if (pChange < -1.0) {
+    weatherTrend.trend = 3;  // Falling slow
+  } else {
+    weatherTrend.trend = 0;  // Stable
+  }
+
+  // Calculate forecast
+  weatherTrend.forecast = calculateForecast();
+}
+
+// Get trend arrow character
+const char* getTrendArrow() {
+  switch (weatherTrend.trend) {
+    case 1: return "^";    // Rising slow
+    case 2: return "^^";   // Rising fast
+    case 3: return "v";    // Falling slow
+    case 4: return "vv";   // Falling fast
+    default: return "-";   // Stable
+  }
+}
+
+// Calculate weather forecast based on conditions
+const char* calculateForecast() {
+  float p = envData.pressure;
+  float t = envData.temperature;
+  float h = envData.humidity;
+  float pChange = weatherTrend.pressureChange3hr;
+
+  // Location changed - can't predict
+  if (weatherTrend.locationChanged) {
+    return "Traveled";
+  }
+
+  // Not enough history (need 3 hours)
+  if (weatherHistoryCount < 36) {
+    return "Learning";
+  }
+
+  bool lowPressure = (p < 1000);
+  bool highPressure = (p > 1015);
+  bool highHumidity = (h > 70);
+  bool fallingFast = (pChange < -3.0);
+  bool fallingSlow = (pChange < -1.0 && pChange >= -3.0);
+  bool risingFast = (pChange > 3.0);
+  bool risingSlow = (pChange > 1.0 && pChange <= 3.0);
+  bool cold = (t < 5.0);  // Below 5°C
+
+  // Storm conditions
+  if (lowPressure && fallingFast && highHumidity) {
+    return "Storm Likely";
+  }
+
+  // Precipitation
+  if (lowPressure && (fallingFast || fallingSlow) && highHumidity) {
+    if (cold) return "Snow Likely";
+    return "Rain Likely";
+  }
+
+  // Clearing
+  if (highPressure && (risingFast || risingSlow)) {
+    return "Clearing";
+  }
+
+  // Fair weather
+  if (highPressure && fabs(pChange) < 1.0) {
+    return "Fair";
+  }
+
+  // Unsettled
+  if (lowPressure && fabs(pChange) < 1.0 && highHumidity) {
+    return "Unsettled";
+  }
+
+  // Possible change
+  if (fallingSlow && h > 60) {
+    return "Precip Poss";
+  }
+
+  return "Stable";
 }
 
 void initWiFi() {
@@ -1060,10 +1359,10 @@ void drawScreenGPS() {
 void drawScreenEnv() {
   drawHeader("ENVIRONMENT");
 
-  int y = 45;
+  int y = 42;
   int labelX = 20;
   int valueX = 110;
-  int lineH = 32;
+  int lineH = 28;
   char buf[40];
 
   if (bmeAvailable) {
@@ -1103,6 +1402,15 @@ void drawScreenEnv() {
     drawLabel(labelX, y, "Press:");
     sprintf(buf, "%.1f hPa (%.2f\")", envData.pressure, hPaToInHg(envData.pressure));
     drawValue(valueX, y, buf);
+    y += lineH;
+
+    // Weather trend and forecast
+    drawLabel(labelX, y, "Fcst:");
+    sprintf(buf, "%s %s", getTrendArrow(), weatherTrend.forecast);
+    color = COLOR_VALUE;
+    if (strstr(weatherTrend.forecast, "Storm")) color = COLOR_ERROR;
+    else if (strstr(weatherTrend.forecast, "Rain") || strstr(weatherTrend.forecast, "Snow")) color = COLOR_WARN;
+    drawValue(valueX, y, buf, color);
 
   } else {
     tft.setTextColor(COLOR_ERROR);
@@ -1286,19 +1594,19 @@ void drawOLEDScreenEnv() {
     float tempF = envData.temperature * 9.0 / 5.0 + 32.0;
 
     oled.setCursor(0, 10);
-    sprintf(buf, "%.1fF %.1f%%", tempF, envData.humidity);
+    sprintf(buf, "%.1fF %.1f%% IAQ:%.0f", tempF, envData.humidity, envData.iaq);
     oled.print(buf);
 
     oled.setCursor(0, 22);
-    sprintf(buf, "IAQ:%.0f [%s]", envData.iaq, getIaqAccuracyText(envData.iaqAccuracy));
+    sprintf(buf, "%.0fhPa %.2f\"", envData.pressure, hPaToInHg(envData.pressure));
     oled.print(buf);
 
     oled.setCursor(0, 34);
-    sprintf(buf, "CO2:%.0fppm", envData.co2Equivalent);
+    sprintf(buf, "%s %s", getTrendArrow(), weatherTrend.forecast);
     oled.print(buf);
 
     oled.setCursor(0, 46);
-    sprintf(buf, "%.0fhPa %.2f\"", envData.pressure, hPaToInHg(envData.pressure));
+    sprintf(buf, "CO2:%.0f", envData.co2Equivalent);
     oled.print(buf);
   } else {
     oled.setCursor(0, 28);
