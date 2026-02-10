@@ -38,6 +38,7 @@ const uint8_t bsec2_config[] = {
 #include <Adafruit_LSM6DSOX.h>
 #include <Adafruit_LIS3MDL.h>
 #include <Adafruit_MAX1704X.h>
+#include <SD.h>
 
 // ============== Configuration ==============
 
@@ -59,6 +60,7 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 #define TFT_DC    17  // A1 -> DC
 #define TFT_RST   12  // A2 -> RST
 #define TOUCH_CS  14  // A3 -> TSCS (for future use)
+#define SD_CS     8   // A4 -> SDCS (TFT MicroSD slot)
 
 // Button pins (directly wired, active LOW)
 #define BUTTON_A 9
@@ -145,6 +147,7 @@ bool bmeAvailable = false;
 bool imuAvailable = false;
 bool magAvailable = false;
 bool batteryAvailable = false;
+bool sdAvailable = false;
 bool wifiConnected = false;
 bool ntpSynced = false;
 
@@ -230,6 +233,7 @@ void setup() {
   initBME688();
   initIMU();
   initBattery();
+  initSD();
   initWiFi();
 
   // Setup buttons
@@ -489,6 +493,22 @@ void initBattery() {
 
   batteryAvailable = true;
   Serial.println("OK");
+}
+
+void initSD() {
+  Serial.print("Initializing SD card... ");
+
+  if (!SD.begin(SD_CS)) {
+    Serial.println("NOT FOUND");
+    return;
+  }
+
+  sdAvailable = true;
+
+  uint64_t cardSize = SD.cardSize() / (1024 * 1024);
+  Serial.print("OK (");
+  Serial.print(cardSize);
+  Serial.println(" MB)");
 }
 
 void initWiFi() {
