@@ -22,6 +22,9 @@
  * Issues: #44, #46, #47
  */
 
+// Firmware version
+#define FW_VERSION "0.11"
+
 #include <Wire.h>
 #include <SPI.h>
 #include <WiFi.h>
@@ -255,6 +258,67 @@ struct {
   const char* forecast = "Init";  // "Clear", "Rain Likely", etc.
 } weatherTrend;
 
+// ============== Serial Ring Buffer (moved before setup for use in init) ==============
+
+void serialRingAppend(const char* str) {
+  while (*str) {
+    serialRing[serialRingHead] = *str++;
+    serialRingHead = (serialRingHead + 1) % SERIAL_RING_SIZE;
+    // If we catch up to tail, advance tail (lose oldest data)
+    if (serialRingHead == serialRingTail) {
+      serialRingTail = (serialRingTail + 1) % SERIAL_RING_SIZE;
+    }
+  }
+}
+
+// Read and clear the ring buffer
+String serialRingRead() {
+  String result;
+  result.reserve(SERIAL_RING_SIZE);
+  while (serialRingTail != serialRingHead) {
+    result += serialRing[serialRingTail];
+    serialRingTail = (serialRingTail + 1) % SERIAL_RING_SIZE;
+  }
+  return result;
+}
+
+// Peek at ring buffer without clearing
+String serialRingPeek() {
+  String result;
+  result.reserve(SERIAL_RING_SIZE);
+  uint16_t pos = serialRingTail;
+  while (pos != serialRingHead) {
+    result += serialRing[pos];
+    pos = (pos + 1) % SERIAL_RING_SIZE;
+  }
+  return result;
+}
+
+// Web serial streaming position tracker
+static uint16_t webSerialReadPos = 0;
+
+// Custom print that captures to ring buffer
+void logPrint(const char* msg) {
+  serialRingAppend(msg);
+  Serial.print(msg);
+}
+
+void logPrintln(const char* msg) {
+  serialRingAppend(msg);
+  serialRingAppend("\n");
+  Serial.println(msg);
+}
+
+void logPrintf(const char* fmt, ...) {
+  char buf[256];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  serialRingAppend(buf);
+  Serial.print(buf);
+}
+
 // ============== Setup ==============
 
 void setup() {
@@ -262,7 +326,8 @@ void setup() {
   delay(1000);
 
   // Boot banner - capture to ring buffer for web serial
-  const char* banner = "=================================\nField Compass Dual v0.10\n=================================\n\n";
+  char banner[128];
+  snprintf(banner, sizeof(banner), "=================================\nField Compass Dual %s\n=================================\n\n", FW_VERSION);
   serialRingAppend(banner);
   Serial.print(banner);
 
@@ -284,7 +349,9 @@ void setup() {
   tft.setTextSize(2);
   tft.setTextColor(COLOR_TEXT);
   tft.setCursor(90, 90);
-  tft.println("v0.10 BSEC2");
+  char verStr[24];
+  snprintf(verStr, sizeof(verStr), "%s BSEC2", FW_VERSION);
+  tft.println(verStr);
   tft.setTextSize(1);
   tft.setCursor(40, 140);
   tft.setTextColor(COLOR_DIM);
@@ -318,8 +385,7 @@ void setup() {
   pinMode(BUTTON_B, INPUT_PULLUP);
   pinMode(BUTTON_C, INPUT_PULLUP);
 
-  serialRingAppend("\nSetup complete!\n\n");
-  Serial.println("\nSetup complete!\n");
+  logPrintln("\nSetup complete!\n");
 
   // Initialize activity timer for display sleep
   lastActivityTime = millis();
@@ -384,7 +450,7 @@ void loop() {
 // ============== I2C Scanner ==============
 
 void scanI2C() {
-  Serial.println("Scanning I2C bus...");
+  logPrintln("Scanning I2C bus...");
 
   int deviceCount = 0;
   for (byte address = 1; address < 127; address++) {
@@ -392,34 +458,29 @@ void scanI2C() {
     byte error = Wire.endTransmission();
 
     if (error == 0) {
-      Serial.print("  Found device at 0x");
-      if (address < 16) Serial.print("0");
-      Serial.print(address, HEX);
-
+      const char* desc = "";
       if (address == 0x3C || address == 0x3D) {
-        Serial.print(" (OLED Display)");
+        desc = " (OLED Display)";
       } else if (address == 0x76 || address == 0x77) {
-        Serial.print(" (BME688)");
+        desc = " (BME688)";
       } else if (address == 0x6A || address == 0x6B) {
-        Serial.print(" (LSM6DSOX - Accel/Gyro)");
+        desc = " (LSM6DSOX - Accel/Gyro)";
       } else if (address == 0x1C || address == 0x1E) {
-        Serial.print(" (LIS3MDL - Magnetometer)");
+        desc = " (LIS3MDL - Magnetometer)";
       } else if (address == 0x36) {
-        Serial.print(" (MAX17048 - Battery Gauge)");
+        desc = " (MAX17048 - Battery Gauge)";
       }
-      Serial.println();
+      logPrintf("  Found device at 0x%02X%s\n", address, desc);
       deviceCount++;
     }
   }
-  Serial.print("  Total devices: ");
-  Serial.println(deviceCount);
-  Serial.println();
+  logPrintf("  Total devices: %d\n\n", deviceCount);
 }
 
 // ============== Initialization Functions ==============
 
 void initTFT() {
-  Serial.print("Initializing ST7789 TFT... ");
+  logPrint("Initializing ST7789 TFT... ");
 
   tft.init(TFT_HEIGHT, TFT_WIDTH);  // 240x320, but we use landscape
   tft.setRotation(1);  // Landscape mode
@@ -427,15 +488,15 @@ void initTFT() {
   delay(100);
   tft.fillScreen(COLOR_BG);
 
-  Serial.println("OK (320x240)");
+  logPrintln("OK (320x240)");
 }
 
 void initOLED() {
-  Serial.print("Initializing OLED... ");
+  logPrint("Initializing OLED... ");
 
   if (!oled.begin(0x3C, true)) {
     if (!oled.begin(0x3D, true)) {
-      Serial.println("NOT FOUND");
+      logPrintln("NOT FOUND");
       return;
     }
   }
@@ -447,17 +508,13 @@ void initOLED() {
   oled.display();
 
   oledAvailable = true;
-  Serial.println("OK (128x64)");
+  logPrintln("OK (128x64)");
 }
 
 void initGPS() {
-  Serial.print("Initializing GPS on RX=");
-  Serial.print(GPS_RX);
-  Serial.print(", TX=");
-  Serial.print(GPS_TX);
-  Serial.print("... ");
+  logPrintf("Initializing GPS on RX=%d, TX=%d... ", GPS_RX, GPS_TX);
   Serial1.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
-  Serial.println("OK (9600 baud)");
+  logPrintln("OK (9600 baud)");
 }
 
 // BSEC2 callback - called when new sensor data is available
@@ -510,7 +567,7 @@ void bsecDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bs
 }
 
 void initBME688() {
-  Serial.print("Initializing BME688 (BSEC2)... ");
+  logPrint("Initializing BME688 (BSEC2)... ");
 
   // BSEC2 sensor outputs to subscribe to
   bsecSensor sensorList[] = {
@@ -526,20 +583,17 @@ void initBME688() {
   // Try primary address (0x77), then secondary (0x76)
   if (!envSensor.begin(0x77, Wire)) {
     if (!envSensor.begin(0x76, Wire)) {
-      Serial.println("NOT FOUND");
-      Serial.print("  BSEC status: ");
-      Serial.println(envSensor.status);
-      Serial.print("  Sensor status: ");
-      Serial.println(envSensor.sensor.status);
+      logPrintln("NOT FOUND");
+      logPrintf("  BSEC status: %d\n", envSensor.status);
+      logPrintf("  Sensor status: %d\n", envSensor.sensor.status);
       return;
     }
   }
 
   // Load BSEC2 IAQ config
   if (!envSensor.setConfig(bsec2_config)) {
-    Serial.println("CONFIG FAILED");
-    Serial.print("  BSEC status: ");
-    Serial.println(envSensor.status);
+    logPrintln("CONFIG FAILED");
+    logPrintf("  BSEC status: %d\n", envSensor.status);
     return;
   }
 
@@ -548,9 +602,8 @@ void initBME688() {
 
   // Subscribe to desired outputs (LP = 3 second sample rate)
   if (!envSensor.updateSubscription(sensorList, sizeof(sensorList) / sizeof(sensorList[0]), BSEC_SAMPLE_RATE_LP)) {
-    Serial.println("SUBSCRIPTION FAILED");
-    Serial.print("  BSEC status: ");
-    Serial.println(envSensor.status);
+    logPrintln("SUBSCRIPTION FAILED");
+    logPrintf("  BSEC status: %d\n", envSensor.status);
     return;
   }
 
@@ -558,23 +611,18 @@ void initBME688() {
   envSensor.attachCallback(bsecDataCallback);
 
   bmeAvailable = true;
-  Serial.println("OK");
-  Serial.print("  BSEC version: ");
-  Serial.print(envSensor.version.major);
-  Serial.print(".");
-  Serial.print(envSensor.version.minor);
-  Serial.print(".");
-  Serial.print(envSensor.version.major_bugfix);
-  Serial.print(".");
-  Serial.println(envSensor.version.minor_bugfix);
+  logPrintln("OK");
+  logPrintf("  BSEC version: %d.%d.%d.%d\n",
+            envSensor.version.major, envSensor.version.minor,
+            envSensor.version.major_bugfix, envSensor.version.minor_bugfix);
 }
 
 void initIMU() {
-  Serial.print("Initializing LSM6DSOX... ");
+  logPrint("Initializing LSM6DSOX... ");
 
   if (!lsm.begin_I2C(0x6A)) {
     if (!lsm.begin_I2C(0x6B)) {
-      Serial.println("NOT FOUND");
+      logPrintln("NOT FOUND");
       return;
     }
   }
@@ -585,13 +633,13 @@ void initIMU() {
   lsm.setGyroDataRate(LSM6DS_RATE_104_HZ);
 
   imuAvailable = true;
-  Serial.println("OK");
+  logPrintln("OK");
 
-  Serial.print("Initializing LIS3MDL... ");
+  logPrint("Initializing LIS3MDL... ");
 
   if (!lis.begin_I2C(0x1C)) {
     if (!lis.begin_I2C(0x1E)) {
-      Serial.println("NOT FOUND");
+      logPrintln("NOT FOUND");
       return;
     }
   }
@@ -602,35 +650,33 @@ void initIMU() {
   lis.setRange(LIS3MDL_RANGE_4_GAUSS);
 
   magAvailable = true;
-  Serial.println("OK");
+  logPrintln("OK");
 }
 
 void initBattery() {
-  Serial.print("Initializing MAX17048... ");
+  logPrint("Initializing MAX17048... ");
 
   if (!battery.begin()) {
-    Serial.println("NOT FOUND");
+    logPrintln("NOT FOUND");
     return;
   }
 
   batteryAvailable = true;
-  Serial.println("OK");
+  logPrintln("OK");
 }
 
 void initSD() {
-  Serial.print("Initializing SD card... ");
+  logPrint("Initializing SD card... ");
 
   if (!SD.begin(SD_CS)) {
-    Serial.println("NOT FOUND");
+    logPrintln("NOT FOUND");
     return;
   }
 
   sdAvailable = true;
 
   uint64_t cardSize = SD.cardSize() / (1024 * 1024);
-  Serial.print("OK (");
-  Serial.print(cardSize);
-  Serial.println(" MB)");
+  logPrintf("OK (%llu MB)\n", cardSize);
 
   // Create weather directory if needed
   if (!SD.exists("/weather")) {
@@ -644,13 +690,13 @@ bool loadBsecState() {
   if (!sdAvailable) return false;
 
   if (!SD.exists(BSEC_STATE_FILE)) {
-    Serial.println("No BSEC state file found");
+    logPrintln("No BSEC state file found");
     return false;
   }
 
   File file = SD.open(BSEC_STATE_FILE, FILE_READ);
   if (!file) {
-    Serial.println("Failed to open BSEC state file");
+    logPrintln("Failed to open BSEC state file");
     return false;
   }
 
@@ -658,17 +704,16 @@ bool loadBsecState() {
   file.close();
 
   if (bytesRead != BSEC_MAX_STATE_BLOB_SIZE) {
-    Serial.println("Invalid BSEC state file size");
+    logPrintln("Invalid BSEC state file size");
     return false;
   }
 
   if (!envSensor.setState(bsecState)) {
-    Serial.print("Failed to restore BSEC state: ");
-    Serial.println(envSensor.status);
+    logPrintf("Failed to restore BSEC state: %d\n", envSensor.status);
     return false;
   }
 
-  Serial.println("BSEC state restored from SD card");
+  logPrintln("BSEC state restored from SD card");
   bsecStateLoaded = true;
   return true;
 }
@@ -677,14 +722,13 @@ bool saveBsecState() {
   if (!sdAvailable) return false;
 
   if (!envSensor.getState(bsecState)) {
-    Serial.print("Failed to get BSEC state: ");
-    Serial.println(envSensor.status);
+    logPrintf("Failed to get BSEC state: %d\n", envSensor.status);
     return false;
   }
 
   File file = SD.open(BSEC_STATE_FILE, FILE_WRITE);
   if (!file) {
-    Serial.println("Failed to create BSEC state file");
+    logPrintln("Failed to create BSEC state file");
     return false;
   }
 
@@ -692,11 +736,11 @@ bool saveBsecState() {
   file.close();
 
   if (bytesWritten != BSEC_MAX_STATE_BLOB_SIZE) {
-    Serial.println("Failed to write BSEC state");
+    logPrintln("Failed to write BSEC state");
     return false;
   }
 
-  Serial.println("BSEC state saved to SD card");
+  logPrintln("BSEC state saved to SD card");
   lastBsecStateSave = millis();
   bsecStateSaved = true;
   return true;
@@ -792,7 +836,7 @@ void logWeatherReading() {
 void loadWeatherHistory() {
   if (!sdAvailable) return;
 
-  Serial.print("Loading weather history... ");
+  logPrint("Loading weather history... ");
 
   int loaded = 0;
   uint32_t now = getCurrentTimestamp();
@@ -827,8 +871,7 @@ void loadWeatherHistory() {
     file.close();
   }
 
-  Serial.print(loaded);
-  Serial.println(" readings");
+  logPrintf("%d readings\n", loaded);
 }
 
 // Calculate weather trend from history
@@ -957,23 +1000,21 @@ const char* calculateForecast() {
 }
 
 void initWiFi() {
-  Serial.print("Connecting to WiFi");
+  logPrint("Connecting to WiFi");
 
   // Try networks in order
   const char* ssids[] = {WIFI_SSID_1, WIFI_SSID_2, WIFI_SSID_3};
   const char* passwords[] = {WIFI_PASS_1, WIFI_PASS_2, WIFI_PASS_3};
 
   for (int net = 0; net < 3; net++) {
-    Serial.print(" [");
-    Serial.print(ssids[net]);
-    Serial.print("]");
+    logPrintf(" [%s]", ssids[net]);
 
     WiFi.begin(ssids[net], passwords[net]);
 
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 15) {
       delay(500);
-      Serial.print(".");
+      logPrint(".");
       attempts++;
     }
 
@@ -982,23 +1023,22 @@ void initWiFi() {
 
   if (WiFi.status() == WL_CONNECTED) {
     wifiConnected = true;
-    Serial.println(" OK");
-    Serial.print("  IP: ");
-    Serial.println(WiFi.localIP());
+    logPrintln(" OK");
+    logPrintf("  IP: %s\n", WiFi.localIP().toString().c_str());
 
     // Sync NTP time
-    Serial.print("Syncing NTP time... ");
+    logPrint("Syncing NTP time... ");
     configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
 
     struct tm timeinfo;
     if (getLocalTime(&timeinfo, 5000)) {
       ntpSynced = true;
-      Serial.println("OK");
+      logPrintln("OK");
     } else {
-      Serial.println("FAILED");
+      logPrintln("FAILED");
     }
   } else {
-    Serial.println(" FAILED");
+    logPrintln(" FAILED");
   }
 
   lastWiFiAttempt = millis();
@@ -1010,7 +1050,7 @@ void checkWiFi() {
 
   // Attempt reconnect if disconnected
   if (!wifiConnected && (millis() - lastWiFiAttempt > WIFI_RECONNECT_INTERVAL)) {
-    Serial.println("WiFi disconnected, attempting reconnect...");
+    logPrintln("WiFi disconnected, attempting reconnect...");
     WiFi.reconnect();
     lastWiFiAttempt = millis();
 
@@ -1023,7 +1063,7 @@ void checkWiFi() {
 
     wifiConnected = (WiFi.status() == WL_CONNECTED);
     if (wifiConnected) {
-      Serial.println("WiFi reconnected!");
+      logPrintln("WiFi reconnected!");
       // Start web server if not already running
       if (!webServerStarted) {
         initWebServer();
@@ -1035,67 +1075,6 @@ void checkWiFi() {
   if (wifiConnected && !webServerStarted) {
     initWebServer();
   }
-}
-
-// ============== Serial Ring Buffer ==============
-
-void serialRingAppend(const char* str) {
-  while (*str) {
-    serialRing[serialRingHead] = *str++;
-    serialRingHead = (serialRingHead + 1) % SERIAL_RING_SIZE;
-    // If we catch up to tail, advance tail (lose oldest data)
-    if (serialRingHead == serialRingTail) {
-      serialRingTail = (serialRingTail + 1) % SERIAL_RING_SIZE;
-    }
-  }
-}
-
-// Read and clear the ring buffer
-String serialRingRead() {
-  String result;
-  result.reserve(SERIAL_RING_SIZE);
-  while (serialRingTail != serialRingHead) {
-    result += serialRing[serialRingTail];
-    serialRingTail = (serialRingTail + 1) % SERIAL_RING_SIZE;
-  }
-  return result;
-}
-
-// Peek at ring buffer without clearing
-String serialRingPeek() {
-  String result;
-  result.reserve(SERIAL_RING_SIZE);
-  uint16_t pos = serialRingTail;
-  while (pos != serialRingHead) {
-    result += serialRing[pos];
-    pos = (pos + 1) % SERIAL_RING_SIZE;
-  }
-  return result;
-}
-
-// Web serial streaming position tracker
-static uint16_t webSerialReadPos = 0;
-
-// Custom print that captures to ring buffer
-void logPrint(const char* msg) {
-  serialRingAppend(msg);
-  Serial.print(msg);
-}
-
-void logPrintln(const char* msg) {
-  serialRingAppend(msg);
-  serialRingAppend("\n");
-  Serial.println(msg);
-}
-
-void logPrintf(const char* fmt, ...) {
-  char buf[256];
-  va_list ap;
-  va_start(ap, fmt);
-  vsnprintf(buf, sizeof(buf), fmt, ap);
-  va_end(ap);
-  serialRingAppend(buf);
-  Serial.print(buf);
 }
 
 // ============== Web Server Handlers ==============
