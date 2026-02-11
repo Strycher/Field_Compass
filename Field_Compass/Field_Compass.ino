@@ -177,6 +177,7 @@ bool batteryAvailable = false;
 bool sdAvailable = false;
 bool wifiConnected = false;
 bool ntpSynced = false;
+bool webServerStarted = false;
 
 // BSEC state persistence
 static uint8_t bsecState[BSEC_MAX_STATE_BLOB_SIZE];
@@ -257,7 +258,7 @@ void setup() {
   delay(1000);
 
   Serial.println("=================================");
-  Serial.println("Field Compass Dual v0.6");
+  Serial.println("Field Compass Dual v0.10");
   Serial.println("=================================\n");
 
   // Initialize SPI for TFT
@@ -278,7 +279,7 @@ void setup() {
   tft.setTextSize(2);
   tft.setTextColor(COLOR_TEXT);
   tft.setCursor(90, 90);
-  tft.println("v0.6 BSEC2");
+  tft.println("v0.10 BSEC2");
   tft.setTextSize(1);
   tft.setCursor(40, 140);
   tft.setTextColor(COLOR_DIM);
@@ -401,6 +402,8 @@ void initTFT() {
 
   tft.init(TFT_HEIGHT, TFT_WIDTH);  // 240x320, but we use landscape
   tft.setRotation(1);  // Landscape mode
+  tft.fillScreen(ST77XX_RED);  // Flash red to confirm TFT is working
+  delay(100);
   tft.fillScreen(COLOR_BG);
 
   Serial.println("OK (320x240)");
@@ -1000,7 +1003,16 @@ void checkWiFi() {
     wifiConnected = (WiFi.status() == WL_CONNECTED);
     if (wifiConnected) {
       Serial.println("WiFi reconnected!");
+      // Start web server if not already running
+      if (!webServerStarted) {
+        initWebServer();
+      }
     }
+  }
+
+  // Ensure web server is started if WiFi is connected
+  if (wifiConnected && !webServerStarted) {
+    initWebServer();
   }
 }
 
@@ -1068,10 +1080,14 @@ void handleWebRoot() {
   String html = "<!DOCTYPE html><html><head>";
   html += "<title>Field Compass</title>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
-  html += "<style>body{font-family:sans-serif;margin:20px;background:#1a1a1a;color:#fff;}";
-  html += "h1{color:#07ff;}a{color:#07e0;display:block;padding:10px;margin:5px 0;";
-  html += "text-decoration:none;background:#333;border-radius:5px;}";
-  html += "a:hover{background:#444;}</style></head><body>";
+  html += "<meta name='color-scheme' content='dark light'>";
+  html += "<style>";
+  html += "body{font-family:sans-serif;margin:20px;background:#1a1a1a;color:#e0e0e0;}";
+  html += "h1{color:#00ffff;}";
+  html += "a{color:#00ff00;display:block;padding:12px 15px;margin:8px 0;";
+  html += "text-decoration:none;background:#2a2a2a;border-radius:5px;border:1px solid #444;}";
+  html += "a:hover{background:#3a3a3a;border-color:#00ff00;}";
+  html += "</style></head><body>";
   html += "<h1>Field Compass</h1>";
   html += "<a href='/ops'>Operational Info</a>";
   html += "<a href='/gps'>GPS</a>";
@@ -1080,6 +1096,7 @@ void handleWebRoot() {
   html += "<a href='/diags'>Diagnostics</a>";
   html += "<a href='/serial'>Serial Monitor</a>";
   html += "<a href='/json'>JSON API</a>";
+  html += "<p style='color:#666;margin-top:20px;font-size:12px;'>http://fieldcompass.local/</p>";
   html += "</body></html>";
   webServer.send(200, "text/html", html);
 }
@@ -1308,6 +1325,7 @@ void handleWebJSON() {
 
 void initWebServer() {
   if (!wifiConnected) return;
+  if (webServerStarted) return;  // Already started
 
   Serial.print("Starting web server... ");
 
@@ -1327,6 +1345,7 @@ void initWebServer() {
   webServer.on("/json", handleWebJSON);
 
   webServer.begin();
+  webServerStarted = true;
   Serial.println("OK");
   Serial.print("  URL: http://");
   Serial.print(WiFi.localIP());
