@@ -1298,17 +1298,22 @@ void handleWebDiags() {
 
 void handleWebSerial() {
   String html = "<!DOCTYPE html><html><head><title>Serial Log</title>";
+  html += "<meta name='color-scheme' content='dark light'>";
   html += "<style>";
-  html += "body{font-family:sans-serif;margin:0;padding:10px;background:#1a1a1a;color:#e0e0e0;}";
-  html += ".log{background:#000;color:#ccc;font-family:monospace;padding:10px;font-size:12px;";
+  // Default (dark theme) styles
+  html += ":root{--bg:#1a1a1a;--fg:#e0e0e0;--log-bg:#000;--log-fg:#00ff00;--btn-bg:#2a2a2a;--btn-fg:#00ff00;--btn-border:#444;--link:#00ffff;--header:#00ffff;}";
+  // Light theme override
+  html += "@media(prefers-color-scheme:light){:root{--bg:#f5f5f5;--fg:#222;--log-bg:#222;--log-fg:#00cc00;--btn-bg:#ddd;--btn-fg:#006600;--btn-border:#999;--link:#006666;--header:#008888;}}";
+  html += "body{font-family:sans-serif;margin:0;padding:10px;background:var(--bg);color:var(--fg);}";
+  html += ".log{background:var(--log-bg);color:var(--log-fg);font-family:monospace;padding:10px;font-size:12px;";
   html += "height:500px;overflow-y:auto;border-radius:8px;white-space:pre-wrap;}";
   html += ".controls{margin:10px 0;}";
-  html += "button{padding:8px 16px;margin-right:8px;background:#2a2a2a;color:#00ff00;";
-  html += "border:1px solid #444;border-radius:4px;cursor:pointer;}";
-  html += "button:hover{background:#3a3a3a;border-color:#00ff00;}";
-  html += "a{color:#00ffff;}";
+  html += "button{padding:8px 16px;margin-right:8px;background:var(--btn-bg);color:var(--btn-fg);";
+  html += "border:1px solid var(--btn-border);border-radius:4px;cursor:pointer;}";
+  html += "button:hover{opacity:0.8;}";
+  html += "a{color:var(--link);}";
   html += "</style></head><body>";
-  html += "<h2 style='color:#00ffff;margin:0 0 10px 0;'>Serial Log</h2>";
+  html += "<h2 style='color:var(--header);margin:0 0 10px 0;'>Serial Log</h2>";
   html += "<div class='log' id='log'></div>";
   html += "<div class='controls'>";
   html += "<button onclick='copyLog()'>Copy</button>";
