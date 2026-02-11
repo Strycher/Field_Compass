@@ -14,6 +14,7 @@
  * 2. GPS Info (coordinates, altitude, address)
  * 3. BME688 Environmental (temp, humidity, pressure, IAQ, CO2)
  * 4. IMU/Compass (heading, orientation, acceleration)
+ * 5. Diagnostics (BSEC state, weather log, system info)
  *
  * Navigation: Button A = prev screen, Button B = next screen
  * Display Sleep: OLED 3 min, TFT 15 min (button press wakes)
@@ -24,7 +25,10 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <WiFi.h>
+#include <WebServer.h>
+#include <ESPmDNS.h>
 #include <time.h>
+#include <stdarg.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 #include <Adafruit_SH110X.h>
@@ -78,11 +82,12 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 #define DEBUG_SLEEP 0  // Display sleep/wake logging
 
 // Screen settings
-#define NUM_SCREENS 4
+#define NUM_SCREENS 5
 #define SCREEN_OPS 0
 #define SCREEN_GPS 1
 #define SCREEN_ENV 2
 #define SCREEN_IMU 3
+#define SCREEN_DIAGS 4
 
 // TFT dimensions
 #define TFT_WIDTH 320
@@ -110,6 +115,10 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 #define BSEC_STATE_FILE "/bsec_state.bin"
 #define BSEC_STATE_SAVE_INTERVAL 3600000  // 1 hour in ms
 
+// Web server configuration
+#define WEB_SERVER_PORT 80
+#define SERIAL_RING_SIZE 4096  // 4KB ring buffer for serial capture
+
 // Colors (RGB565)
 #define COLOR_BG        0x0000  // Black
 #define COLOR_TEXT      0xFFFF  // White
@@ -132,6 +141,14 @@ Bsec2 envSensor;
 Adafruit_LSM6DSOX lsm;
 Adafruit_LIS3MDL lis;
 Adafruit_MAX17048 battery;
+
+// Web Server
+WebServer webServer(WEB_SERVER_PORT);
+
+// Serial ring buffer for web streaming
+static char serialRing[SERIAL_RING_SIZE];
+static volatile uint16_t serialRingHead = 0;
+static volatile uint16_t serialRingTail = 0;
 
 // ============== Global State ==============
 
@@ -164,6 +181,13 @@ bool ntpSynced = false;
 // BSEC state persistence
 static uint8_t bsecState[BSEC_MAX_STATE_BLOB_SIZE];
 static unsigned long lastBsecStateSave = 0;
+
+// Diagnostics state
+static bool bsecStateLoaded = false;
+static bool bsecStateSaved = false;
+static int weatherLogFileCount = 0;
+static int weatherLogEntryCount = 0;
+static unsigned long lastWeatherLogCheck = 0;
 
 // GPS data
 struct {
@@ -280,6 +304,9 @@ void setup() {
     }
   }
 
+  // Initialize web server
+  initWebServer();
+
   // Setup buttons
   pinMode(BUTTON_A, INPUT_PULLUP);
   pinMode(BUTTON_B, INPUT_PULLUP);
@@ -306,6 +333,11 @@ void loop() {
   // Check WiFi and attempt reconnect if needed
   checkWiFi();
 
+  // Handle web server requests
+  if (wifiConnected) {
+    webServer.handleClient();
+  }
+
   // Update sensor data (even when display sleeping)
   readGPS();
   if (bmeAvailable) readBME688();
@@ -317,6 +349,9 @@ void loop() {
     calculateWeatherTrend();
     lastWeatherLog = millis();
   }
+
+  // Update weather log statistics periodically
+  updateWeatherLogStats();
 
   // Update display based on current screen
   updateDisplay();
@@ -610,6 +645,7 @@ bool loadBsecState() {
   }
 
   Serial.println("BSEC state restored from SD card");
+  bsecStateLoaded = true;
   return true;
 }
 
@@ -638,6 +674,7 @@ bool saveBsecState() {
 
   Serial.println("BSEC state saved to SD card");
   lastBsecStateSave = millis();
+  bsecStateSaved = true;
   return true;
 }
 
@@ -967,6 +1004,361 @@ void checkWiFi() {
   }
 }
 
+// ============== Serial Ring Buffer ==============
+
+void serialRingAppend(const char* str) {
+  while (*str) {
+    serialRing[serialRingHead] = *str++;
+    serialRingHead = (serialRingHead + 1) % SERIAL_RING_SIZE;
+    // If we catch up to tail, advance tail (lose oldest data)
+    if (serialRingHead == serialRingTail) {
+      serialRingTail = (serialRingTail + 1) % SERIAL_RING_SIZE;
+    }
+  }
+}
+
+// Read and clear the ring buffer
+String serialRingRead() {
+  String result;
+  result.reserve(SERIAL_RING_SIZE);
+  while (serialRingTail != serialRingHead) {
+    result += serialRing[serialRingTail];
+    serialRingTail = (serialRingTail + 1) % SERIAL_RING_SIZE;
+  }
+  return result;
+}
+
+// Peek at ring buffer without clearing
+String serialRingPeek() {
+  String result;
+  result.reserve(SERIAL_RING_SIZE);
+  uint16_t pos = serialRingTail;
+  while (pos != serialRingHead) {
+    result += serialRing[pos];
+    pos = (pos + 1) % SERIAL_RING_SIZE;
+  }
+  return result;
+}
+
+// Custom print that captures to ring buffer
+void logPrint(const char* msg) {
+  serialRingAppend(msg);
+  Serial.print(msg);
+}
+
+void logPrintln(const char* msg) {
+  serialRingAppend(msg);
+  serialRingAppend("\n");
+  Serial.println(msg);
+}
+
+void logPrintf(const char* fmt, ...) {
+  char buf[256];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  serialRingAppend(buf);
+  Serial.print(buf);
+}
+
+// ============== Web Server Handlers ==============
+
+void handleWebRoot() {
+  String html = "<!DOCTYPE html><html><head>";
+  html += "<title>Field Compass</title>";
+  html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
+  html += "<style>body{font-family:sans-serif;margin:20px;background:#1a1a1a;color:#fff;}";
+  html += "h1{color:#07ff;}a{color:#07e0;display:block;padding:10px;margin:5px 0;";
+  html += "text-decoration:none;background:#333;border-radius:5px;}";
+  html += "a:hover{background:#444;}</style></head><body>";
+  html += "<h1>Field Compass</h1>";
+  html += "<a href='/ops'>Operational Info</a>";
+  html += "<a href='/gps'>GPS</a>";
+  html += "<a href='/env'>Environment</a>";
+  html += "<a href='/imu'>IMU / Compass</a>";
+  html += "<a href='/diags'>Diagnostics</a>";
+  html += "<a href='/serial'>Serial Monitor</a>";
+  html += "<a href='/json'>JSON API</a>";
+  html += "</body></html>";
+  webServer.send(200, "text/html", html);
+}
+
+void handleWebOps() {
+  String html = "<!DOCTYPE html><html><head><title>OPS</title>";
+  html += "<meta http-equiv='refresh' content='5'>";
+  html += "<style>body{font-family:monospace;background:#1a1a1a;color:#0f0;padding:20px;}</style></head><body>";
+  html += "<h2>OPERATIONAL</h2><pre>";
+
+  // Time
+  char buf[64];
+  if (gpsData.timeValid) {
+    int hour = gpsData.hour + (GMT_OFFSET_SEC / 3600);
+    if (hour < 0) hour += 24;
+    if (hour >= 24) hour -= 24;
+    sprintf(buf, "Time:    %02d:%02d:%02d GPS\n", hour, gpsData.minute, gpsData.second);
+  } else if (ntpSynced) {
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+      strftime(buf, sizeof(buf), "Time:    %H:%M:%S NTP\n", &timeinfo);
+    }
+  } else {
+    sprintf(buf, "Time:    --:--:-- N/A\n");
+  }
+  html += buf;
+
+  // Uptime
+  unsigned long totalSec = millis() / 1000;
+  int days = totalSec / 86400;
+  int hours = (totalSec % 86400) / 3600;
+  int mins = (totalSec % 3600) / 60;
+  int secs = totalSec % 60;
+  if (days > 0) {
+    sprintf(buf, "Uptime:  %dd %02d:%02d:%02d\n", days, hours, mins, secs);
+  } else {
+    sprintf(buf, "Uptime:  %02d:%02d:%02d\n", hours, mins, secs);
+  }
+  html += buf;
+
+  // WiFi
+  if (wifiConnected) {
+    html += "WiFi:    " + WiFi.SSID() + " (" + WiFi.localIP().toString() + ")\n";
+  } else {
+    html += "WiFi:    Disconnected\n";
+  }
+
+  // Battery
+  if (batteryAvailable) {
+    sprintf(buf, "Battery: %.0f%% (%.2fV)\n", battery.cellPercent(), battery.cellVoltage());
+    html += buf;
+  }
+
+  html += "</pre><a href='/'>Back</a></body></html>";
+  webServer.send(200, "text/html", html);
+}
+
+void handleWebGPS() {
+  String html = "<!DOCTYPE html><html><head><title>GPS</title>";
+  html += "<meta http-equiv='refresh' content='5'>";
+  html += "<style>body{font-family:monospace;background:#1a1a1a;color:#0f0;padding:20px;}</style></head><body>";
+  html += "<h2>GPS</h2><pre>";
+
+  char buf[64];
+  if (gpsData.valid) {
+    sprintf(buf, "Latitude:  %.6f %c\n", fabs(gpsData.latitude), gpsData.latitude >= 0 ? 'N' : 'S');
+    html += buf;
+    sprintf(buf, "Longitude: %.6f %c\n", fabs(gpsData.longitude), gpsData.longitude >= 0 ? 'E' : 'W');
+    html += buf;
+    sprintf(buf, "Altitude:  %.1f m\n", gpsData.altitude);
+    html += buf;
+    html += "Status:    Fix OK\n";
+  } else if (gpsData.receiving) {
+    html += "Status: Acquiring fix...\n";
+    if (gpsData.timeValid) {
+      int hour = gpsData.hour + (GMT_OFFSET_SEC / 3600);
+      if (hour < 0) hour += 24;
+      if (hour >= 24) hour -= 24;
+      sprintf(buf, "Time:   %02d:%02d:%02d\n", hour, gpsData.minute, gpsData.second);
+      html += buf;
+    }
+  } else {
+    html += "Status: No GPS data\n";
+  }
+
+  html += "</pre><a href='/'>Back</a></body></html>";
+  webServer.send(200, "text/html", html);
+}
+
+void handleWebEnv() {
+  String html = "<!DOCTYPE html><html><head><title>ENV</title>";
+  html += "<meta http-equiv='refresh' content='5'>";
+  html += "<style>body{font-family:monospace;background:#1a1a1a;color:#0f0;padding:20px;}</style></head><body>";
+  html += "<h2>ENVIRONMENT</h2><pre>";
+
+  char buf[80];
+  if (bmeAvailable) {
+    float tempF = envData.temperature * 9.0 / 5.0 + 32.0;
+    sprintf(buf, "Temp:     %.1fF (%.1fC)\n", tempF, envData.temperature);
+    html += buf;
+    sprintf(buf, "Humidity: %.1f%%\n", envData.humidity);
+    html += buf;
+    sprintf(buf, "IAQ:      %.0f [%s]\n", envData.iaq, getIaqAccuracyText(envData.iaqAccuracy));
+    html += buf;
+    sprintf(buf, "CO2:      %.0f ppm\n", envData.co2Equivalent);
+    html += buf;
+    sprintf(buf, "Pressure: %.1f hPa (%.2f\")\n", envData.pressure, hPaToInHg(envData.pressure));
+    html += buf;
+    sprintf(buf, "Forecast: %s %s\n", getTrendArrow(), weatherTrend.forecast);
+    html += buf;
+  } else {
+    html += "BME688 not available\n";
+  }
+
+  html += "</pre><a href='/'>Back</a></body></html>";
+  webServer.send(200, "text/html", html);
+}
+
+void handleWebIMU() {
+  String html = "<!DOCTYPE html><html><head><title>IMU</title>";
+  html += "<meta http-equiv='refresh' content='5'>";
+  html += "<style>body{font-family:monospace;background:#1a1a1a;color:#0f0;padding:20px;}</style></head><body>";
+  html += "<h2>IMU / COMPASS</h2><pre>";
+
+  char buf[64];
+  if (imuAvailable && magAvailable) {
+    sprintf(buf, "Heading: %.0f %s\n", imuData.heading, getCardinal(imuData.heading));
+    html += buf;
+    sprintf(buf, "Roll:    %.0f deg\n", imuData.roll);
+    html += buf;
+    sprintf(buf, "Pitch:   %.0f deg\n", imuData.pitch);
+    html += buf;
+    sprintf(buf, "Accel:   %.2f m/s2\n", imuData.accelMag);
+    html += buf;
+  } else {
+    html += "IMU not available\n";
+  }
+
+  html += "</pre><a href='/'>Back</a></body></html>";
+  webServer.send(200, "text/html", html);
+}
+
+void handleWebDiags() {
+  String html = "<!DOCTYPE html><html><head><title>DIAGS</title>";
+  html += "<meta http-equiv='refresh' content='10'>";
+  html += "<style>body{font-family:monospace;background:#1a1a1a;color:#0f0;padding:20px;}</style></head><body>";
+  html += "<h2>DIAGNOSTICS</h2><pre>";
+
+  char buf[80];
+
+  // BSEC State
+  html += "=== BSEC State ===\n";
+  sprintf(buf, "Loaded:   %s\n", bsecStateLoaded ? "Yes" : "No");
+  html += buf;
+  sprintf(buf, "Saved:    %s\n", bsecStateSaved ? "Yes" : "No");
+  html += buf;
+  sprintf(buf, "Accuracy: %d (%s)\n", envData.iaqAccuracy, getIaqAccuracyText(envData.iaqAccuracy));
+  html += buf;
+
+  // Weather Log
+  html += "\n=== Weather Log ===\n";
+  sprintf(buf, "In Memory: %d readings\n", weatherHistoryCount);
+  html += buf;
+  sprintf(buf, "Files:     %d\n", weatherLogFileCount);
+  html += buf;
+  sprintf(buf, "Total:     %d entries\n", weatherLogEntryCount);
+  html += buf;
+
+  // System
+  html += "\n=== System ===\n";
+  sprintf(buf, "Free Heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
+  html += buf;
+  sprintf(buf, "Heap Size: %lu bytes\n", (unsigned long)ESP.getHeapSize());
+  html += buf;
+  sprintf(buf, "CPU Freq:  %lu MHz\n", (unsigned long)ESP.getCpuFreqMHz());
+  html += buf;
+
+  // Sensors
+  html += "\n=== Sensors ===\n";
+  sprintf(buf, "BME688:  %s\n", bmeAvailable ? "OK" : "N/A");
+  html += buf;
+  sprintf(buf, "IMU:     %s\n", imuAvailable ? "OK" : "N/A");
+  html += buf;
+  sprintf(buf, "Mag:     %s\n", magAvailable ? "OK" : "N/A");
+  html += buf;
+  sprintf(buf, "Battery: %s\n", batteryAvailable ? "OK" : "N/A");
+  html += buf;
+  sprintf(buf, "SD Card: %s\n", sdAvailable ? "OK" : "N/A");
+  html += buf;
+  sprintf(buf, "OLED:    %s\n", oledAvailable ? "OK" : "N/A");
+  html += buf;
+
+  html += "</pre><a href='/'>Back</a></body></html>";
+  webServer.send(200, "text/html", html);
+}
+
+void handleWebSerial() {
+  String html = "<!DOCTYPE html><html><head><title>Serial</title>";
+  html += "<style>body{font-family:monospace;background:#000;color:#0f0;padding:10px;margin:0;}";
+  html += "pre{white-space:pre-wrap;word-wrap:break-word;}</style>";
+  html += "<script>setTimeout(function(){location.reload();},2000);</script></head><body>";
+  html += "<pre>";
+  html += serialRingPeek();
+  html += "</pre></body></html>";
+  webServer.send(200, "text/html", html);
+}
+
+void handleWebJSON() {
+  char buf[1024];
+  snprintf(buf, sizeof(buf),
+    "{"
+    "\"gps\":{\"valid\":%s,\"lat\":%.6f,\"lon\":%.6f,\"alt\":%.1f},"
+    "\"env\":{\"temp\":%.1f,\"humidity\":%.1f,\"pressure\":%.1f,\"iaq\":%.0f,\"co2\":%.0f,\"accuracy\":%d},"
+    "\"imu\":{\"heading\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"accel\":%.2f},"
+    "\"system\":{\"uptime\":%lu,\"wifi\":%s,\"battery\":%.1f,\"heap\":%lu}"
+    "}",
+    gpsData.valid ? "true" : "false", gpsData.latitude, gpsData.longitude, gpsData.altitude,
+    envData.temperature, envData.humidity, envData.pressure, envData.iaq, envData.co2Equivalent, envData.iaqAccuracy,
+    imuData.heading, imuData.roll, imuData.pitch, imuData.accelMag,
+    millis() / 1000, wifiConnected ? "true" : "false",
+    batteryAvailable ? battery.cellPercent() : 0.0,
+    (unsigned long)ESP.getFreeHeap()
+  );
+  webServer.send(200, "application/json", buf);
+}
+
+void initWebServer() {
+  if (!wifiConnected) return;
+
+  Serial.print("Starting web server... ");
+
+  // Setup mDNS
+  if (MDNS.begin("fieldcompass")) {
+    Serial.print("mDNS OK (fieldcompass.local) ");
+  }
+
+  // Register handlers
+  webServer.on("/", handleWebRoot);
+  webServer.on("/ops", handleWebOps);
+  webServer.on("/gps", handleWebGPS);
+  webServer.on("/env", handleWebEnv);
+  webServer.on("/imu", handleWebIMU);
+  webServer.on("/diags", handleWebDiags);
+  webServer.on("/serial", handleWebSerial);
+  webServer.on("/json", handleWebJSON);
+
+  webServer.begin();
+  Serial.println("OK");
+  Serial.print("  URL: http://");
+  Serial.print(WiFi.localIP());
+  Serial.println("/");
+}
+
+// ============== Weather Log Statistics ==============
+
+void updateWeatherLogStats() {
+  if (!sdAvailable) return;
+  if (millis() - lastWeatherLogCheck < 60000) return;  // Check every minute
+  lastWeatherLogCheck = millis();
+
+  weatherLogFileCount = 0;
+  weatherLogEntryCount = 0;
+
+  File dir = SD.open("/weather");
+  if (!dir) return;
+
+  while (File entry = dir.openNextFile()) {
+    if (!entry.isDirectory()) {
+      weatherLogFileCount++;
+      // Count lines (entries)
+      while (entry.available()) {
+        if (entry.read() == '\n') weatherLogEntryCount++;
+      }
+    }
+    entry.close();
+  }
+  dir.close();
+}
+
 // ============== Display Sleep Functions ==============
 
 void sleepTFT() {
@@ -1249,6 +1641,9 @@ void updateDisplay() {
       case SCREEN_IMU:
         drawScreenIMU();
         break;
+      case SCREEN_DIAGS:
+        drawScreenDiags();
+        break;
     }
 
     // Draw screen indicator at bottom
@@ -1276,16 +1671,17 @@ void drawNavBar() {
   tft.setTextColor(COLOR_TEXT);
   tft.setTextSize(2);
 
-  // Screen indicators
-  int startX = 80;
+  // Screen indicators - adjusted spacing for 5 screens
+  int startX = 60;
+  int spacing = 36;
   for (int i = 0; i < NUM_SCREENS; i++) {
     if (i == currentScreen) {
-      tft.fillRect(startX + i * 40, y + 3, 30, 19, COLOR_HEADER);
+      tft.fillRect(startX + i * spacing, y + 3, 28, 19, COLOR_HEADER);
       tft.setTextColor(COLOR_BG);
     } else {
       tft.setTextColor(COLOR_DIM);
     }
-    tft.setCursor(startX + 8 + i * 40, y + 5);
+    tft.setCursor(startX + 6 + i * spacing, y + 5);
     tft.print(i + 1);
     tft.setTextColor(COLOR_TEXT);
   }
@@ -1564,6 +1960,108 @@ const char* getCardinal(float heading) {
   return "NW";
 }
 
+void drawScreenDiags() {
+  drawHeader("DIAGNOSTICS");
+
+  int y = 38;
+  int labelX = 10;
+  int valueX = 140;
+  int lineH = 24;
+  char buf[40];
+
+  tft.setTextSize(1);
+
+  // BSEC State section
+  tft.setTextColor(COLOR_HEADER);
+  tft.setCursor(labelX, y);
+  tft.print("BSEC:");
+  sprintf(buf, "Load:%s Save:%s Acc:%s",
+          bsecStateLoaded ? "Y" : "N",
+          bsecStateSaved ? "Y" : "N",
+          getIaqAccuracyText(envData.iaqAccuracy));
+  tft.setTextColor(bsecStateLoaded ? COLOR_VALUE : COLOR_DIM);
+  tft.setCursor(valueX - 80, y);
+  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
+  tft.print(buf);
+  y += lineH;
+
+  // Weather Log
+  tft.setTextColor(COLOR_HEADER);
+  tft.setCursor(labelX, y);
+  tft.print("Weather:");
+  sprintf(buf, "Mem:%d Files:%d Tot:%d",
+          weatherHistoryCount, weatherLogFileCount, weatherLogEntryCount);
+  tft.setTextColor(COLOR_VALUE);
+  tft.setCursor(valueX - 80, y);
+  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
+  tft.print(buf);
+  y += lineH;
+
+  // Memory
+  tft.setTextColor(COLOR_HEADER);
+  tft.setCursor(labelX, y);
+  tft.print("Heap:");
+  sprintf(buf, "%lu / %lu bytes",
+          (unsigned long)ESP.getFreeHeap(),
+          (unsigned long)ESP.getHeapSize());
+  tft.setTextColor(COLOR_VALUE);
+  tft.setCursor(valueX - 80, y);
+  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
+  tft.print(buf);
+  y += lineH;
+
+  // Sensors status
+  tft.setTextColor(COLOR_HEADER);
+  tft.setCursor(labelX, y);
+  tft.print("Sensors:");
+  sprintf(buf, "BME:%s IMU:%s Mag:%s Bat:%s",
+          bmeAvailable ? "Y" : "N",
+          imuAvailable ? "Y" : "N",
+          magAvailable ? "Y" : "N",
+          batteryAvailable ? "Y" : "N");
+  tft.setTextColor(COLOR_VALUE);
+  tft.setCursor(valueX - 80, y);
+  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
+  tft.print(buf);
+  y += lineH;
+
+  // Storage & Display
+  tft.setTextColor(COLOR_HEADER);
+  tft.setCursor(labelX, y);
+  tft.print("Storage:");
+  sprintf(buf, "SD:%s OLED:%s",
+          sdAvailable ? "Y" : "N",
+          oledAvailable ? "Y" : "N");
+  tft.setTextColor(COLOR_VALUE);
+  tft.setCursor(valueX - 80, y);
+  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
+  tft.print(buf);
+  y += lineH;
+
+  // Network
+  tft.setTextColor(COLOR_HEADER);
+  tft.setCursor(labelX, y);
+  tft.print("Network:");
+  if (wifiConnected) {
+    sprintf(buf, "%s", WiFi.localIP().toString().c_str());
+    tft.setTextColor(COLOR_VALUE);
+  } else {
+    sprintf(buf, "Disconnected");
+    tft.setTextColor(COLOR_ERROR);
+  }
+  tft.setCursor(valueX - 80, y);
+  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
+  tft.print(buf);
+  y += lineH;
+
+  // Web URL hint
+  if (wifiConnected) {
+    tft.setTextColor(COLOR_DIM);
+    tft.setCursor(labelX, y);
+    tft.print("Web: http://fieldcompass.local/");
+  }
+}
+
 // ============== OLED Display Functions ==============
 
 void updateOLED() {
@@ -1582,6 +2080,9 @@ void updateOLED() {
       break;
     case SCREEN_IMU:
       drawOLEDScreenIMU();
+      break;
+    case SCREEN_DIAGS:
+      drawOLEDScreenDiags();
       break;
   }
 
@@ -1735,11 +2236,41 @@ void drawOLEDScreenIMU() {
   }
 }
 
+void drawOLEDScreenDiags() {
+  char buf[32];
+
+  oled.setTextSize(1);
+  oled.setCursor(0, 0);
+  oled.print("DIAGNOSTICS");
+
+  oled.setCursor(0, 10);
+  sprintf(buf, "BSEC: L:%c S:%c %s",
+          bsecStateLoaded ? 'Y' : 'N',
+          bsecStateSaved ? 'Y' : 'N',
+          getIaqAccuracyText(envData.iaqAccuracy));
+  oled.print(buf);
+
+  oled.setCursor(0, 20);
+  sprintf(buf, "Wx: %d/%d", weatherHistoryCount, weatherLogEntryCount);
+  oled.print(buf);
+
+  oled.setCursor(0, 30);
+  sprintf(buf, "Heap: %luK", (unsigned long)ESP.getFreeHeap() / 1024);
+  oled.print(buf);
+
+  oled.setCursor(0, 40);
+  if (wifiConnected) {
+    oled.print(WiFi.localIP().toString());
+  } else {
+    oled.print("WiFi: --");
+  }
+}
+
 void drawOLEDNavBar() {
   // Draw screen number indicator at bottom right
   oled.setCursor(100, 56);
   oled.setTextSize(1);
   char buf[8];
-  sprintf(buf, "[%d/4]", currentScreen + 1);
+  sprintf(buf, "[%d/5]", currentScreen + 1);
   oled.print(buf);
 }
