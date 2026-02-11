@@ -1052,6 +1052,9 @@ String serialRingPeek() {
   return result;
 }
 
+// Web serial streaming position tracker
+static uint16_t webSerialReadPos = 0;
+
 // Custom print that captures to ring buffer
 void logPrint(const char* msg) {
   serialRingAppend(msg);
@@ -1103,7 +1106,7 @@ void handleWebRoot() {
 
 void handleWebOps() {
   String html = "<!DOCTYPE html><html><head><title>OPS</title>";
-  html += "<meta http-equiv='refresh' content='5'>";
+  html += "<meta http-equiv='refresh' content='2'>";
   html += "<style>body{font-family:monospace;background:#1a1a1a;color:#0f0;padding:20px;}</style></head><body>";
   html += "<h2>OPERATIONAL</h2><pre>";
 
@@ -1156,7 +1159,7 @@ void handleWebOps() {
 
 void handleWebGPS() {
   String html = "<!DOCTYPE html><html><head><title>GPS</title>";
-  html += "<meta http-equiv='refresh' content='5'>";
+  html += "<meta http-equiv='refresh' content='2'>";
   html += "<style>body{font-family:monospace;background:#1a1a1a;color:#0f0;padding:20px;}</style></head><body>";
   html += "<h2>GPS</h2><pre>";
 
@@ -1188,7 +1191,7 @@ void handleWebGPS() {
 
 void handleWebEnv() {
   String html = "<!DOCTYPE html><html><head><title>ENV</title>";
-  html += "<meta http-equiv='refresh' content='5'>";
+  html += "<meta http-equiv='refresh' content='2'>";
   html += "<style>body{font-family:monospace;background:#1a1a1a;color:#0f0;padding:20px;}</style></head><body>";
   html += "<h2>ENVIRONMENT</h2><pre>";
 
@@ -1217,7 +1220,7 @@ void handleWebEnv() {
 
 void handleWebIMU() {
   String html = "<!DOCTYPE html><html><head><title>IMU</title>";
-  html += "<meta http-equiv='refresh' content='5'>";
+  html += "<meta http-equiv='refresh' content='2'>";
   html += "<style>body{font-family:monospace;background:#1a1a1a;color:#0f0;padding:20px;}</style></head><body>";
   html += "<h2>IMU / COMPASS</h2><pre>";
 
@@ -1294,14 +1297,79 @@ void handleWebDiags() {
 }
 
 void handleWebSerial() {
-  String html = "<!DOCTYPE html><html><head><title>Serial</title>";
-  html += "<style>body{font-family:monospace;background:#000;color:#0f0;padding:10px;margin:0;}";
-  html += "pre{white-space:pre-wrap;word-wrap:break-word;}</style>";
-  html += "<script>setTimeout(function(){location.reload();},2000);</script></head><body>";
-  html += "<pre>";
-  html += serialRingPeek();
-  html += "</pre></body></html>";
+  String html = "<!DOCTYPE html><html><head><title>Serial Log</title>";
+  html += "<style>";
+  html += "body{font-family:sans-serif;margin:0;padding:10px;background:#1a1a1a;color:#e0e0e0;}";
+  html += ".log{background:#000;color:#ccc;font-family:monospace;padding:10px;font-size:12px;";
+  html += "height:500px;overflow-y:auto;border-radius:8px;white-space:pre-wrap;}";
+  html += ".controls{margin:10px 0;}";
+  html += "button{padding:8px 16px;margin-right:8px;background:#2a2a2a;color:#00ff00;";
+  html += "border:1px solid #444;border-radius:4px;cursor:pointer;}";
+  html += "button:hover{background:#3a3a3a;border-color:#00ff00;}";
+  html += "a{color:#00ffff;}";
+  html += "</style></head><body>";
+  html += "<h2 style='color:#00ffff;margin:0 0 10px 0;'>Serial Log</h2>";
+  html += "<div class='log' id='log'></div>";
+  html += "<div class='controls'>";
+  html += "<button onclick='copyLog()'>Copy</button>";
+  html += "<button onclick='clearLog()'>Clear</button>";
+  html += "<a href='/'>Back</a>";
+  html += "</div>";
+  html += "<script>";
+  html += "const log=document.getElementById('log');";
+  html += "async function poll(){";
+  html += "try{";
+  html += "const r=await fetch('/serial-data');";
+  html += "const t=await r.text();";
+  html += "if(t.length>0){";
+  html += "log.textContent+=t;";
+  html += "log.scrollTop=log.scrollHeight;";
+  html += "}";
+  html += "}catch(e){}";
+  html += "}";
+  html += "function clearLog(){log.textContent='';}";
+  html += "function copyLog(){";
+  html += "var ta=document.createElement('textarea');";
+  html += "ta.value=log.textContent;";
+  html += "ta.style.position='fixed';";
+  html += "ta.style.left='-9999px';";
+  html += "document.body.appendChild(ta);";
+  html += "ta.select();";
+  html += "try{document.execCommand('copy');alert('Copied!');}catch(e){alert('Copy failed');}";
+  html += "document.body.removeChild(ta);";
+  html += "}";
+  html += "setInterval(poll,100);";
+  html += "</script>";
+  html += "</body></html>";
   webServer.send(200, "text/html", html);
+}
+
+void handleWebSerialData() {
+  // Return buffered serial data since last request (incremental)
+  String out;
+  out.reserve(1024);
+
+  uint16_t head = serialRingHead;
+  uint16_t tail = serialRingTail;
+
+  // If our read pos is behind tail, we lost data - jump to tail
+  uint16_t dist = (head >= webSerialReadPos) ?
+                  (head - webSerialReadPos) :
+                  (SERIAL_RING_SIZE - webSerialReadPos + head);
+  if (dist > SERIAL_RING_SIZE - 100) {
+    webSerialReadPos = tail;
+  }
+
+  // Read available data
+  while (webSerialReadPos != head && out.length() < 1024) {
+    char c = serialRing[webSerialReadPos];
+    webSerialReadPos = (webSerialReadPos + 1) % SERIAL_RING_SIZE;
+    if (c != '\r') {
+      out += c;
+    }
+  }
+
+  webServer.send(200, "text/plain", out);
 }
 
 void handleWebJSON() {
@@ -1342,6 +1410,7 @@ void initWebServer() {
   webServer.on("/imu", handleWebIMU);
   webServer.on("/diags", handleWebDiags);
   webServer.on("/serial", handleWebSerial);
+  webServer.on("/serial-data", handleWebSerialData);
   webServer.on("/json", handleWebJSON);
 
   webServer.begin();
