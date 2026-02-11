@@ -665,6 +665,27 @@ void initBattery() {
   logPrintln("OK");
 }
 
+// Check if a real LiPo battery is connected (not just USB power)
+// Returns: true if battery connected, false if USB-only or no reading
+bool isBatteryConnected() {
+  if (!batteryAvailable) return false;
+
+  float volt = battery.cellVoltage();
+  float pct = battery.cellPercent();
+
+  // Check for invalid reading (NaN)
+  if (isnan(volt) || isnan(pct)) return false;
+
+  // LiPo max is 4.2V, if reading higher it's USB voltage bleeding through
+  // Also check for >100% which indicates USB-only power
+  if (volt > 4.3 || pct > 100.5) return false;
+
+  // Very low voltage might indicate no battery too
+  if (volt < 2.5) return false;
+
+  return true;
+}
+
 void initSD() {
   logPrint("Initializing SD card... ");
 
@@ -1148,9 +1169,13 @@ void handleWebOps() {
   }
 
   // Battery
-  if (batteryAvailable) {
+  if (batteryAvailable && isBatteryConnected()) {
     sprintf(buf, "Battery: %.0f%% (%.2fV)\n", battery.cellPercent(), battery.cellVoltage());
     html += buf;
+  } else if (batteryAvailable) {
+    html += "Battery: USB Only\n";
+  } else {
+    html += "Battery: N/A\n";
   }
 
   html += "</pre><a href='/'>Back</a></body></html>";
@@ -1379,18 +1404,20 @@ void handleWebSerialData() {
 
 void handleWebJSON() {
   char buf[1024];
+  bool battConnected = batteryAvailable && isBatteryConnected();
   snprintf(buf, sizeof(buf),
     "{"
     "\"gps\":{\"valid\":%s,\"lat\":%.6f,\"lon\":%.6f,\"alt\":%.1f},"
     "\"env\":{\"temp\":%.1f,\"humidity\":%.1f,\"pressure\":%.1f,\"iaq\":%.0f,\"co2\":%.0f,\"accuracy\":%d},"
     "\"imu\":{\"heading\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"accel\":%.2f},"
-    "\"system\":{\"uptime\":%lu,\"wifi\":%s,\"battery\":%.1f,\"heap\":%lu}"
+    "\"system\":{\"uptime\":%lu,\"wifi\":%s,\"battery\":%.1f,\"batteryConnected\":%s,\"heap\":%lu}"
     "}",
     gpsData.valid ? "true" : "false", gpsData.latitude, gpsData.longitude, gpsData.altitude,
     envData.temperature, envData.humidity, envData.pressure, envData.iaq, envData.co2Equivalent, envData.iaqAccuracy,
     imuData.heading, imuData.roll, imuData.pitch, imuData.accelMag,
     millis() / 1000, wifiConnected ? "true" : "false",
-    batteryAvailable ? battery.cellPercent() : 0.0,
+    battConnected ? battery.cellPercent() : -1.0,
+    battConnected ? "true" : "false",
     (unsigned long)ESP.getFreeHeap()
   );
   webServer.send(200, "application/json", buf);
@@ -1857,12 +1884,14 @@ void drawScreenOps() {
 
   // Battery
   drawLabel(labelX, y, "Battery:");
-  if (batteryAvailable) {
+  if (batteryAvailable && isBatteryConnected()) {
     float pct = battery.cellPercent();
     float volt = battery.cellVoltage();
     sprintf(buf, "%.0f%% (%.2fV)", pct, volt);
     uint16_t color = (pct > 20) ? COLOR_VALUE : COLOR_ERROR;
     drawValue(valueX, y, buf, color);
+  } else if (batteryAvailable) {
+    drawValue(valueX, y, "USB Only", COLOR_DIM);
   } else {
     drawValue(valueX, y, "N/A", COLOR_DIM);
   }
@@ -2228,8 +2257,10 @@ void drawOLEDScreenOps() {
 
   // Battery
   oled.setCursor(0, 48);
-  if (batteryAvailable) {
+  if (batteryAvailable && isBatteryConnected()) {
     sprintf(buf, "Batt: %.0f%%", battery.cellPercent());
+  } else if (batteryAvailable) {
+    sprintf(buf, "Batt: USB");
   } else {
     sprintf(buf, "Batt: --");
   }
