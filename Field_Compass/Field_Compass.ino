@@ -179,6 +179,10 @@ bool wifiConnected = false;
 bool ntpSynced = false;
 bool webServerStarted = false;
 
+// Periodic status logging
+static unsigned long lastStatusLog = 0;
+#define STATUS_LOG_INTERVAL 10000  // Log status every 10 seconds
+
 // BSEC state persistence
 static uint8_t bsecState[BSEC_MAX_STATE_BLOB_SIZE];
 static unsigned long lastBsecStateSave = 0;
@@ -257,9 +261,10 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  Serial.println("=================================");
-  Serial.println("Field Compass Dual v0.10");
-  Serial.println("=================================\n");
+  // Boot banner - capture to ring buffer for web serial
+  const char* banner = "=================================\nField Compass Dual v0.10\n=================================\n\n";
+  serialRingAppend(banner);
+  Serial.print(banner);
 
   // Initialize SPI for TFT
   SPI.begin();
@@ -313,6 +318,7 @@ void setup() {
   pinMode(BUTTON_B, INPUT_PULLUP);
   pinMode(BUTTON_C, INPUT_PULLUP);
 
+  serialRingAppend("\nSetup complete!\n\n");
   Serial.println("\nSetup complete!\n");
 
   // Initialize activity timer for display sleep
@@ -353,6 +359,21 @@ void loop() {
 
   // Update weather log statistics periodically
   updateWeatherLogStats();
+
+  // Periodic status logging for web serial monitor
+  if (millis() - lastStatusLog > STATUS_LOG_INTERVAL) {
+    char buf[128];
+    snprintf(buf, sizeof(buf), "[%lus] T:%.1fF H:%.0f%% IAQ:%.0f Hdg:%.0f %s\n",
+             millis() / 1000,
+             envData.temperature * 9.0 / 5.0 + 32.0,
+             envData.humidity,
+             envData.iaq,
+             imuData.heading,
+             gpsData.valid ? "GPS:OK" : "GPS:--");
+    serialRingAppend(buf);
+    Serial.print(buf);
+    lastStatusLog = millis();
+  }
 
   // Update display based on current screen
   updateDisplay();
