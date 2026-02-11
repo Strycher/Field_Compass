@@ -106,6 +106,10 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 
 // BSEC sample rate: BSEC_SAMPLE_RATE_LP = 3 sec, BSEC_SAMPLE_RATE_ULP = 5 min
 
+// BSEC state persistence to SD card
+#define BSEC_STATE_FILE "/bsec_state.bin"
+#define BSEC_STATE_SAVE_INTERVAL 3600000  // 1 hour in ms
+
 // Colors (RGB565)
 #define COLOR_BG        0x0000  // Black
 #define COLOR_TEXT      0xFFFF  // White
@@ -156,6 +160,10 @@ bool batteryAvailable = false;
 bool sdAvailable = false;
 bool wifiConnected = false;
 bool ntpSynced = false;
+
+// BSEC state persistence
+static uint8_t bsecState[BSEC_MAX_STATE_BLOB_SIZE];
+static unsigned long lastBsecStateSave = 0;
 
 // GPS data
 struct {
@@ -264,9 +272,12 @@ void setup() {
   initSD();
   initWiFi();
 
-  // Load weather history from SD
+  // Load weather history and BSEC state from SD
   if (sdAvailable) {
     loadWeatherHistory();
+    if (bmeAvailable) {
+      loadBsecState();
+    }
   }
 
   // Setup buttons
@@ -425,6 +436,18 @@ void bsecDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bs
         break;
     }
   }
+
+  // BSEC state persistence: save when accuracy reaches level 3 for first time
+  static uint8_t lastAccuracy = 0;
+  if (envData.iaqAccuracy == 3 && lastAccuracy < 3) {
+    saveBsecState();
+  }
+  lastAccuracy = envData.iaqAccuracy;
+
+  // Periodic BSEC state save (hourly)
+  if (millis() - lastBsecStateSave > BSEC_STATE_SAVE_INTERVAL) {
+    saveBsecState();
+  }
 }
 
 void initBME688() {
@@ -554,6 +577,68 @@ void initSD() {
   if (!SD.exists("/weather")) {
     SD.mkdir("/weather");
   }
+}
+
+// ============== BSEC State Persistence ==============
+
+bool loadBsecState() {
+  if (!sdAvailable) return false;
+
+  if (!SD.exists(BSEC_STATE_FILE)) {
+    Serial.println("No BSEC state file found");
+    return false;
+  }
+
+  File file = SD.open(BSEC_STATE_FILE, FILE_READ);
+  if (!file) {
+    Serial.println("Failed to open BSEC state file");
+    return false;
+  }
+
+  size_t bytesRead = file.read(bsecState, BSEC_MAX_STATE_BLOB_SIZE);
+  file.close();
+
+  if (bytesRead != BSEC_MAX_STATE_BLOB_SIZE) {
+    Serial.println("Invalid BSEC state file size");
+    return false;
+  }
+
+  if (!envSensor.setState(bsecState)) {
+    Serial.print("Failed to restore BSEC state: ");
+    Serial.println(envSensor.status);
+    return false;
+  }
+
+  Serial.println("BSEC state restored from SD card");
+  return true;
+}
+
+bool saveBsecState() {
+  if (!sdAvailable) return false;
+
+  if (!envSensor.getState(bsecState)) {
+    Serial.print("Failed to get BSEC state: ");
+    Serial.println(envSensor.status);
+    return false;
+  }
+
+  File file = SD.open(BSEC_STATE_FILE, FILE_WRITE);
+  if (!file) {
+    Serial.println("Failed to create BSEC state file");
+    return false;
+  }
+
+  size_t bytesWritten = file.write(bsecState, BSEC_MAX_STATE_BLOB_SIZE);
+  file.close();
+
+  if (bytesWritten != BSEC_MAX_STATE_BLOB_SIZE) {
+    Serial.println("Failed to write BSEC state");
+    return false;
+  }
+
+  Serial.println("BSEC state saved to SD card");
+  lastBsecStateSave = millis();
+  return true;
 }
 
 // ============== Weather Logging Functions ==============
@@ -1334,9 +1419,6 @@ void drawScreenGPS() {
     drawValue(valueX, y, "Fix OK", COLOR_VALUE);
 
   } else if (gpsData.receiving) {
-    // Clear content area for acquiring state (uses raw print, not drawValue)
-    tft.fillRect(0, 30, TFT_WIDTH, TFT_HEIGHT - 55, COLOR_BG);
-
     tft.setTextColor(COLOR_WARN);
     tft.setTextSize(2);
     tft.setCursor(60, 80);
@@ -1356,9 +1438,6 @@ void drawScreenGPS() {
       tft.print(buf);
     }
   } else {
-    // Clear content area for no-data state
-    tft.fillRect(0, 30, TFT_WIDTH, TFT_HEIGHT - 55, COLOR_BG);
-
     tft.setTextColor(COLOR_ERROR);
     tft.setTextSize(2);
     tft.setCursor(80, 100);
