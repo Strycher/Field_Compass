@@ -428,14 +428,19 @@ void loop() {
 
   // Periodic status logging for web serial monitor
   if (millis() - lastStatusLog > STATUS_LOG_INTERVAL) {
-    char buf[128];
-    snprintf(buf, sizeof(buf), "[%lus] T:%.1fF H:%.0f%% IAQ:%.0f Hdg:%.0f %s\n",
+    char buf[180];
+    float battV = batteryAvailable ? battery.cellVoltage() : 0;
+    float battP = batteryAvailable ? battery.cellPercent() : 0;
+    float battR = batteryAvailable ? battery.chargeRate() : 0;
+    snprintf(buf, sizeof(buf), "[%lus] T:%.1fF H:%.0f%% IAQ:%.0f Hdg:%.0f %s Batt:%.2fV/%.1f%%/%.1f%%hr/%s\n",
              millis() / 1000,
              envData.temperature * 9.0 / 5.0 + 32.0,
              envData.humidity,
              envData.iaq,
              imuData.heading,
-             gpsData.valid ? "GPS:OK" : "GPS:--");
+             gpsData.valid ? "GPS:OK" : "GPS:--",
+             battV, battP, battR,
+             isBatteryConnected() ? "OK" : "USB");
     serialRingAppend(buf);
     Serial.print(buf);
     lastStatusLog = millis();
@@ -672,15 +677,31 @@ bool isBatteryConnected() {
 
   float volt = battery.cellVoltage();
   float pct = battery.cellPercent();
+  float rate = battery.chargeRate();  // %/hour charge rate
 
   // Check for invalid reading (NaN)
   if (isnan(volt) || isnan(pct)) return false;
 
-  // LiPo max is 4.2V, if reading higher it's USB voltage bleeding through
-  // Also check for >100% which indicates USB-only power
-  if (volt > 4.3 || pct > 100.5) return false;
+  // When running on USB without battery:
+  // - Voltage reads ~4.2V (from USB regulator)
+  // - Percent reads 100-101%
+  // - Charge rate is essentially 0 (no battery to charge/discharge)
+  //
+  // When battery is connected and charging:
+  // - Charge rate is positive (gaining charge)
+  //
+  // When battery is connected and discharging:
+  // - Charge rate is negative (losing charge)
+  //
+  // Key insight: With a real battery, the charge rate will fluctuate
+  // as it charges/discharges. Without a battery, rate stays near 0.
 
-  // Very low voltage might indicate no battery too
+  // If voltage > 4.25V AND percent > 100 AND charge rate near zero, likely no battery
+  if (volt > 4.25 && pct > 100.0 && fabs(rate) < 0.5) {
+    return false;
+  }
+
+  // Very low voltage indicates no battery or dead battery
   if (volt < 2.5) return false;
 
   return true;
