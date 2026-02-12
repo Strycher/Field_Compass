@@ -23,7 +23,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.14"
+#define FW_VERSION "0.15"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -251,15 +251,32 @@ struct {
 } imuData;
 
 // Geocache data (#70)
-struct {
-  bool valid = false;
-  float latitude = 0;
-  float longitude = 0;
-  float difficulty = 0;
-  float terrain = 0;
-  char name[40] = {0};
-  char hint[80] = {0};
-} geocacheData;
+#define MAX_CACHES 20
+
+struct GeocacheEntry {
+  bool valid;
+  float latitude;
+  float longitude;
+  float difficulty;
+  float terrain;
+  char name[40];
+  char hint[80];
+  char gcCode[12];      // GC code (e.g., "GC12345")
+  bool found;           // Found status
+  uint32_t foundTime;   // When found (unix timestamp)
+};
+
+GeocacheEntry cacheList[MAX_CACHES];  // ~4KB RAM for 20 caches
+int cacheListCount = 0;               // Number of loaded caches
+int selectedCacheIndex = 0;           // Currently selected for navigation
+int listScrollOffset = 0;             // For scrollable list display
+int geocacheSubScreen = 0;            // 0=nav, 1=list, 2=details
+int listHighlightIndex = 0;           // Currently highlighted item in list
+
+// Button C long-press tracking
+unsigned long buttonCPressStart = 0;
+bool buttonCLongPressHandled = false;
+#define LONG_PRESS_MS 800             // 800ms for long press
 
 // User settings (#70)
 bool useMetricUnits = false;  // false = imperial (ft/mi), true = metric (m/km)
@@ -476,14 +493,44 @@ void setup() {
   lastActivityTime = millis();
 
   // Test geocache data (#70) - remove after GPX import implemented
-  geocacheData.valid = true;
-  geocacheData.latitude = 39.7589;   // Sample coordinates (Dayton, OH area)
-  geocacheData.longitude = -84.1916;
-  geocacheData.difficulty = 2.5;
-  geocacheData.terrain = 3.0;
-  strcpy(geocacheData.name, "Test Cache #1");
-  strcpy(geocacheData.hint, "Magnetic, look low near the fence post");
-  logPrintf("[GEOCACHE] Test cache loaded: %.4f, %.4f\n", geocacheData.latitude, geocacheData.longitude);
+  // Load multiple test caches into cacheList array
+  cacheList[0].valid = true;
+  cacheList[0].latitude = 39.7589;   // Sample coordinates (Dayton, OH area)
+  cacheList[0].longitude = -84.1916;
+  cacheList[0].difficulty = 2.5;
+  cacheList[0].terrain = 3.0;
+  strcpy(cacheList[0].gcCode, "GC12345");
+  strcpy(cacheList[0].name, "Test Cache #1");
+  strcpy(cacheList[0].hint, "Magnetic, look low near the fence post");
+  cacheList[0].found = false;
+  cacheList[0].foundTime = 0;
+
+  cacheList[1].valid = true;
+  cacheList[1].latitude = 39.7612;
+  cacheList[1].longitude = -84.1880;
+  cacheList[1].difficulty = 3.5;
+  cacheList[1].terrain = 2.0;
+  strcpy(cacheList[1].gcCode, "GC67890");
+  strcpy(cacheList[1].name, "Hidden Treasure");
+  strcpy(cacheList[1].hint, "Under the big oak tree");
+  cacheList[1].found = false;
+  cacheList[1].foundTime = 0;
+
+  cacheList[2].valid = true;
+  cacheList[2].latitude = 39.7550;
+  cacheList[2].longitude = -84.1950;
+  cacheList[2].difficulty = 1.5;
+  cacheList[2].terrain = 1.5;
+  strcpy(cacheList[2].gcCode, "GCABCDE");
+  strcpy(cacheList[2].name, "Park & Grab");
+  strcpy(cacheList[2].hint, "Parking lot lamp post");
+  cacheList[2].found = true;  // Pre-mark one as found for testing
+  cacheList[2].foundTime = 1707753045;
+
+  cacheListCount = 3;
+  selectedCacheIndex = 0;
+  loadCacheFoundStatus();  // Load any saved found status from SD
+  logPrintf("[GEOCACHE] %d test caches loaded\n", cacheListCount);
 
   // Clear screen for main display
   tft.fillScreen(COLOR_BG);
@@ -1038,6 +1085,79 @@ bool saveBsecState() {
   lastBsecStateSave = millis();
   bsecStateSaved = true;
   return true;
+}
+
+// ============== Geocache Found Status Persistence (#70) ==============
+
+#define GEOCACHE_FOUND_FILE "/geocache_found.csv"
+
+// Save found status for all caches to SD card
+void saveCacheFoundStatus() {
+  if (!sdAvailable) return;
+
+  File file = sdOpenSafe(GEOCACHE_FOUND_FILE, "w");
+  if (!file) {
+    logPrintln("[GEOCACHE] Failed to save found status");
+    return;
+  }
+
+  // Write header
+  file.println("gcCode,found,timestamp");
+
+  // Write each cache's found status
+  for (int i = 0; i < cacheListCount; i++) {
+    if (cacheList[i].valid && cacheList[i].found) {
+      file.printf("%s,1,%lu\n", cacheList[i].gcCode, cacheList[i].foundTime);
+    }
+  }
+
+  file.close();
+  recordSDSuccess();
+  logPrintf("[GEOCACHE] Saved found status for %d caches\n", cacheListCount);
+}
+
+// Load found status from SD card and apply to loaded caches
+void loadCacheFoundStatus() {
+  if (!sdAvailable) return;
+
+  File file = sdOpenSafe(GEOCACHE_FOUND_FILE, "r", true);  // silent fail
+  if (!file) {
+    logPrintln("[GEOCACHE] No saved found status file");
+    return;
+  }
+
+  // Skip header line
+  file.readStringUntil('\n');
+
+  int loadedCount = 0;
+  while (file.available()) {
+    String line = file.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) continue;
+
+    // Parse CSV: gcCode,found,timestamp
+    int comma1 = line.indexOf(',');
+    int comma2 = line.indexOf(',', comma1 + 1);
+    if (comma1 < 0 || comma2 < 0) continue;
+
+    String gcCode = line.substring(0, comma1);
+    String foundStr = line.substring(comma1 + 1, comma2);
+    String timestampStr = line.substring(comma2 + 1);
+
+    // Find matching cache and apply found status
+    for (int i = 0; i < cacheListCount; i++) {
+      if (strcmp(cacheList[i].gcCode, gcCode.c_str()) == 0) {
+        cacheList[i].found = (foundStr == "1");
+        cacheList[i].foundTime = timestampStr.toInt();
+        loadedCount++;
+        break;
+      }
+    }
+  }
+
+  file.close();
+  recordSDSuccess();
+  logPrintf("[GEOCACHE] Loaded found status: %d entries\n", loadedCount);
 }
 
 // ============== Weather Logging Functions ==============
@@ -1906,16 +2026,41 @@ void checkDisplaySleep() {
 
 void handleButtons() {
   unsigned long now = millis();
+  static bool buttonCWasPressed = false;
 
-  // Debounce check
-  if (now - lastButtonPress < DEBOUNCE_MS) return;
-
-  // Check if any button is pressed
+  // Check current button states
   bool buttonA = !digitalRead(BUTTON_A);
   bool buttonB = !digitalRead(BUTTON_B);
   bool buttonC = !digitalRead(BUTTON_C);
 
-  if (!buttonA && !buttonB && !buttonC) return;  // No button pressed
+  // Handle Button C long-press detection
+  if (buttonC) {
+    if (!buttonCWasPressed) {
+      // Button C just pressed - start timing
+      buttonCPressStart = now;
+      buttonCLongPressHandled = false;
+    } else if (!buttonCLongPressHandled && (now - buttonCPressStart >= LONG_PRESS_MS)) {
+      // Long press detected
+      buttonCLongPressHandled = true;
+      handleButtonCLongPress();
+    }
+    buttonCWasPressed = true;
+  } else {
+    if (buttonCWasPressed && !buttonCLongPressHandled) {
+      // Button C just released - short press
+      if (now - lastButtonPress >= DEBOUNCE_MS) {
+        handleButtonCShortPress();
+        lastButtonPress = now;
+      }
+    }
+    buttonCWasPressed = false;
+    buttonCLongPressHandled = false;
+  }
+
+  // Debounce check for A/B buttons
+  if (now - lastButtonPress < DEBOUNCE_MS) return;
+
+  if (!buttonA && !buttonB) return;  // No A/B button pressed
 
   // If any display is sleeping, wake all and consume the button press
   if (tftSleeping || oledSleeping) {
@@ -1927,26 +2072,115 @@ void handleButtons() {
   // Reset activity timer on any button press
   lastActivityTime = now;
 
-  // Button A - Previous screen
-  if (buttonA) {
-    currentScreen--;
-    if (currentScreen < 0) currentScreen = NUM_SCREENS - 1;
+  // Handle A/B based on current screen and sub-screen
+  if (currentScreen == SCREEN_GEOCACHE && geocacheSubScreen != 0) {
+    // Geocache sub-screen navigation
+    handleGeocacheButtons(buttonA, buttonB);
     lastButtonPress = now;
-    tft.fillScreen(COLOR_BG);  // Clear screen on change
+  } else {
+    // Normal screen navigation
+    if (buttonA) {
+      currentScreen--;
+      if (currentScreen < 0) currentScreen = NUM_SCREENS - 1;
+      geocacheSubScreen = 0;  // Reset sub-screen when leaving
+      lastButtonPress = now;
+      tft.fillScreen(COLOR_BG);
+    }
+
+    if (buttonB) {
+      currentScreen++;
+      if (currentScreen >= NUM_SCREENS) currentScreen = 0;
+      geocacheSubScreen = 0;  // Reset sub-screen when leaving
+      lastButtonPress = now;
+      tft.fillScreen(COLOR_BG);
+    }
+  }
+}
+
+// Handle geocache-specific button actions for list/details sub-screens
+void handleGeocacheButtons(bool buttonA, bool buttonB) {
+  if (geocacheSubScreen == 1) {
+    // Cache List: A=scroll up, B=scroll down
+    if (buttonA && listHighlightIndex > 0) {
+      listHighlightIndex--;
+      if (listHighlightIndex < listScrollOffset) {
+        listScrollOffset = listHighlightIndex;
+      }
+    }
+    if (buttonB && listHighlightIndex < cacheListCount - 1) {
+      listHighlightIndex++;
+      if (listHighlightIndex >= listScrollOffset + 5) {
+        listScrollOffset = listHighlightIndex - 4;
+      }
+    }
+  } else if (geocacheSubScreen == 2) {
+    // Cache Details: A=prev cache, B=next cache
+    if (buttonA && listHighlightIndex > 0) {
+      listHighlightIndex--;
+    }
+    if (buttonB && listHighlightIndex < cacheListCount - 1) {
+      listHighlightIndex++;
+    }
+  }
+  tft.fillScreen(COLOR_BG);  // Clear on sub-screen change
+}
+
+// Button C short press handler
+void handleButtonCShortPress() {
+  // Wake displays if sleeping
+  if (tftSleeping || oledSleeping) {
+    wakeAllDisplays();
+    return;
   }
 
-  // Button B - Next screen
-  if (buttonB) {
-    currentScreen++;
-    if (currentScreen >= NUM_SCREENS) currentScreen = 0;
-    lastButtonPress = now;
-    tft.fillScreen(COLOR_BG);  // Clear screen on change
+  lastActivityTime = millis();
+
+  if (currentScreen == SCREEN_GEOCACHE) {
+    if (geocacheSubScreen == 0) {
+      // Nav screen: short press goes to list
+      geocacheSubScreen = 1;
+      listHighlightIndex = selectedCacheIndex;
+      listScrollOffset = max(0, listHighlightIndex - 2);
+      tft.fillScreen(COLOR_BG);
+    } else if (geocacheSubScreen == 1) {
+      // List screen: short press selects cache and returns to nav
+      selectedCacheIndex = listHighlightIndex;
+      geocacheSubScreen = 0;
+      tft.fillScreen(COLOR_BG);
+    } else if (geocacheSubScreen == 2) {
+      // Details screen: short press toggles found status
+      if (cacheListCount > 0 && listHighlightIndex < cacheListCount) {
+        cacheList[listHighlightIndex].found = !cacheList[listHighlightIndex].found;
+        if (cacheList[listHighlightIndex].found) {
+          cacheList[listHighlightIndex].foundTime = millis() / 1000;  // Simple timestamp
+        }
+        saveCacheFoundStatus();  // Persist to SD
+        tft.fillScreen(COLOR_BG);
+      }
+    }
+  }
+}
+
+// Button C long press handler
+void handleButtonCLongPress() {
+  // Wake displays if sleeping
+  if (tftSleeping || oledSleeping) {
+    wakeAllDisplays();
+    return;
   }
 
-  // Button C - Reserved
-  if (buttonC) {
-    lastButtonPress = now;
-    // No action yet
+  lastActivityTime = millis();
+
+  if (currentScreen == SCREEN_GEOCACHE) {
+    if (geocacheSubScreen == 1) {
+      // List screen: long press goes to details
+      geocacheSubScreen = 2;
+      tft.fillScreen(COLOR_BG);
+    } else if (geocacheSubScreen == 2) {
+      // Details screen: long press goes back to list
+      geocacheSubScreen = 1;
+      tft.fillScreen(COLOR_BG);
+    }
   }
 }
 
@@ -2578,10 +2812,32 @@ void drawSearchZoneCircle(int cx, int cy, float distanceM, float accuracyM) {
 
 // ============== Geocache Navigation Screen (#70) ==============
 
+// Forward declarations for sub-screens
+void drawCacheNavScreen();
+void drawCacheListScreen();
+void drawCacheDetailsScreen();
+
 void drawScreenGeocache() {
+  // Dispatch to appropriate sub-screen
+  switch (geocacheSubScreen) {
+    case 1:
+      drawCacheListScreen();
+      break;
+    case 2:
+      drawCacheDetailsScreen();
+      break;
+    default:
+      drawCacheNavScreen();
+      break;
+  }
+}
+
+// Sub-screen 0: Navigation (main geocache screen)
+void drawCacheNavScreen() {
   drawHeader("GEOCACHE");
 
-  if (!geocacheData.valid) {
+  // Check if we have any caches and if selected cache is valid
+  if (cacheListCount == 0 || selectedCacheIndex >= cacheListCount || !cacheList[selectedCacheIndex].valid) {
     tft.setCursor(80, 120);
     tft.setTextColor(COLOR_DIM);
     tft.setTextSize(2);
@@ -2590,25 +2846,27 @@ void drawScreenGeocache() {
     return;
   }
 
+  // Get reference to selected cache for cleaner code
+  GeocacheEntry& cache = cacheList[selectedCacheIndex];
   char buf[64];
 
   // Calculate distance and bearing
   float distKm = calcDistanceKm(gpsData.latitude, gpsData.longitude,
-                                 geocacheData.latitude, geocacheData.longitude);
+                                 cache.latitude, cache.longitude);
   float distM = distKm * 1000;
   float bearing = calcBearing(gpsData.latitude, gpsData.longitude,
-                               geocacheData.latitude, geocacheData.longitude);
+                               cache.latitude, cache.longitude);
   float accuracyM = getGpsAccuracyMeters();
   bool inSearchZone = (distM < accuracyM);
 
   // Row 1: Cache name CENTERED
   tft.setTextSize(2);
   tft.setTextColor(COLOR_TEXT);
-  int nameLen = strlen(geocacheData.name);
+  int nameLen = strlen(cache.name);
   int nameX = (320 - nameLen * 12) / 2;  // Center text (12px per char at size 2)
   if (nameX < 10) nameX = 10;  // Clamp to screen edge
   tft.setCursor(nameX, 35);
-  tft.print(geocacheData.name);
+  tft.print(cache.name);
 
   // Row 2: Distance/SearchZone + D/T (left), Heading (right)
   // Clear row 2 area first to prevent ghosting
@@ -2643,7 +2901,7 @@ void drawScreenGeocache() {
   // D/T rating (after distance, same row)
   tft.setTextSize(1);
   tft.setTextColor(COLOR_DIM);
-  sprintf(buf, " D:%.1f T:%.1f", geocacheData.difficulty, geocacheData.terrain);
+  sprintf(buf, " D:%.1f T:%.1f", cache.difficulty, cache.terrain);
   tft.print(buf);
 
   // Heading (right side)
@@ -2692,23 +2950,252 @@ void drawScreenGeocache() {
   tft.setTextColor(COLOR_DIM);
   tft.setTextSize(1);
 
-  if (strlen(geocacheData.hint) > 0) {
+  if (strlen(cache.hint) > 0) {
     if (inSearchZone) {
       // FULL HINT in search zone (multi-line)
       tft.setCursor(10, 205);
       tft.print("Hint: ");
-      tft.print(geocacheData.hint);  // Full hint (may wrap)
+      tft.print(cache.hint);  // Full hint (may wrap)
     } else {
       // Teaser only
       tft.setCursor(10, 220);
       char hintPreview[35];
-      strncpy(hintPreview, geocacheData.hint, 30);
+      strncpy(hintPreview, cache.hint, 30);
       hintPreview[30] = '\0';
-      if (strlen(geocacheData.hint) > 30) strcat(hintPreview, "...");
+      if (strlen(cache.hint) > 30) strcat(hintPreview, "...");
       tft.print("Hint: ");
       tft.print(hintPreview);
     }
   }
+
+  drawNavBar();
+}
+
+// Sub-screen 1: Cache List
+void drawCacheListScreen() {
+  drawHeader("CACHE LIST");
+
+  char buf[64];
+  int y = 38;
+  int lineH = 28;
+  int maxVisible = 5;  // 5 entries visible at once
+
+  // Show count in header area
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_DIM);
+  sprintf(buf, "[%d/%d]", listHighlightIndex + 1, cacheListCount);
+  tft.setCursor(280, 10);
+  tft.print(buf);
+
+  if (cacheListCount == 0) {
+    tft.setCursor(80, 120);
+    tft.setTextColor(COLOR_DIM);
+    tft.setTextSize(2);
+    tft.print("No caches loaded");
+    drawNavBar();
+    return;
+  }
+
+  // Draw visible cache entries
+  for (int i = 0; i < maxVisible && (listScrollOffset + i) < cacheListCount; i++) {
+    int cacheIdx = listScrollOffset + i;
+    GeocacheEntry& cache = cacheList[cacheIdx];
+    bool isSelected = (cacheIdx == listHighlightIndex);
+
+    // Highlight background for selected item
+    if (isSelected) {
+      tft.fillRect(0, y - 2, 320, lineH, COLOR_HEADER & 0x18E3);  // Darker cyan
+    }
+
+    int x = 5;
+
+    // Selection indicator
+    tft.setTextSize(2);
+    tft.setTextColor(isSelected ? COLOR_HEADER : COLOR_DIM);
+    tft.setCursor(x, y + 2);
+    tft.print(isSelected ? ">" : " ");
+    x += 18;
+
+    // Distance
+    float distKm = calcDistanceKm(gpsData.latitude, gpsData.longitude,
+                                   cache.latitude, cache.longitude);
+    tft.setTextColor(COLOR_VALUE);
+    tft.setTextSize(1);
+    tft.setCursor(x, y + 4);
+    if (useMetricUnits) {
+      if (distKm >= 1.0) {
+        sprintf(buf, "%4.1fkm", distKm);
+      } else {
+        sprintf(buf, "%4.0fm", distKm * 1000);
+      }
+    } else {
+      float distMi = distKm * 0.621371;
+      if (distMi >= 1.0) {
+        sprintf(buf, "%4.1fmi", distMi);
+      } else {
+        sprintf(buf, "%4.0fft", distKm * 3280.84);
+      }
+    }
+    tft.print(buf);
+    x += 48;
+
+    // Cache name (truncated)
+    tft.setTextColor(COLOR_TEXT);
+    tft.setCursor(x, y + 4);
+    char nameBuf[20];
+    strncpy(nameBuf, cache.name, 16);
+    nameBuf[16] = '\0';
+    if (strlen(cache.name) > 16) {
+      nameBuf[14] = '.';
+      nameBuf[15] = '.';
+    }
+    tft.print(nameBuf);
+    x += 100;
+
+    // Found checkmark
+    if (cache.found) {
+      tft.setTextColor(COLOR_VALUE);
+      tft.setCursor(x, y + 4);
+      tft.print("*");  // Checkmark indicator
+    }
+    x += 12;
+
+    // D/T rating
+    tft.setTextColor(COLOR_DIM);
+    tft.setCursor(x, y + 4);
+    sprintf(buf, "D:%d T:%d", (int)cache.difficulty, (int)cache.terrain);
+    tft.print(buf);
+
+    y += lineH;
+  }
+
+  // Draw button hints at bottom
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_DIM);
+  tft.setCursor(10, 190);
+  tft.print("[A]Up [B]Down [C]Select [C+]Details");
+
+  drawNavBar();
+}
+
+// Sub-screen 2: Cache Details
+void drawCacheDetailsScreen() {
+  if (cacheListCount == 0 || listHighlightIndex >= cacheListCount) {
+    drawHeader("CACHE DETAILS");
+    tft.setCursor(80, 120);
+    tft.setTextColor(COLOR_DIM);
+    tft.setTextSize(2);
+    tft.print("No cache");
+    drawNavBar();
+    return;
+  }
+
+  GeocacheEntry& cache = cacheList[listHighlightIndex];
+  char buf[64];
+
+  drawHeader("CACHE DETAILS");
+
+  // Count indicator in header
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_DIM);
+  sprintf(buf, "[%d/%d]", listHighlightIndex + 1, cacheListCount);
+  tft.setCursor(280, 10);
+  tft.print(buf);
+
+  int y = 35;
+  int lineH = 18;
+
+  // Cache name (large)
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_TEXT);
+  tft.setCursor(10, y);
+  // Truncate name if too long
+  char nameBuf[24];
+  strncpy(nameBuf, cache.name, 22);
+  nameBuf[22] = '\0';
+  tft.print(nameBuf);
+  y += 22;
+
+  // GC Code
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_HEADER);
+  tft.setCursor(10, y);
+  tft.print(cache.gcCode);
+  y += lineH + 4;
+
+  // Coordinates
+  tft.setTextColor(COLOR_VALUE);
+  tft.setCursor(10, y);
+  sprintf(buf, "%.4f%c  %.4f%c",
+          fabs(cache.latitude), cache.latitude >= 0 ? 'N' : 'S',
+          fabs(cache.longitude), cache.longitude >= 0 ? 'E' : 'W');
+  tft.print(buf);
+  y += lineH;
+
+  // Difficulty/Terrain
+  tft.setTextColor(COLOR_TEXT);
+  tft.setCursor(10, y);
+  sprintf(buf, "Difficulty: %.1f  Terrain: %.1f", cache.difficulty, cache.terrain);
+  tft.print(buf);
+  y += lineH + 4;
+
+  // Current distance/bearing
+  float distKm = calcDistanceKm(gpsData.latitude, gpsData.longitude,
+                                 cache.latitude, cache.longitude);
+  float bearing = calcBearing(gpsData.latitude, gpsData.longitude,
+                               cache.latitude, cache.longitude);
+  tft.setTextColor(COLOR_VALUE);
+  tft.setCursor(10, y);
+  if (useMetricUnits) {
+    sprintf(buf, "Distance: %.2f km  Bearing: %d", distKm, (int)bearing);
+  } else {
+    sprintf(buf, "Distance: %.2f mi  Bearing: %d", distKm * 0.621371, (int)bearing);
+  }
+  tft.print(buf);
+  tft.print((char)247);  // Degree symbol
+  y += lineH + 4;
+
+  // Hint (full, multi-line)
+  if (strlen(cache.hint) > 0) {
+    tft.setTextColor(COLOR_DIM);
+    tft.setCursor(10, y);
+    tft.print("Hint: ");
+    tft.setTextColor(COLOR_TEXT);
+    // Word wrap hint - simple approach, just print and let TFT wrap
+    tft.setCursor(10, y + 10);
+    // Print hint in chunks to avoid overflow
+    int hintLen = strlen(cache.hint);
+    int pos = 0;
+    int lineY = y + 10;
+    while (pos < hintLen && lineY < 175) {
+      int chunkLen = min(50, hintLen - pos);  // ~50 chars per line at size 1
+      char chunk[52];
+      strncpy(chunk, cache.hint + pos, chunkLen);
+      chunk[chunkLen] = '\0';
+      tft.setCursor(10, lineY);
+      tft.print(chunk);
+      pos += chunkLen;
+      lineY += 10;
+    }
+  }
+
+  // Found status (interactive area)
+  y = 180;
+  tft.setCursor(10, y);
+  tft.setTextSize(2);
+  if (cache.found) {
+    tft.setTextColor(COLOR_VALUE);
+    tft.print("[* FOUND]");
+  } else {
+    tft.setTextColor(COLOR_DIM);
+    tft.print("[ NOT FOUND ]");
+  }
+
+  // Button hints
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_DIM);
+  tft.setCursor(10, 205);
+  tft.print("[A]Prev [B]Next [C]Toggle [C+]Back");
 
   drawNavBar();
 }
@@ -3039,17 +3526,21 @@ void drawOLEDScreenGeocache() {
   oled.setCursor(0, 0);
   oled.print("GEOCACHE");
 
-  if (!geocacheData.valid) {
+  // Check if we have any caches and if selected cache is valid
+  if (cacheListCount == 0 || selectedCacheIndex >= cacheListCount || !cacheList[selectedCacheIndex].valid) {
     oled.setCursor(0, 16);
     oled.print("No cache");
     return;
   }
 
+  // Get reference to selected cache
+  GeocacheEntry& cache = cacheList[selectedCacheIndex];
+
   // Distance and bearing
   float distKm = calcDistanceKm(gpsData.latitude, gpsData.longitude,
-                                 geocacheData.latitude, geocacheData.longitude);
+                                 cache.latitude, cache.longitude);
   float bearing = calcBearing(gpsData.latitude, gpsData.longitude,
-                               geocacheData.latitude, geocacheData.longitude);
+                               cache.latitude, cache.longitude);
 
   oled.setCursor(0, 12);
   if (useMetricUnits) {
@@ -3080,7 +3571,7 @@ void drawOLEDScreenGeocache() {
 
   // D/T rating
   oled.setCursor(0, 36);
-  sprintf(buf, "D:%.1f T:%.1f", geocacheData.difficulty, geocacheData.terrain);
+  sprintf(buf, "D:%.1f T:%.1f", cache.difficulty, cache.terrain);
   oled.print(buf);
 
   // Accuracy
