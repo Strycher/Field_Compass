@@ -23,7 +23,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.13"
+#define FW_VERSION "0.14"
 
 #include <Wire.h>
 #include <SPI.h>
