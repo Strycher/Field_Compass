@@ -2611,6 +2611,9 @@ void drawScreenGeocache() {
   tft.print(geocacheData.name);
 
   // Row 2: Distance/SearchZone + D/T (left), Heading (right)
+  // Clear row 2 area first to prevent ghosting
+  tft.fillRect(10, 55, 300, 20, COLOR_BG);
+
   tft.setCursor(10, 55);
   tft.setTextSize(2);
 
@@ -2653,6 +2656,9 @@ void drawScreenGeocache() {
   tft.print((char)247);  // Degree symbol
 
   // Center: Nav triangle OR search zone pulsing circle
+  // Clear center area first to prevent ghosting on rotation
+  tft.fillRect(100, 75, 120, 110, COLOR_BG);
+
   if (inSearchZone) {
     // Pulsing circle that shrinks as we get closer
     drawSearchZoneCircle(160, 130, distM, accuracyM);
@@ -2665,6 +2671,9 @@ void drawScreenGeocache() {
   }
 
   // GPS accuracy indicator (below center graphic)
+  // Clear accuracy area first to prevent ghosting
+  tft.fillRect(80, 185, 160, 20, COLOR_BG);
+
   uint16_t accColor = getAccuracyColor(accuracyM);
   tft.setTextColor(accColor);
   tft.setTextSize(2);
