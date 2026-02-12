@@ -23,7 +23,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.11"
+#define FW_VERSION "0.13"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -46,6 +46,7 @@ const uint8_t bsec2_config[] = {
 #include <Adafruit_LIS3MDL.h>
 #include <Adafruit_MAX1704X.h>
 #include <SD.h>
+#include <esp_task_wdt.h>
 
 // ============== Configuration ==============
 
@@ -83,6 +84,7 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 #define DEBUG_GPS   0  // GPS NMEA sentence logging
 #define DEBUG_BSEC  0  // BSEC2 readings logging
 #define DEBUG_SLEEP 0  // Display sleep/wake logging
+#define DEBUG_TFT   1  // TFT display state logging (P1 blank bug debug)
 
 // Screen settings
 #define NUM_SCREENS 5
@@ -121,6 +123,9 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 // Web server configuration
 #define WEB_SERVER_PORT 80
 #define SERIAL_RING_SIZE 4096  // 4KB ring buffer for serial capture
+
+// Watchdog configuration (auto-reset on hang)
+#define WDT_TIMEOUT_SEC 30  // Reset if loop hangs for 30 seconds
 
 // Colors (RGB565)
 #define COLOR_BG        0x0000  // Black
@@ -168,6 +173,12 @@ unsigned long lastWiFiAttempt = 0;
 bool tftSleeping = false;
 bool oledSleeping = false;
 unsigned long lastActivityTime = 0;
+
+// TFT health monitoring (P1 blank bug debug)
+static unsigned long lastTFTUpdate = 0;      // millis() of last successful TFT draw
+static unsigned long lastTFTReinit = 0;      // millis() of last preventive re-init
+static uint32_t tftUpdateCount = 0;          // Total TFT update cycles
+#define TFT_REINIT_INTERVAL 1800000          // Preventive re-init every 30 minutes
 
 // OLED availability
 bool oledAvailable = false;
@@ -218,6 +229,12 @@ struct {
 char gpsBuffer[128];
 int gpsBufferIndex = 0;
 
+// GPS time-to-first-fix tracking (#68)
+static unsigned long gpsFirstReceiveTime = 0;  // When first NMEA data received
+static unsigned long gpsFirstFixTime = 0;       // When first valid fix acquired
+static bool gpsHadFirstReceive = false;         // Tracks if we ever received data
+static bool gpsHadFirstFix = false;             // Tracks if we ever had a fix
+
 // IMU data
 struct {
   float heading = 0;
@@ -262,6 +279,41 @@ struct {
   uint8_t trend = 0;              // 0=stable, 1=rising slow, 2=rising fast, 3=falling slow, 4=falling fast
   const char* forecast = "Init";  // "Clear", "Rain Likely", etc.
 } weatherTrend;
+
+// ============== SD Card Health Monitoring ==============
+// Tracks SD card errors and enables graceful degradation
+
+enum SDErrorType {
+  SD_ERR_NONE = 0,
+  SD_ERR_OPEN_FAIL,
+  SD_ERR_READ_FAIL,
+  SD_ERR_WRITE_FAIL,
+  SD_ERR_REINIT_FAIL
+};
+
+struct SDHealth {
+  bool available;              // Current availability status
+  unsigned long lastSuccess;   // millis() of last successful operation
+  unsigned long lastAttempt;   // millis() of last attempted operation
+  uint16_t errorCount;         // Total errors since boot
+  uint8_t consecutiveFailures; // Consecutive failures (resets on success)
+  uint8_t reInitCount;         // Re-initialization attempts
+  uint8_t lastError;           // Last error type (SDErrorType)
+  unsigned long lastReInit;    // millis() of last re-init attempt
+};
+
+static SDHealth sdHealth = {false, 0, 0, 0, 0, 0, SD_ERR_NONE, 0};
+
+#define SD_MAX_CONSECUTIVE_FAILURES 3
+#define SD_MAX_REINIT_ATTEMPTS 5
+#define SD_REINIT_COOLDOWN 60000  // Wait 60s between re-init attempts
+
+// Forward declarations for SD health functions (defined after initSD)
+void recordSDSuccess();
+void recordSDError(SDErrorType err);
+bool shouldAttemptReInit();
+bool trySDReInit();
+File sdOpenSafe(const char* path, const char* mode, bool silent = false);
 
 // ============== Serial Ring Buffer (moved before setup for use in init) ==============
 
@@ -392,6 +444,16 @@ void setup() {
 
   logPrintln("\nSetup complete!\n");
 
+  // Initialize software watchdog (auto-reset on hang)
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = WDT_TIMEOUT_SEC * 1000,
+    .idle_core_mask = (1 << 0) | (1 << 1),  // Watch both cores
+    .trigger_panic = true  // Reset on timeout
+  };
+  esp_task_wdt_init(&wdt_config);
+  esp_task_wdt_add(NULL);  // Add current task to watchdog
+  logPrintf("Watchdog enabled: %ds timeout\n", WDT_TIMEOUT_SEC);
+
   // Initialize activity timer for display sleep
   lastActivityTime = millis();
 
@@ -439,25 +501,45 @@ void loop() {
 
   // Periodic status logging for web serial monitor
   if (millis() - lastStatusLog > STATUS_LOG_INTERVAL) {
-    char buf[180];
+    char buf[256];
     float battV = batteryAvailable ? battery.cellVoltage() : 0;
     float battP = batteryAvailable ? battery.cellPercent() : 0;
     float battR = batteryAvailable ? battery.chargeRate() : 0;
-    snprintf(buf, sizeof(buf), "[%lus] T:%.1fF H:%.0f%% IAQ:%.0f Hdg:%.0f %s Batt:%.3fV/%.2f%%/%+.1f%%hr\n",
+    // Include GPS TTFF in status (#68)
+    const char* gpsStatus = gpsHadFirstFix ? "GPS:OK" : (gpsHadFirstReceive ? "GPS:--" : "GPS:NO");
+    snprintf(buf, sizeof(buf), "[%lus] T:%.1fF H:%.0f%% IAQ:%.0f Hdg:%.0f %s TTFF:%lus Batt:%.3fV/%.2f%%/%+.1f%%hr\n",
              millis() / 1000,
              envData.temperature * 9.0 / 5.0 + 32.0,
              envData.humidity,
              envData.iaq,
              imuData.heading,
-             gpsData.valid ? "GPS:OK" : "GPS:--",
+             gpsStatus,
+             gpsHadFirstFix ? gpsFirstFixTime / 1000 : 0,
              battV, battP, battR);
     serialRingAppend(buf);
     Serial.print(buf);
+
+    // TFT debug logging (P1 blank bug investigation)
+    #if DEBUG_TFT
+    unsigned long tftAge = (millis() - lastTFTUpdate) / 1000;
+    unsigned long reinitAge = (millis() - lastTFTReinit) / 1000;
+    snprintf(buf, sizeof(buf), "[TFT] sleep:%d scr:%d upd:%lus ago reinit:%lus ago cnt:%lu\n",
+             tftSleeping, currentScreen, tftAge, reinitAge, tftUpdateCount);
+    serialRingAppend(buf);
+    Serial.print(buf);
+    #endif
+
     lastStatusLog = millis();
   }
 
+  // Check TFT health and perform preventive re-init if needed
+  checkTFTHealth();
+
   // Update display based on current screen
   updateDisplay();
+
+  // Reset watchdog timer (proves loop is not hung)
+  esp_task_wdt_reset();
 
   delay(50);
 }
@@ -503,7 +585,33 @@ void initTFT() {
   delay(100);
   tft.fillScreen(COLOR_BG);
 
+  lastTFTReinit = millis();  // Track init time
   logPrintln("OK (320x240)");
+}
+
+// Preventive TFT re-initialization (P1 blank bug workaround)
+// TFT goes blank after ~40 minutes with no errors - re-init as workaround
+void checkTFTHealth() {
+  unsigned long now = millis();
+
+  // Skip if TFT is sleeping (intentional blank)
+  if (tftSleeping) return;
+
+  // Preventive re-init every 30 minutes
+  if (now - lastTFTReinit > TFT_REINIT_INTERVAL) {
+    #if DEBUG_TFT
+    logPrintf("[TFT] Preventive re-init at %lus (updates:%lu)\n",
+              now / 1000, tftUpdateCount);
+    #endif
+
+    // Re-initialize TFT
+    tft.init(TFT_HEIGHT, TFT_WIDTH);
+    tft.setRotation(1);
+    tft.fillScreen(COLOR_BG);
+
+    lastTFTReinit = now;
+    logPrintln("[TFT] Preventive re-init complete");
+  }
 }
 
 void initOLED() {
@@ -682,9 +790,9 @@ void initBattery() {
 
 // Log battery data to SD card for analysis
 void logBatteryToSD() {
-  if (!sdAvailable || !batteryAvailable) return;
+  if (!sdHealth.available || !batteryAvailable) return;
 
-  File f = SD.open(BATT_LOG_FILE, FILE_APPEND);
+  File f = sdOpenSafe(BATT_LOG_FILE, "a", true);  // silent fail OK
   if (!f) return;
 
   // Write header if new file
@@ -698,6 +806,7 @@ void logBatteryToSD() {
 
   f.printf("%lu,%.3f,%.2f,%.2f\n", millis(), v, p, r);
   f.close();
+  recordSDSuccess();
 }
 
 // Check if a real LiPo battery is connected (not just USB power)
@@ -723,10 +832,14 @@ void initSD() {
 
   if (!SD.begin(SD_CS)) {
     logPrintln("NOT FOUND");
+    sdHealth.available = false;
     return;
   }
 
   sdAvailable = true;
+  sdHealth.available = true;
+  sdHealth.lastSuccess = millis();
+  sdHealth.lastAttempt = millis();
 
   uint64_t cardSize = SD.cardSize() / (1024 * 1024);
   logPrintf("OK (%llu MB)\n", cardSize);
@@ -737,17 +850,115 @@ void initSD() {
   }
 }
 
+// ============== SD Card Health Functions ==============
+
+// Record successful SD operation
+void recordSDSuccess() {
+  sdHealth.lastSuccess = millis();
+  sdHealth.consecutiveFailures = 0;
+}
+
+// Record SD error and potentially trigger re-init
+void recordSDError(SDErrorType err) {
+  sdHealth.lastError = err;
+  sdHealth.errorCount++;
+  sdHealth.consecutiveFailures++;
+  sdHealth.lastAttempt = millis();
+
+  logPrintf("[SD] Error %d (total:%d consec:%d)\n",
+            err, sdHealth.errorCount, sdHealth.consecutiveFailures);
+
+  // If too many consecutive failures, try re-init
+  if (sdHealth.consecutiveFailures >= SD_MAX_CONSECUTIVE_FAILURES) {
+    trySDReInit();
+  }
+}
+
+// Check if we should attempt SD re-initialization
+bool shouldAttemptReInit() {
+  // Don't exceed max attempts
+  if (sdHealth.reInitCount >= SD_MAX_REINIT_ATTEMPTS) return false;
+
+  // Enforce cooldown period
+  if (millis() - sdHealth.lastReInit < SD_REINIT_COOLDOWN) return false;
+
+  return true;
+}
+
+// Attempt SD re-initialization with backoff
+bool trySDReInit() {
+  if (!shouldAttemptReInit()) {
+    logPrintln("[SD] Re-init skipped (cooldown or max attempts)");
+    return false;
+  }
+
+  sdHealth.reInitCount++;
+  sdHealth.lastReInit = millis();
+
+  logPrintf("[SD] Attempting re-init #%d...\n", sdHealth.reInitCount);
+
+  // End current SD session
+  SD.end();
+  delay(100);
+
+  // Try to re-initialize
+  if (SD.begin(SD_CS)) {
+    sdAvailable = true;
+    sdHealth.available = true;
+    sdHealth.consecutiveFailures = 0;
+    sdHealth.lastSuccess = millis();
+    logPrintln("[SD] Re-init SUCCESS");
+    return true;
+  } else {
+    sdAvailable = false;
+    sdHealth.available = false;
+    sdHealth.lastError = SD_ERR_REINIT_FAIL;
+    logPrintln("[SD] Re-init FAILED");
+    return false;
+  }
+}
+
+// Safe file open with error tracking
+File sdOpenSafe(const char* path, const char* mode, bool silent) {
+  if (!sdHealth.available) {
+    return File();  // Return invalid file
+  }
+
+  sdHealth.lastAttempt = millis();
+
+  File f;
+  if (strcmp(mode, "r") == 0 || strcmp(mode, FILE_READ) == 0) {
+    f = SD.open(path, FILE_READ);
+  } else if (strcmp(mode, "w") == 0 || strcmp(mode, FILE_WRITE) == 0) {
+    f = SD.open(path, FILE_WRITE);
+  } else if (strcmp(mode, "a") == 0) {
+    f = SD.open(path, FILE_APPEND);
+  } else {
+    f = SD.open(path);  // Default mode
+  }
+
+  if (!f) {
+    if (!silent) {
+      recordSDError(SD_ERR_OPEN_FAIL);
+    }
+    return File();
+  }
+
+  recordSDSuccess();
+  return f;
+}
+
 // ============== BSEC State Persistence ==============
 
 bool loadBsecState() {
-  if (!sdAvailable) return false;
+  if (!sdHealth.available) return false;
 
   if (!SD.exists(BSEC_STATE_FILE)) {
     logPrintln("No BSEC state file found");
     return false;
   }
 
-  File file = SD.open(BSEC_STATE_FILE, FILE_READ);
+  File file = sdOpenSafe(BSEC_STATE_FILE, "r");
   if (!file) {
     logPrintln("Failed to open BSEC state file");
     return false;
@@ -758,6 +969,7 @@ bool loadBsecState() {
 
   if (bytesRead != BSEC_MAX_STATE_BLOB_SIZE) {
     logPrintln("Invalid BSEC state file size");
+    recordSDError(SD_ERR_READ_FAIL);
     return false;
   }
 
@@ -772,14 +984,14 @@ bool loadBsecState() {
 }
 
 bool saveBsecState() {
-  if (!sdAvailable) return false;
+  if (!sdHealth.available) return false;
 
   if (!envSensor.getState(bsecState)) {
     logPrintf("Failed to get BSEC state: %d\n", envSensor.status);
     return false;
   }
 
-  File file = SD.open(BSEC_STATE_FILE, FILE_WRITE);
+  File file = sdOpenSafe(BSEC_STATE_FILE, "w");
   if (!file) {
     logPrintln("Failed to create BSEC state file");
     return false;
@@ -790,6 +1002,7 @@ bool saveBsecState() {
 
   if (bytesWritten != BSEC_MAX_STATE_BLOB_SIZE) {
     logPrintln("Failed to write BSEC state");
+    recordSDError(SD_ERR_WRITE_FAIL);
     return false;
   }
 
@@ -851,7 +1064,7 @@ bool sameLocation(float lat1, float lon1, float lat2, float lon2) {
 
 // Log current weather reading to SD card
 void logWeatherReading() {
-  if (!sdAvailable || !bmeAvailable) return;
+  if (!sdHealth.available || !bmeAvailable) return;
 
   uint32_t timestamp = getCurrentTimestamp();
   if (timestamp == 0) return;  // No valid time
@@ -872,22 +1085,23 @@ void logWeatherReading() {
   // Add to in-memory buffer
   addToWeatherHistory(reading);
 
-  // Write to SD card
+  // Write to SD card (silent fail OK - weather logging is non-critical)
   char filename[32];
   getWeatherFilename(filename, 0);
 
-  File file = SD.open(filename, FILE_APPEND);
+  File file = sdOpenSafe(filename, "a", true);  // silent fail
   if (file) {
     file.printf("%lu,%.4f,%.4f,%.2f,%.2f,%.2f\n",
                 timestamp, lat, lon,
                 reading.pressure, reading.temp, reading.humidity);
     file.close();
+    recordSDSuccess();
   }
 }
 
 // Load weather history from SD card on boot
 void loadWeatherHistory() {
-  if (!sdAvailable) return;
+  if (!sdHealth.available) return;
 
   logPrint("Loading weather history... ");
 
@@ -902,7 +1116,7 @@ void loadWeatherHistory() {
 
     if (!SD.exists(filename)) continue;
 
-    File file = SD.open(filename, FILE_READ);
+    File file = sdOpenSafe(filename, "r", true);  // silent fail
     if (!file) continue;
 
     char line[80];
@@ -922,6 +1136,7 @@ void loadWeatherHistory() {
       }
     }
     file.close();
+    recordSDSuccess();
   }
 
   logPrintf("%d readings\n", loaded);
@@ -1457,12 +1672,12 @@ void handleWebJSON() {
 
 // Battery log download endpoint
 void handleWebBattLog() {
-  if (!sdAvailable) {
+  if (!sdHealth.available) {
     webServer.send(404, "text/plain", "SD card not available");
     return;
   }
 
-  File f = SD.open(BATT_LOG_FILE, FILE_READ);
+  File f = sdOpenSafe(BATT_LOG_FILE, "r", true);
   if (!f) {
     webServer.send(404, "text/plain", "Battery log file not found. Wait for data collection.");
     return;
@@ -1476,7 +1691,7 @@ void handleWebBattLog() {
 
 // Battery log clear endpoint
 void handleWebBattLogClear() {
-  if (!sdAvailable) {
+  if (!sdHealth.available) {
     webServer.send(404, "text/plain", "SD card not available");
     return;
   }
@@ -1524,7 +1739,7 @@ void initWebServer() {
 // ============== Weather Log Statistics ==============
 
 void updateWeatherLogStats() {
-  if (!sdAvailable) return;
+  if (!sdHealth.available) return;
   if (millis() - lastWeatherLogCheck < 60000) return;  // Check every minute
   lastWeatherLogCheck = millis();
 
@@ -1534,17 +1749,29 @@ void updateWeatherLogStats() {
   File dir = SD.open("/weather");
   if (!dir) return;
 
+  // Limit iterations to prevent hang on corrupted filesystem
+  int maxFiles = 100;
+  int filesChecked = 0;
+
   while (File entry = dir.openNextFile()) {
+    if (filesChecked++ >= maxFiles) {
+      entry.close();
+      break;  // Safety limit
+    }
     if (!entry.isDirectory()) {
       weatherLogFileCount++;
-      // Count lines (entries)
-      while (entry.available()) {
+      // Count lines with safety limit
+      int maxLines = 10000;
+      int linesRead = 0;
+      while (entry.available() && linesRead < maxLines) {
         if (entry.read() == '\n') weatherLogEntryCount++;
+        linesRead++;
       }
     }
     entry.close();
   }
   dir.close();
+  recordSDSuccess();
 }
 
 // ============== Display Sleep Functions ==============
@@ -1665,6 +1892,13 @@ void readGPS() {
     char c = Serial1.read();
     gpsData.receiving = true;
 
+    // Track when GPS first starts receiving NMEA data (#68)
+    if (!gpsHadFirstReceive) {
+      gpsFirstReceiveTime = millis();
+      gpsHadFirstReceive = true;
+      logPrintf("[GPS] First NMEA data at %lus\n", gpsFirstReceiveTime / 1000);
+    }
+
     if (c == '\n') {
       gpsBuffer[gpsBufferIndex] = '\0';
       #if DEBUG_GPS
@@ -1729,6 +1963,13 @@ void parseNMEA(char* sentence) {
       if (lonDir == 'W') gpsData.longitude = -gpsData.longitude;
 
       gpsData.valid = true;
+
+      // Track time to first fix (#68)
+      if (!gpsHadFirstFix) {
+        gpsFirstFixTime = millis();
+        gpsHadFirstFix = true;
+        logPrintf("[GPS] First fix acquired in %lus (TTFF)\n", gpsFirstFixTime / 1000);
+      }
     } else {
       gpsData.valid = false;
     }
@@ -1836,6 +2077,10 @@ void updateDisplay() {
 
     // Draw screen indicator at bottom
     drawNavBar();
+
+    // Track TFT update for health monitoring
+    lastTFTUpdate = millis();
+    tftUpdateCount++;
   }
 
   // Update OLED display (if available and not sleeping)
@@ -2000,9 +2245,14 @@ void drawScreenGPS() {
     drawValue(valueX, y, buf);
     y += lineH;
 
-    // Status
+    // Status with TTFF (#68)
     drawLabel(labelX, y, "Status:");
-    drawValue(valueX, y, "Fix OK", COLOR_VALUE);
+    if (gpsHadFirstFix) {
+      sprintf(buf, "Fix OK (TTFF %lus)", gpsFirstFixTime / 1000);
+      drawValue(valueX, y, buf, COLOR_VALUE);
+    } else {
+      drawValue(valueX, y, "Fix OK", COLOR_VALUE);
+    }
 
   } else if (gpsData.receiving) {
     // Clear content area for acquiring state (uses raw print, not drawValue)
@@ -2012,12 +2262,19 @@ void drawScreenGPS() {
     tft.setTextSize(2);
     tft.setCursor(60, 80);
     tft.println("Acquiring fix...");
-    tft.setCursor(60, 120);
+
+    // Show elapsed time since boot (#68)
+    unsigned long elapsed = millis() / 1000;
+    tft.setCursor(60, 110);
     tft.setTextColor(COLOR_DIM);
+    sprintf(buf, "Elapsed: %lum %lus", elapsed / 60, elapsed % 60);
+    tft.println(buf);
+
+    tft.setCursor(60, 140);
     tft.println("Need clear sky view");
 
     if (gpsData.timeValid) {
-      tft.setCursor(60, 160);
+      tft.setCursor(60, 170);
       tft.setTextColor(COLOR_VALUE);
       tft.print("Time: ");
       int hour = gpsData.hour + (GMT_OFFSET_SEC / 3600);
@@ -2221,14 +2478,50 @@ void drawScreenDiags() {
   tft.print(buf);
   y += lineH;
 
-  // Storage & Display
+  // GPS TTFF (#68)
+  tft.setTextColor(COLOR_HEADER);
+  tft.setCursor(labelX, y);
+  tft.print("GPS:");
+  if (gpsHadFirstFix) {
+    sprintf(buf, "Fix in %lus", gpsFirstFixTime / 1000);
+    tft.setTextColor(COLOR_VALUE);
+  } else if (gpsHadFirstReceive) {
+    unsigned long elapsed = millis() / 1000;
+    sprintf(buf, "Acquiring (%lum %lus)", elapsed / 60, elapsed % 60);
+    tft.setTextColor(COLOR_WARN);
+  } else {
+    sprintf(buf, "No data");
+    tft.setTextColor(COLOR_DIM);
+  }
+  tft.setCursor(valueX - 80, y);
+  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
+  tft.print(buf);
+  y += lineH;
+
+  // Storage & Display with SD health
   tft.setTextColor(COLOR_HEADER);
   tft.setCursor(labelX, y);
   tft.print("Storage:");
-  sprintf(buf, "SD:%s OLED:%s",
-          sdAvailable ? "Y" : "N",
-          oledAvailable ? "Y" : "N");
-  tft.setTextColor(COLOR_VALUE);
+
+  // Format SD status with health info
+  if (sdHealth.available) {
+    unsigned long ageMin = (millis() - sdHealth.lastSuccess) / 60000;
+    if (sdHealth.errorCount == 0) {
+      sprintf(buf, "SD:OK %lum OLED:%s",
+              ageMin, oledAvailable ? "Y" : "N");
+      tft.setTextColor(COLOR_VALUE);
+    } else {
+      sprintf(buf, "SD:WARN E:%d R:%d OLED:%s",
+              sdHealth.errorCount, sdHealth.reInitCount,
+              oledAvailable ? "Y" : "N");
+      tft.setTextColor(COLOR_WARN);
+    }
+  } else {
+    sprintf(buf, "SD:FAIL E:%d R:%d OLED:%s",
+            sdHealth.errorCount, sdHealth.reInitCount,
+            oledAvailable ? "Y" : "N");
+    tft.setTextColor(COLOR_ERROR);
+  }
   tft.setCursor(valueX - 80, y);
   tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
   tft.print(buf);
