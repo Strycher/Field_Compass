@@ -232,6 +232,7 @@ int gpsBufferIndex = 0;
 // GPS time-to-first-fix tracking (#68)
 static unsigned long gpsFirstReceiveTime = 0;  // When first NMEA data received
 static unsigned long gpsFirstFixTime = 0;       // When first valid fix acquired
+static unsigned long gpsSignalLostTime = 0;    // When signal was lost (for reacquire timing)
 static bool gpsHadFirstReceive = false;         // Tracks if we ever received data
 static bool gpsHadFirstFix = false;             // Tracks if we ever had a fix
 
@@ -1564,6 +1565,43 @@ void handleWebDiags() {
   sprintf(buf, "OLED:    %s\n", oledAvailable ? "OK" : "N/A");
   html += buf;
 
+  // GPS (#68)
+  html += "\n=== GPS ===\n";
+
+  // Status: Fix OK / Acquiring / No Data
+  const char* gpsStatus;
+  if (gpsData.valid) {
+    gpsStatus = "Fix OK";
+  } else if (gpsData.receiving) {
+    gpsStatus = "Acquiring";
+  } else {
+    gpsStatus = "No Data";
+  }
+  sprintf(buf, "Status:   %s\n", gpsStatus);
+  html += buf;
+
+  // TTFF - retained once acquired
+  if (gpsHadFirstFix) {
+    sprintf(buf, "TTFF:     %lu seconds\n", gpsFirstFixTime / 1000);
+    html += buf;
+  } else {
+    html += "TTFF:     (not yet acquired)\n";
+  }
+
+  // Acquiring/Reacquire time - show if not currently valid
+  if (!gpsData.valid && gpsHadFirstReceive) {
+    if (gpsHadFirstFix && gpsSignalLostTime > 0) {
+      // Lost signal after having fix - show time since signal lost
+      unsigned long reacquiring = (millis() - gpsSignalLostTime) / 1000;
+      sprintf(buf, "Reacquire: %lum %lus\n", reacquiring / 60, reacquiring % 60);
+    } else {
+      // Never had fix, show time since first NMEA data
+      unsigned long elapsed = (millis() - gpsFirstReceiveTime) / 1000;
+      sprintf(buf, "Elapsed:  %lum %lus\n", elapsed / 60, elapsed % 60);
+    }
+    html += buf;
+  }
+
   html += "</pre><a href='/'>Back</a></body></html>";
   webServer.send(200, "text/html", html);
 }
@@ -1971,6 +2009,11 @@ void parseNMEA(char* sentence) {
         logPrintf("[GPS] First fix acquired in %lus (TTFF)\n", gpsFirstFixTime / 1000);
       }
     } else {
+      // Track when signal is lost (for reacquiring elapsed time) (#68)
+      if (gpsData.valid && gpsHadFirstFix) {
+        gpsSignalLostTime = millis();
+        logPrintf("[GPS] Signal lost at %lus\n", gpsSignalLostTime / 1000);
+      }
       gpsData.valid = false;
     }
   }
