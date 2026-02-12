@@ -197,6 +197,11 @@ static int weatherLogFileCount = 0;
 static int weatherLogEntryCount = 0;
 static unsigned long lastWeatherLogCheck = 0;
 
+// Battery logging to SD card
+static unsigned long lastBattLog = 0;
+#define BATT_LOG_INTERVAL 10000  // Log every 10 seconds
+#define BATT_LOG_FILE "/battlog.csv"
+
 // GPS data
 struct {
   bool valid = false;
@@ -426,21 +431,26 @@ void loop() {
   // Update weather log statistics periodically
   updateWeatherLogStats();
 
+  // Battery logging to SD card (every 10 seconds)
+  if (sdAvailable && batteryAvailable && (millis() - lastBattLog > BATT_LOG_INTERVAL)) {
+    logBatteryToSD();
+    lastBattLog = millis();
+  }
+
   // Periodic status logging for web serial monitor
   if (millis() - lastStatusLog > STATUS_LOG_INTERVAL) {
     char buf[180];
     float battV = batteryAvailable ? battery.cellVoltage() : 0;
     float battP = batteryAvailable ? battery.cellPercent() : 0;
     float battR = batteryAvailable ? battery.chargeRate() : 0;
-    snprintf(buf, sizeof(buf), "[%lus] T:%.1fF H:%.0f%% IAQ:%.0f Hdg:%.0f %s Batt:%.2fV/%.1f%%/%.1f%%hr/%s\n",
+    snprintf(buf, sizeof(buf), "[%lus] T:%.1fF H:%.0f%% IAQ:%.0f Hdg:%.0f %s Batt:%.3fV/%.2f%%/%+.1f%%hr\n",
              millis() / 1000,
              envData.temperature * 9.0 / 5.0 + 32.0,
              envData.humidity,
              envData.iaq,
              imuData.heading,
              gpsData.valid ? "GPS:OK" : "GPS:--",
-             battV, battP, battR,
-             isBatteryConnected() ? "OK" : "USB");
+             battV, battP, battR);
     serialRingAppend(buf);
     Serial.print(buf);
     lastStatusLog = millis();
@@ -670,39 +680,40 @@ void initBattery() {
   logPrintln("OK");
 }
 
+// Log battery data to SD card for analysis
+void logBatteryToSD() {
+  if (!sdAvailable || !batteryAvailable) return;
+
+  File f = SD.open(BATT_LOG_FILE, FILE_APPEND);
+  if (!f) return;
+
+  // Write header if new file
+  if (f.size() == 0) {
+    f.println("millis,voltage,percent,rate");
+  }
+
+  float v = battery.cellVoltage();
+  float p = battery.cellPercent();
+  float r = battery.chargeRate();
+
+  f.printf("%lu,%.3f,%.2f,%.2f\n", millis(), v, p, r);
+  f.close();
+}
+
 // Check if a real LiPo battery is connected (not just USB power)
-// Returns: true if battery connected, false if USB-only or no reading
+// NOTE: This is a simplified version for data collection.
+// Will be enhanced after analyzing battery log data.
 bool isBatteryConnected() {
   if (!batteryAvailable) return false;
 
-  float volt = battery.cellVoltage();
   float pct = battery.cellPercent();
-  float rate = battery.chargeRate();  // %/hour charge rate
 
-  // Check for invalid reading (NaN)
-  if (isnan(volt) || isnan(pct)) return false;
+  // Check for invalid reading
+  if (isnan(pct)) return false;
 
-  // When running on USB without battery:
-  // - Voltage reads ~4.2V (from USB regulator)
-  // - Percent reads 100-101%
-  // - Charge rate is essentially 0 (no battery to charge/discharge)
-  //
-  // When battery is connected and charging:
-  // - Charge rate is positive (gaining charge)
-  //
-  // When battery is connected and discharging:
-  // - Charge rate is negative (losing charge)
-  //
-  // Key insight: With a real battery, the charge rate will fluctuate
-  // as it charges/discharges. Without a battery, rate stays near 0.
-
-  // If voltage > 4.25V AND percent > 100 AND charge rate near zero, likely no battery
-  if (volt > 4.25 && pct > 100.0 && fabs(rate) < 0.5) {
-    return false;
-  }
-
-  // Very low voltage indicates no battery or dead battery
-  if (volt < 2.5) return false;
+  // >100% is impossible for real LiPo - indicates USB-only power
+  // MAX17048 reports 100-101% when connected to USB without battery
+  if (pct > 100.0) return false;
 
   return true;
 }
@@ -1444,6 +1455,40 @@ void handleWebJSON() {
   webServer.send(200, "application/json", buf);
 }
 
+// Battery log download endpoint
+void handleWebBattLog() {
+  if (!sdAvailable) {
+    webServer.send(404, "text/plain", "SD card not available");
+    return;
+  }
+
+  File f = SD.open(BATT_LOG_FILE, FILE_READ);
+  if (!f) {
+    webServer.send(404, "text/plain", "Battery log file not found. Wait for data collection.");
+    return;
+  }
+
+  // Stream the file with CSV content type for easy download
+  webServer.sendHeader("Content-Disposition", "attachment; filename=battlog.csv");
+  webServer.streamFile(f, "text/csv");
+  f.close();
+}
+
+// Battery log clear endpoint
+void handleWebBattLogClear() {
+  if (!sdAvailable) {
+    webServer.send(404, "text/plain", "SD card not available");
+    return;
+  }
+
+  if (SD.exists(BATT_LOG_FILE)) {
+    SD.remove(BATT_LOG_FILE);
+    webServer.send(200, "text/plain", "Battery log cleared. New log will start on next cycle.");
+  } else {
+    webServer.send(200, "text/plain", "Battery log already empty.");
+  }
+}
+
 void initWebServer() {
   if (!wifiConnected) return;
   if (webServerStarted) return;  // Already started
@@ -1465,6 +1510,8 @@ void initWebServer() {
   webServer.on("/serial", handleWebSerial);
   webServer.on("/serial-data", handleWebSerialData);
   webServer.on("/json", handleWebJSON);
+  webServer.on("/battlog", handleWebBattLog);
+  webServer.on("/battlog/clear", handleWebBattLogClear);
 
   webServer.begin();
   webServerStarted = true;
@@ -1958,6 +2005,9 @@ void drawScreenGPS() {
     drawValue(valueX, y, "Fix OK", COLOR_VALUE);
 
   } else if (gpsData.receiving) {
+    // Clear content area for acquiring state (uses raw print, not drawValue)
+    tft.fillRect(0, 30, TFT_WIDTH, TFT_HEIGHT - 55, COLOR_BG);
+
     tft.setTextColor(COLOR_WARN);
     tft.setTextSize(2);
     tft.setCursor(60, 80);
@@ -1977,6 +2027,9 @@ void drawScreenGPS() {
       tft.print(buf);
     }
   } else {
+    // Clear content area for no-data state
+    tft.fillRect(0, 30, TFT_WIDTH, TFT_HEIGHT - 55, COLOR_BG);
+
     tft.setTextColor(COLOR_ERROR);
     tft.setTextSize(2);
     tft.setCursor(80, 100);
