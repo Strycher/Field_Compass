@@ -87,12 +87,13 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 #define DEBUG_TFT   1  // TFT display state logging (P1 blank bug debug)
 
 // Screen settings
-#define NUM_SCREENS 5
+#define NUM_SCREENS 6
 #define SCREEN_OPS 0
 #define SCREEN_GPS 1
 #define SCREEN_ENV 2
 #define SCREEN_IMU 3
 #define SCREEN_DIAGS 4
+#define SCREEN_GEOCACHE 5  // Geocaching navigation (#70)
 
 // TFT dimensions
 #define TFT_WIDTH 320
@@ -220,6 +221,8 @@ struct {
   float latitude = 0;
   float longitude = 0;
   float altitude = 0;
+  float hdop = 99.0;       // Horizontal dilution of precision (lower = better) (#70)
+  int satellites = 0;      // Number of satellites in fix (#70)
   int hour = 0;
   int minute = 0;
   int second = 0;
@@ -246,6 +249,20 @@ struct {
   float accelZ = 0;
   float accelMag = 0;
 } imuData;
+
+// Geocache data (#70)
+struct {
+  bool valid = false;
+  float latitude = 0;
+  float longitude = 0;
+  float difficulty = 0;
+  float terrain = 0;
+  char name[40] = {0};
+  char hint[80] = {0};
+} geocacheData;
+
+// User settings (#70)
+bool useMetricUnits = false;  // false = imperial (ft/mi), true = metric (m/km)
 
 // BME688 data (via BSEC2)
 struct {
@@ -457,6 +474,16 @@ void setup() {
 
   // Initialize activity timer for display sleep
   lastActivityTime = millis();
+
+  // Test geocache data (#70) - remove after GPX import implemented
+  geocacheData.valid = true;
+  geocacheData.latitude = 39.7589;   // Sample coordinates (Dayton, OH area)
+  geocacheData.longitude = -84.1916;
+  geocacheData.difficulty = 2.5;
+  geocacheData.terrain = 3.0;
+  strcpy(geocacheData.name, "Test Cache #1");
+  strcpy(geocacheData.hint, "Magnetic, look low near the fence post");
+  logPrintf("[GEOCACHE] Test cache loaded: %.4f, %.4f\n", geocacheData.latitude, geocacheData.longitude);
 
   // Clear screen for main display
   tft.fillScreen(COLOR_BG);
@@ -2018,12 +2045,18 @@ void parseNMEA(char* sentence) {
     }
   }
 
-  // Parse GPGGA or GNGGA for altitude
+  // Parse GPGGA or GNGGA for altitude, satellites, HDOP (#70)
   if (strstr(sentence, "GGA")) {
     char* token = strtok(sentence, ",");
     int field = 0;
 
     while (token != NULL) {
+      if (field == 7 && strlen(token) > 0) {
+        gpsData.satellites = atoi(token);  // Number of satellites (#70)
+      }
+      if (field == 8 && strlen(token) > 0) {
+        gpsData.hdop = atof(token);        // Horizontal DOP (#70)
+      }
       if (field == 9 && strlen(token) > 0) {
         gpsData.altitude = atof(token);
       }
@@ -2115,6 +2148,9 @@ void updateDisplay() {
         break;
       case SCREEN_DIAGS:
         drawScreenDiags();
+        break;
+      case SCREEN_GEOCACHE:
+        drawScreenGeocache();
         break;
     }
 
@@ -2456,6 +2492,218 @@ const char* getCardinal(float heading) {
   return "NW";
 }
 
+// ============== Geocache Helper Functions (#70) ==============
+
+// Calculate distance between two GPS coordinates using Haversine formula
+float calcDistanceKm(float lat1, float lon1, float lat2, float lon2) {
+  float dLat = radians(lat2 - lat1);
+  float dLon = radians(lon2 - lon1);
+  float a = sin(dLat/2) * sin(dLat/2) +
+            cos(radians(lat1)) * cos(radians(lat2)) *
+            sin(dLon/2) * sin(dLon/2);
+  float c = 2 * atan2(sqrt(a), sqrt(1-a));
+  return 6371.0 * c;  // Earth radius in km
+}
+
+// Calculate bearing from point 1 to point 2
+float calcBearing(float lat1, float lon1, float lat2, float lon2) {
+  float dLon = radians(lon2 - lon1);
+  float y = sin(dLon) * cos(radians(lat2));
+  float x = cos(radians(lat1)) * sin(radians(lat2)) -
+            sin(radians(lat1)) * cos(radians(lat2)) * cos(dLon);
+  float bearing = atan2(y, x) * 180.0 / PI;
+  if (bearing < 0) bearing += 360;
+  return bearing;
+}
+
+// Get GPS accuracy estimate based on HDOP
+float getGpsAccuracyMeters() {
+  return 3.0 * gpsData.hdop;  // Typical GPS accuracy ≈ 3m × HDOP
+}
+
+// Get color for accuracy indicator
+uint16_t getAccuracyColor(float accuracyM) {
+  if (accuracyM < 10) return COLOR_VALUE;  // Green - excellent
+  if (accuracyM < 25) return COLOR_WARN;   // Yellow - good
+  return COLOR_ERROR;                       // Red - poor
+}
+
+// Draw Google Maps style navigation triangle
+void drawNavTriangle(int cx, int cy, int size, float angle, uint16_t color) {
+  // angle = 0 means pointing up (north), increases clockwise
+  float rad = radians(angle - 90);  // Adjust for screen coordinates
+
+  // Front tip (pointed direction)
+  int tipX = cx + cos(rad) * size;
+  int tipY = cy + sin(rad) * size;
+
+  // Rear corners (wider base for aerodynamic look)
+  float rearRad1 = rad + radians(140);
+  float rearRad2 = rad - radians(140);
+  int rear1X = cx + cos(rearRad1) * size * 0.7;
+  int rear1Y = cy + sin(rearRad1) * size * 0.7;
+  int rear2X = cx + cos(rearRad2) * size * 0.7;
+  int rear2Y = cy + sin(rearRad2) * size * 0.7;
+
+  // Rear center notch (creates aerodynamic tail)
+  float rearCenterRad = rad + radians(180);
+  int rearCenterX = cx + cos(rearCenterRad) * size * 0.3;
+  int rearCenterY = cy + sin(rearCenterRad) * size * 0.3;
+
+  // Draw as two triangles for notched rear
+  tft.fillTriangle(tipX, tipY, rear1X, rear1Y, rearCenterX, rearCenterY, color);
+  tft.fillTriangle(tipX, tipY, rear2X, rear2Y, rearCenterX, rearCenterY, color);
+}
+
+// Draw pulsing search zone circle that shrinks as we get closer
+void drawSearchZoneCircle(int cx, int cy, float distanceM, float accuracyM) {
+  // Circle size shrinks as we get closer (visual "getting warmer")
+  int maxRadius = 60;
+  int minRadius = 20;
+  float ratio = constrain(distanceM / accuracyM, 0.0, 1.0);
+  int radius = minRadius + (int)((maxRadius - minRadius) * ratio);
+
+  // Pulsing effect using millis()
+  int pulse = (millis() / 100) % 10;  // 0-9 cycle
+  int pulseOffset = (pulse < 5) ? pulse : (9 - pulse);  // 0-4-0 triangle wave
+  radius += pulseOffset * 2;
+
+  // Draw filled circle with outline
+  tft.fillCircle(cx, cy, radius, COLOR_WARN);
+  tft.drawCircle(cx, cy, radius + 2, COLOR_TEXT);
+
+  // Center dot
+  tft.fillCircle(cx, cy, 4, COLOR_TEXT);
+}
+
+// ============== Geocache Navigation Screen (#70) ==============
+
+void drawScreenGeocache() {
+  drawHeader("GEOCACHE");
+
+  if (!geocacheData.valid) {
+    tft.setCursor(80, 120);
+    tft.setTextColor(COLOR_DIM);
+    tft.setTextSize(2);
+    tft.print("No cache loaded");
+    drawNavBar();
+    return;
+  }
+
+  char buf[64];
+
+  // Calculate distance and bearing
+  float distKm = calcDistanceKm(gpsData.latitude, gpsData.longitude,
+                                 geocacheData.latitude, geocacheData.longitude);
+  float distM = distKm * 1000;
+  float bearing = calcBearing(gpsData.latitude, gpsData.longitude,
+                               geocacheData.latitude, geocacheData.longitude);
+  float accuracyM = getGpsAccuracyMeters();
+  bool inSearchZone = (distM < accuracyM);
+
+  // Row 1: Cache name CENTERED
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_TEXT);
+  int nameLen = strlen(geocacheData.name);
+  int nameX = (320 - nameLen * 12) / 2;  // Center text (12px per char at size 2)
+  if (nameX < 10) nameX = 10;  // Clamp to screen edge
+  tft.setCursor(nameX, 35);
+  tft.print(geocacheData.name);
+
+  // Row 2: Distance/SearchZone + D/T (left), Heading (right)
+  tft.setCursor(10, 55);
+  tft.setTextSize(2);
+
+  if (inSearchZone) {
+    tft.setTextColor(COLOR_WARN);
+    tft.print("SEARCH ZONE");
+  } else {
+    tft.setTextColor(COLOR_VALUE);
+    if (useMetricUnits) {
+      if (distKm >= 1.0) {
+        sprintf(buf, "%.1f km", distKm);
+      } else {
+        sprintf(buf, "%.0f m", distM);
+      }
+    } else {
+      float distMi = distKm * 0.621371;
+      float distFt = distKm * 3280.84;
+      if (distMi >= 1.0) {
+        sprintf(buf, "%.1f mi", distMi);
+      } else {
+        sprintf(buf, "%.0f ft", distFt);
+      }
+    }
+    tft.print(buf);
+  }
+
+  // D/T rating (after distance, same row)
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_DIM);
+  sprintf(buf, " D:%.1f T:%.1f", geocacheData.difficulty, geocacheData.terrain);
+  tft.print(buf);
+
+  // Heading (right side)
+  tft.setCursor(265, 55);
+  tft.setTextColor(COLOR_VALUE);
+  tft.setTextSize(2);
+  sprintf(buf, "%d", (int)bearing);
+  tft.print(buf);
+  tft.setTextSize(1);
+  tft.print((char)247);  // Degree symbol
+
+  // Center: Nav triangle OR search zone pulsing circle
+  if (inSearchZone) {
+    // Pulsing circle that shrinks as we get closer
+    drawSearchZoneCircle(160, 130, distM, accuracyM);
+  } else {
+    // Google Maps style nav triangle
+    float triangleAngle = bearing - imuData.heading;
+    if (triangleAngle < 0) triangleAngle += 360;
+    if (triangleAngle >= 360) triangleAngle -= 360;
+    drawNavTriangle(160, 130, 50, triangleAngle, COLOR_HEADER);
+  }
+
+  // GPS accuracy indicator (below center graphic)
+  uint16_t accColor = getAccuracyColor(accuracyM);
+  tft.setTextColor(accColor);
+  tft.setTextSize(2);
+
+  if (useMetricUnits) {
+    sprintf(buf, "+/-%.0fm", accuracyM);
+  } else {
+    sprintf(buf, "+/-%.0fft", accuracyM * 3.28084);
+  }
+  int accLen = strlen(buf);
+  int accX = (320 - accLen * 12) / 2;  // Center
+  tft.setCursor(accX, 185);
+  tft.print(buf);
+
+  // Bottom: Hint (teaser in normal mode, FULL in search zone)
+  tft.setTextColor(COLOR_DIM);
+  tft.setTextSize(1);
+
+  if (strlen(geocacheData.hint) > 0) {
+    if (inSearchZone) {
+      // FULL HINT in search zone (multi-line)
+      tft.setCursor(10, 205);
+      tft.print("Hint: ");
+      tft.print(geocacheData.hint);  // Full hint (may wrap)
+    } else {
+      // Teaser only
+      tft.setCursor(10, 220);
+      char hintPreview[35];
+      strncpy(hintPreview, geocacheData.hint, 30);
+      hintPreview[30] = '\0';
+      if (strlen(geocacheData.hint) > 30) strcat(hintPreview, "...");
+      tft.print("Hint: ");
+      tft.print(hintPreview);
+    }
+  }
+
+  drawNavBar();
+}
+
 void drawScreenDiags() {
   drawHeader("DIAGNOSTICS");
 
@@ -2616,6 +2864,9 @@ void updateOLED() {
     case SCREEN_DIAGS:
       drawOLEDScreenDiags();
       break;
+    case SCREEN_GEOCACHE:
+      drawOLEDScreenGeocache();
+      break;
   }
 
   // Draw screen indicator
@@ -2768,6 +3019,70 @@ void drawOLEDScreenIMU() {
     oled.setCursor(0, 28);
     oled.print("IMU not found");
   }
+}
+
+// ============== OLED Geocache Screen (#70) ==============
+
+void drawOLEDScreenGeocache() {
+  char buf[32];
+
+  oled.setTextSize(1);
+  oled.setCursor(0, 0);
+  oled.print("GEOCACHE");
+
+  if (!geocacheData.valid) {
+    oled.setCursor(0, 16);
+    oled.print("No cache");
+    return;
+  }
+
+  // Distance and bearing
+  float distKm = calcDistanceKm(gpsData.latitude, gpsData.longitude,
+                                 geocacheData.latitude, geocacheData.longitude);
+  float bearing = calcBearing(gpsData.latitude, gpsData.longitude,
+                               geocacheData.latitude, geocacheData.longitude);
+
+  oled.setCursor(0, 12);
+  if (useMetricUnits) {
+    if (distKm >= 1.0) {
+      sprintf(buf, "%.1fkm %d%c", distKm, (int)bearing, 247);
+    } else {
+      sprintf(buf, "%.0fm %d%c", distKm * 1000, (int)bearing, 247);
+    }
+  } else {
+    float distMi = distKm * 0.621371;
+    float distFt = distKm * 3280.84;
+    if (distMi >= 1.0) {
+      sprintf(buf, "%.1fmi %d%c", distMi, (int)bearing, 247);
+    } else {
+      sprintf(buf, "%.0fft %d%c", distFt, (int)bearing, 247);
+    }
+  }
+  oled.print(buf);
+
+  // Arrow direction
+  float arrowAngle = bearing - imuData.heading;
+  if (arrowAngle < 0) arrowAngle += 360;
+  if (arrowAngle >= 360) arrowAngle -= 360;
+
+  oled.setCursor(0, 24);
+  sprintf(buf, "Arrow: %.0f%c", arrowAngle, 247);
+  oled.print(buf);
+
+  // D/T rating
+  oled.setCursor(0, 36);
+  sprintf(buf, "D:%.1f T:%.1f", geocacheData.difficulty, geocacheData.terrain);
+  oled.print(buf);
+
+  // Accuracy
+  float accM = getGpsAccuracyMeters();
+  oled.setCursor(0, 48);
+  if (useMetricUnits) {
+    sprintf(buf, "+/-%.0fm", accM);
+  } else {
+    sprintf(buf, "+/-%.0fft", accM * 3.28084);
+  }
+  oled.print(buf);
 }
 
 void drawOLEDScreenDiags() {
