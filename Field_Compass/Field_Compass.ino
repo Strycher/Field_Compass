@@ -3606,69 +3606,85 @@ void drawScreenEnv() {
   drawHeader("ENVIRONMENT");
 
   int y = 42;
-  int labelX = 20;
-  int valueX = 110;
-  int lineH = 28;
+  int labelX = 10;
+  int valueX = 70;      // Moved left for textSize 1 labels (#55)
+  int lineH = 16;        // Reduced for textSize 1 (~8px char + 8px gap) (#55)
   char buf[40];
+
+  // ENV-specific drawing at textSize 1 to prevent pressure wrap (#55)
+  // Other screens continue using drawLabel/drawValue at textSize 2
+  auto envLabel = [&](int x, int y, const char* label) {
+    tft.setTextColor(COLOR_DIM);
+    tft.setTextSize(1);
+    tft.setCursor(x, y);
+    tft.print(label);
+  };
+  auto envValue = [&](int x, int y, const char* value, uint16_t color = COLOR_VALUE) {
+    tft.fillRect(x, y, 250, 10, COLOR_BG);
+    tft.setTextColor(color);
+    tft.setTextSize(1);
+    tft.setCursor(x, y);
+    tft.print(value);
+  };
 
   if (bmeAvailable || shtAvailable) {
     // Temperature — SHT41 is primary source, BME688 fallback (#48)
     float tempC = shtAvailable ? shtData.temperature : envData.temperature;
     float tempF = tempC * 9.0 / 5.0 + 32.0;
     const char* tempSrc = shtAvailable ? "SHT" : "BME";
-    drawLabel(labelX, y, "Temp:");
+    envLabel(labelX, y, "Temp:");
     sprintf(buf, "%.1fF (%.1fC) %s", tempF, tempC, tempSrc);
-    drawValue(valueX, y, buf);
+    envValue(valueX, y, buf);
     y += lineH;
 
     // Humidity — SHT41 is primary source, BME688 fallback (#48)
     float humid = shtAvailable ? shtData.humidity : envData.humidity;
-    drawLabel(labelX, y, "Humid:");
+    envLabel(labelX, y, "Humid:");
     sprintf(buf, "%.1f%% %s", humid, tempSrc);
-    drawValue(valueX, y, buf);
+    envValue(valueX, y, buf);
     y += lineH;
 
     // BME688-specific readings (IAQ, CO2, pressure, forecast)
     if (bmeAvailable) {
       // IAQ with accuracy indicator
-      drawLabel(labelX, y, "IAQ:");
+      envLabel(labelX, y, "IAQ:");
       sprintf(buf, "%.0f [%s]", envData.iaq, getIaqAccuracyText(envData.iaqAccuracy));
       // Color based on IAQ: 0-50 good, 51-100 moderate, 101-150 poor, 151-200 unhealthy, >200 very unhealthy
       uint16_t color = COLOR_VALUE;
       if (envData.iaq > 200) color = COLOR_ERROR;
       else if (envData.iaq > 100) color = COLOR_WARN;
-      drawValue(valueX, y, buf, color);
+      envValue(valueX, y, buf, color);
       y += lineH;
 
       // CO2 equivalent
-      drawLabel(labelX, y, "CO2:");
+      envLabel(labelX, y, "CO2:");
       sprintf(buf, "%.0f ppm", envData.co2Equivalent);
       color = COLOR_VALUE;
       if (envData.co2Equivalent > 2000) color = COLOR_ERROR;
       else if (envData.co2Equivalent > 1000) color = COLOR_WARN;
-      drawValue(valueX, y, buf, color);
+      envValue(valueX, y, buf, color);
       y += lineH;
 
       // Pressure (station/absolute)
-      drawLabel(labelX, y, "Press:");
+      envLabel(labelX, y, "Press:");
       sprintf(buf, "%.1f hPa (%.2f\")", envData.pressure, hPaToInHg(envData.pressure));
-      drawValue(valueX, y, buf);
+      envValue(valueX, y, buf);
       y += lineH;
 
       // Weather trend and forecast
-      drawLabel(labelX, y, "Fcst:");
+      envLabel(labelX, y, "Fcst:");
       sprintf(buf, "%s %s", getTrendArrow(), weatherTrend.forecast);
       color = COLOR_VALUE;
       if (strstr(weatherTrend.forecast, "Storm")) color = COLOR_ERROR;
       else if (strstr(weatherTrend.forecast, "Rain") || strstr(weatherTrend.forecast, "Snow")) color = COLOR_WARN;
-      drawValue(valueX, y, buf, color);
+      envValue(valueX, y, buf, color);
     } else {
       // SHT41 only — no IAQ/CO2/pressure available
-      drawLabel(labelX, y, "IAQ:");
-      drawValue(valueX, y, "N/A (no BME688)", COLOR_DIM);
+      envLabel(labelX, y, "IAQ:");
+      envValue(valueX, y, "N/A (no BME688)", COLOR_DIM);
       y += lineH;
-      drawLabel(labelX, y, "Press:");
-      drawValue(valueX, y, "N/A (no BME688)", COLOR_DIM);
+      envLabel(labelX, y, "Press:");
+      envValue(valueX, y, "N/A (no BME688)", COLOR_DIM);
     }
 
   } else {
