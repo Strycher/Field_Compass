@@ -505,15 +505,18 @@ String serialRingPeek() {
 // Web serial streaming position tracker
 static uint16_t webSerialReadPos = 0;
 
-// Custom print that captures to ring buffer
+// Custom print that captures to ring buffer and SD log (#59)
 void logPrint(const char* msg) {
   serialRingAppend(msg);
+  serialLogAppend(msg);
   Serial.print(msg);
 }
 
 void logPrintln(const char* msg) {
   serialRingAppend(msg);
   serialRingAppend("\n");
+  serialLogAppend(msg);
+  serialLogAppend("\n");
   Serial.println(msg);
 }
 
@@ -524,6 +527,7 @@ void logPrintf(const char* fmt, ...) {
   vsnprintf(buf, sizeof(buf), fmt, ap);
   va_end(ap);
   serialRingAppend(buf);
+  serialLogAppend(buf);
   Serial.print(buf);
 }
 
@@ -834,6 +838,18 @@ void loop() {
     framFlushToSD();
   }
 
+  // Serial log flush to SD (every 5 seconds) (#59)
+  if (serialLogActive && (millis() - lastLogFlush > LOG_FLUSH_INTERVAL)) {
+    serialLogFlush();
+  }
+
+  // Serial log rotation check (hourly) (#59)
+  // After grace period (LOG_GRACE_HOURS of uptime), switch to normal rotation
+  if (serialLogActive && (millis() - lastLogRotation > LOG_ROTATION_INTERVAL)) {
+    serialLogRotate();
+    lastLogRotation = millis();
+  }
+
   // Periodic status logging for web serial monitor
   if (millis() - lastStatusLog > STATUS_LOG_INTERVAL) {
     char buf[256];
@@ -857,6 +873,7 @@ void loop() {
              gpsHadFirstFix ? gpsFirstFixTime / 1000 : 0,
              battV, battP, battR);
     serialRingAppend(buf);
+    serialLogAppend(buf);  // SD log (#59)
     Serial.print(buf);
 
     // TFT debug logging (P1 blank bug investigation)
@@ -866,6 +883,7 @@ void loop() {
     snprintf(buf, sizeof(buf), "[TFT] sleep:%d scr:%d upd:%lus ago reinit:%lus ago cnt:%lu\n",
              tftSleeping, currentScreen, tftAge, reinitAge, tftUpdateCount);
     serialRingAppend(buf);
+    serialLogAppend(buf);  // SD log (#59)
     Serial.print(buf);
     #endif
 
