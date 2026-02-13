@@ -1969,6 +1969,8 @@ void handleWebDiags() {
   html += "\n=== Sensors ===\n";
   sprintf(buf, "BME688:  %s\n", bmeAvailable ? "OK" : "N/A");
   html += buf;
+  sprintf(buf, "SHT41:   %s\n", shtAvailable ? "OK" : "N/A");
+  html += buf;
   sprintf(buf, "IMU:     %s\n", imuAvailable ? "OK" : "N/A");
   html += buf;
   sprintf(buf, "Mag:     %s\n", magAvailable ? "OK" : "N/A");
@@ -1979,6 +1981,32 @@ void handleWebDiags() {
   html += buf;
   sprintf(buf, "OLED:    %s\n", oledAvailable ? "OK" : "N/A");
   html += buf;
+
+  // Temp comparison SHT41 vs BME688 (#48)
+  html += "\n=== Temperature Comparison ===\n";
+  if (shtAvailable) {
+    float shtF = shtData.temperature * 9.0 / 5.0 + 32.0;
+    sprintf(buf, "SHT41:   %.1fF (%.1fC)\n", shtF, shtData.temperature);
+    html += buf;
+    sprintf(buf, "SHT41 H: %.1f%%\n", shtData.humidity);
+    html += buf;
+  } else {
+    html += "SHT41:   N/A\n";
+  }
+  if (bmeAvailable) {
+    float bmeF = envData.temperature * 9.0 / 5.0 + 32.0;
+    sprintf(buf, "BME688:  %.1fF (%.1fC)\n", bmeF, envData.temperature);
+    html += buf;
+    sprintf(buf, "BME688 H: %.1f%%\n", envData.humidity);
+    html += buf;
+  } else {
+    html += "BME688:  N/A\n";
+  }
+  if (shtAvailable && bmeAvailable) {
+    float deltaF = (shtData.temperature - envData.temperature) * 9.0 / 5.0;
+    sprintf(buf, "Delta:   %+.1fF (SHT - BME)\n", deltaF);
+    html += buf;
+  }
 
   // GPS (#68)
   html += "\n=== GPS ===\n";
@@ -3887,6 +3915,30 @@ void drawScreenDiags() {
           shtAvailable ? "Y" : "N",
           imuAvailable ? "Y" : "N",
           batteryAvailable ? "Y" : "N");
+  tft.setTextColor(COLOR_VALUE);
+  tft.setCursor(valueX - 80, y);
+  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
+  tft.print(buf);
+  y += lineH;
+
+  // Temp comparison: SHT41 vs BME688 (#48)
+  tft.setTextColor(COLOR_HEADER);
+  tft.setCursor(labelX, y);
+  tft.print("Temps:");
+  if (shtAvailable && bmeAvailable) {
+    float shtF = shtData.temperature * 9.0 / 5.0 + 32.0;
+    float bmeF = envData.temperature * 9.0 / 5.0 + 32.0;
+    float deltaF = shtF - bmeF;
+    sprintf(buf, "SHT:%.1fF BME:%.1fF (%+.1f)", shtF, bmeF, deltaF);
+  } else if (shtAvailable) {
+    float shtF = shtData.temperature * 9.0 / 5.0 + 32.0;
+    sprintf(buf, "SHT:%.1fF BME:N/A", shtF);
+  } else if (bmeAvailable) {
+    float bmeF = envData.temperature * 9.0 / 5.0 + 32.0;
+    sprintf(buf, "SHT:N/A BME:%.1fF", bmeF);
+  } else {
+    sprintf(buf, "No sensors");
+  }
   tft.setTextColor(COLOR_VALUE);
   tft.setCursor(valueX - 80, y);
   tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
