@@ -559,12 +559,16 @@ void setup() {
   initRTC();    // Adalogger RTC - sets system time if RTC has valid time
   initWiFi();   // Will sync NTP if connected, then sync RTC
 
-  // Load weather history and BSEC state from SD
+  // Load BSEC state: try FRAM first (fast), fall back to SD
+  if (bmeAvailable) {
+    if (!loadBsecFromFRAM()) {
+      if (sdAvailable) loadBsecState();
+    }
+  }
+
+  // Load weather history from SD
   if (sdAvailable) {
     loadWeatherHistory();
-    if (bmeAvailable) {
-      loadBsecState();
-    }
   }
 
   // Initialize web server
@@ -823,10 +827,15 @@ void bsecDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bs
     }
   }
 
-  // BSEC state persistence: save when accuracy reaches level 3 for first time
+  // BSEC state persistence: save to FRAM on every accuracy change, SD on level 3
   static uint8_t lastAccuracy = 0;
-  if (envData.iaqAccuracy == 3 && lastAccuracy < 3) {
-    saveBsecState();
+  if (envData.iaqAccuracy != lastAccuracy) {
+    if (framAvailable) {
+      saveBsecToFRAM();  // Fast save to FRAM on every accuracy change
+    }
+    if (envData.iaqAccuracy == 3 && lastAccuracy < 3) {
+      saveBsecState();   // Also save to SD when reaching accuracy 3
+    }
   }
   lastAccuracy = envData.iaqAccuracy;
 
@@ -1336,6 +1345,51 @@ bool saveBsecState() {
   logPrintln("BSEC state saved to SD card");
   lastBsecStateSave = millis();
   bsecStateSaved = true;
+  return true;
+}
+
+// Save BSEC state to FRAM (fast, on every accuracy change)
+bool saveBsecToFRAM() {
+  if (!framAvailable || !bmeAvailable) return false;
+
+  if (!envSensor.getState(bsecState)) {
+    logPrintf("[FRAM] Failed to get BSEC state: %d\n", envSensor.status);
+    return false;
+  }
+
+  // Write BSEC blob to FRAM
+  for (int i = 0; i < BSEC_MAX_STATE_BLOB_SIZE && i < FRAM_BSEC_SIZE; i++) {
+    fram.write8(FRAM_BSEC_ADDR + i, bsecState[i]);
+  }
+
+  // Update header metadata
+  framHeader.bsecTimestamp = millis();
+  framHeader.bsecAccuracy = envData.iaqAccuracy;
+  framHeader.flags |= 0x02;  // Bit 1: BSEC valid
+  framWriteHeader();
+
+  logPrintf("[FRAM] BSEC state saved (acc:%d)\n", envData.iaqAccuracy);
+  return true;
+}
+
+// Load BSEC state from FRAM (fast boot recovery)
+bool loadBsecFromFRAM() {
+  if (!framAvailable || !bmeAvailable) return false;
+  if (!(framHeader.flags & 0x02)) return false;  // No valid BSEC in FRAM
+
+  // Read BSEC blob from FRAM
+  for (int i = 0; i < BSEC_MAX_STATE_BLOB_SIZE && i < FRAM_BSEC_SIZE; i++) {
+    bsecState[i] = fram.read8(FRAM_BSEC_ADDR + i);
+  }
+
+  if (!envSensor.setState(bsecState)) {
+    logPrintf("[FRAM] Failed to restore BSEC state: %d\n", envSensor.status);
+    return false;
+  }
+
+  logPrintf("[FRAM] BSEC state restored (acc:%d, age:%lus)\n",
+            framHeader.bsecAccuracy, framHeader.bsecTimestamp / 1000);
+  bsecStateLoaded = true;
   return true;
 }
 
