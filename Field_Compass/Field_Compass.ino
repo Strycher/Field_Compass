@@ -907,6 +907,36 @@ void initSHT41() {
   }
 }
 
+// Read the 64-byte FRAM header into RAM
+void framReadHeader() {
+  uint8_t buf[FRAM_HEADER_SIZE];
+  for (int i = 0; i < FRAM_HEADER_SIZE; i++) {
+    buf[i] = fram.read8(FRAM_HEADER_ADDR + i);
+  }
+  memcpy(&framHeader, buf, FRAM_HEADER_SIZE);
+}
+
+// Write the RAM header back to FRAM
+void framWriteHeader() {
+  uint8_t buf[FRAM_HEADER_SIZE];
+  memcpy(buf, &framHeader, FRAM_HEADER_SIZE);
+  for (int i = 0; i < FRAM_HEADER_SIZE; i++) {
+    fram.write8(FRAM_HEADER_ADDR + i, buf[i]);
+  }
+}
+
+// Format FRAM with clean header (zeroed ring buffers)
+void framFormat() {
+  logPrintln("  Formatting...");
+  memset(&framHeader, 0, sizeof(framHeader));
+  framHeader.magic = FRAM_MAGIC;
+  framHeader.version = FRAM_VERSION;
+  framHeader.battCapacity = FRAM_BATT_COUNT;
+  framHeader.wxCapacity = FRAM_WX_COUNT;
+  framWriteHeader();
+  logPrintln("  Format complete");
+}
+
 void initFRAM() {
   logPrint("Initializing FRAM... ");
 
@@ -921,6 +951,17 @@ void initFRAM() {
   fram.getDeviceID(&mfgId, &prodId);
   framAvailable = true;
   logPrintf("OK (mfg:0x%02X prod:0x%04X, 256KB)\n", mfgId, prodId);
+
+  // Read and validate FRAM header
+  framReadHeader();
+  if (framHeader.magic != FRAM_MAGIC || framHeader.version != FRAM_VERSION) {
+    logPrintln("  Header invalid - formatting");
+    framFormat();
+  } else {
+    logPrintf("  Batt:%d/%d Wx:%d/%d pending\n",
+              framHeader.battCount, framHeader.battCapacity,
+              framHeader.wxCount, framHeader.wxCapacity);
+  }
 }
 
 void initIMU() {
