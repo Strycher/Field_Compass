@@ -9,6 +9,7 @@
  * - Adafruit BME688 (I2C - STEMMA QT) with BSEC2
  * - Adafruit SHT41 (I2C 0x44 - STEMMA QT) (#48)
  * - Adafruit LSM6DSOX + LIS3MDL 9-DoF IMU (I2C - STEMMA QT)
+ * - Adafruit SPI FRAM 256KB MB85RS2MTA (SPI, CS=GPIO15)
  *
  * Screens:
  * 1. Operational Info (time, uptime, WiFi, battery)
@@ -24,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.21"
+#define FW_VERSION "0.22"
 
 #include <Wire.h>
 #include <SPI.h>
