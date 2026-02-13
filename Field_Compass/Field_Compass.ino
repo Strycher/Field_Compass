@@ -4,7 +4,7 @@
  * Hardware:
  * - Adafruit ESP32-S3 Feather 8MB w.FL
  * - Adafruit SH1107 OLED FeatherWing 128x64 (I2C)
- * - Adafruit ST7789 2.0" TFT 320x240 (SPI via EYESPI breakout)
+ * - Adafruit ILI9341 3.2" TFT 320x240 (SPI direct wiring)
  * - Adafruit Ultimate GPS FeatherWing PA1616D (Serial)
  * - Adafruit BME688 (I2C - STEMMA QT) with BSEC2
  * - Adafruit LSM6DSOX + LIS3MDL 9-DoF IMU (I2C - STEMMA QT)
@@ -23,7 +23,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.18"
+#define FW_VERSION "0.19"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -33,7 +33,7 @@
 #include <time.h>
 #include <stdarg.h>
 #include <Adafruit_GFX.h>
-#include <Adafruit_ST7789.h>
+#include <Adafruit_ILI9341.h>
 #include <Adafruit_SH110X.h>
 #include <bsec2.h>
 
@@ -64,11 +64,11 @@ const char* NTP_SERVER = "pool.ntp.org";
 const long GMT_OFFSET_SEC = -18000;  // EST = UTC-5
 const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 
-// TFT Display pins (EYESPI breakout)
-#define TFT_CS    18  // A0 -> TCS
-#define TFT_DC    17  // A1 -> DC
+// TFT Display pins (ILI9341 3.2" breakout, direct SPI wiring)
+#define TFT_CS    18  // A0 -> CS
+#define TFT_DC    17  // A1 -> D/C
 #define TFT_RST   16  // A2 -> RST
-#define TOUCH_CS  15  // A3 -> TSCS (for future use)
+#define TOUCH_CS  15  // A3 -> (resistive touch, unused for now)
 #define SD_CS     10  // Adalogger FeatherWing SD slot (was 14 for TFT breakout)
 
 // SPI pins (explicit definition for PSRAM variant compatibility)
@@ -152,7 +152,7 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 // ============== Global Objects ==============
 
 // TFT Display (hardware SPI - 3-argument constructor)
-Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
+Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
 
 // OLED Display
 Adafruit_SH1107 oled = Adafruit_SH1107(64, 128, &Wire);
@@ -643,11 +643,12 @@ void scanI2C() {
 // ============== Initialization Functions ==============
 
 void initTFT() {
-  logPrint("Initializing ST7789 TFT... ");
+  logPrint("Initializing ILI9341 TFT... ");
 
-  tft.init(TFT_HEIGHT, TFT_WIDTH);  // 240x320, but we use landscape
-  tft.setRotation(1);  // Landscape mode
-  tft.fillScreen(ST77XX_RED);  // Flash red to confirm TFT is working
+  tft.begin();
+
+  tft.setRotation(3);  // Landscape mode, flipped 180 for ILI9341 board orientation
+  tft.fillScreen(ILI9341_RED);  // Flash red to confirm TFT is working
   delay(100);
   tft.fillScreen(COLOR_BG);
 
@@ -671,8 +672,8 @@ void checkTFTHealth() {
     #endif
 
     // Re-initialize TFT
-    tft.init(TFT_HEIGHT, TFT_WIDTH);
-    tft.setRotation(1);
+    tft.begin();
+    tft.setRotation(3);
     tft.fillScreen(COLOR_BG);
 
     lastTFTReinit = now;
@@ -2479,7 +2480,7 @@ void sleepTFT() {
   if (tftSleeping) return;
 
   tftSleeping = true;
-  tft.enableSleep(true);
+  tft.sendCommand(ILI9341_SLPIN);
   #if DEBUG_SLEEP
   Serial.println("TFT sleeping");
   #endif
@@ -2489,7 +2490,8 @@ void wakeTFT() {
   if (!tftSleeping) return;
 
   tftSleeping = false;
-  tft.enableSleep(false);
+  tft.sendCommand(ILI9341_SLPOUT);
+  delay(120);  // ILI9341 datasheet: 120ms delay after sleep out
   tft.fillScreen(COLOR_BG);  // Clear screen on wake
   #if DEBUG_SLEEP
   Serial.println("TFT woke up");
@@ -2585,6 +2587,11 @@ void handleButtons() {
 
   // Reset activity timer on any button press
   lastActivityTime = now;
+
+  // Reinit TFT on any button press (recovers from SPI glitch/white screen)
+  tft.begin();
+  tft.setRotation(3);
+  lastTFTReinit = now;
 
   // Handle A/B based on current screen and sub-screen
   if (currentScreen == SCREEN_GEOCACHE && geocacheSubScreen != 0) {
