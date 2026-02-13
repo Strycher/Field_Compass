@@ -154,6 +154,14 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 #define WEB_SERVER_PORT 80
 #define SERIAL_RING_SIZE 4096  // 4KB ring buffer for serial capture
 
+// Serial log to SD (#59)
+#define LOG_DIR "/logs"
+#define LOG_RETENTION_HOURS   48       // Normal retention window
+#define LOG_GRACE_HOURS       24       // Grace period after extended off
+#define LOG_FLUSH_INTERVAL    5000     // Flush SD buffer every 5 seconds (ms)
+#define LOG_SD_BUF_SIZE       512      // RAM buffer before SD write
+#define LOG_ROTATION_INTERVAL 3600000  // Check rotation hourly (ms)
+
 // Geocache file configuration (#70)
 #define GEOCACHE_GPX_FILE "/geocaches/caches.gpx"
 #define GEOCACHE_DIR "/geocaches"
@@ -197,6 +205,15 @@ WebServer webServer(WEB_SERVER_PORT);
 static char serialRing[SERIAL_RING_SIZE];
 static volatile uint16_t serialRingHead = 0;
 static volatile uint16_t serialRingTail = 0;
+
+// Serial log to SD (#59)
+static File serialLogFile;
+static bool serialLogActive = false;
+static char serialLogBuf[LOG_SD_BUF_SIZE];
+static uint16_t serialLogBufPos = 0;
+static unsigned long lastLogFlush = 0;
+static unsigned long lastLogRotation = 0;
+static char serialLogFilename[40];  // "/logs/serial_YYYYMMDD_HHMMSS.log"
 
 // ============== Global State ==============
 
