@@ -630,9 +630,13 @@ void loop() {
   // Update weather log statistics periodically
   updateWeatherLogStats();
 
-  // Battery logging to SD card (every 10 seconds)
-  if (sdAvailable && batteryAvailable && (millis() - lastBattLog > BATT_LOG_INTERVAL)) {
-    logBatteryToSD();
+  // Battery logging (every 10 seconds) — FRAM buffered, SD fallback
+  if (batteryAvailable && (millis() - lastBattLog > BATT_LOG_INTERVAL)) {
+    if (framAvailable) {
+      logBatteryToFRAM();
+    } else if (sdAvailable) {
+      logBatteryToSD();  // Fallback: direct SD write
+    }
     lastBattLog = millis();
   }
 
@@ -1031,6 +1035,48 @@ void logBatteryToSD() {
   f.printf("%lu,%.3f,%.2f,%.2f\n", millis(), v, p, r);
   f.close();
   recordSDSuccess();
+}
+
+// Write battery entry to FRAM ring buffer instead of SD
+void logBatteryToFRAM() {
+  if (!framAvailable || !batteryAvailable) return;
+
+  float v = battery.cellVoltage();
+  float p = battery.cellPercent();
+  float r = battery.chargeRate();
+
+  FRAMBatteryEntry entry;
+  entry.timestamp = millis();
+  entry.voltage = v;
+  entry.percent = p;
+  entry.rate = r;
+  entry.flags = 0;
+  // Simple XOR checksum over first 18 bytes (before checksum field)
+  uint16_t ck = 0;
+  uint8_t* bytes = (uint8_t*)&entry;
+  for (int i = 0; i < 18; i += 2) {
+    ck ^= (bytes[i] | (bytes[i+1] << 8));
+  }
+  entry.checksum = ck;
+
+  // Write entry to FRAM at head position
+  uint32_t addr = FRAM_BATT_ADDR + (framHeader.battHead * FRAM_BATT_ENTRY);
+  uint8_t* data = (uint8_t*)&entry;
+  for (int i = 0; i < FRAM_BATT_ENTRY; i++) {
+    fram.write8(addr + i, data[i]);
+  }
+
+  // Advance head (circular)
+  framHeader.battHead = (framHeader.battHead + 1) % FRAM_BATT_COUNT;
+  if (framHeader.battCount < FRAM_BATT_COUNT) {
+    framHeader.battCount++;
+  } else {
+    // Ring full — tail advances too (oldest data lost)
+    framHeader.battTail = (framHeader.battTail + 1) % FRAM_BATT_COUNT;
+    logPrintln("[FRAM] WARN: Battery ring overflow");
+  }
+  framHeader.flags |= 0x01;  // Set dirty flag
+  framWriteHeader();
 }
 
 // Check if a real LiPo battery is connected (not just USB power)
