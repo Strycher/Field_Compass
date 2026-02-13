@@ -23,7 +23,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.15"
+#define FW_VERSION "0.16"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -124,6 +124,11 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 // Web server configuration
 #define WEB_SERVER_PORT 80
 #define SERIAL_RING_SIZE 4096  // 4KB ring buffer for serial capture
+
+// Geocache file configuration (#70)
+#define GEOCACHE_GPX_FILE "/geocaches/caches.gpx"
+#define GEOCACHE_DIR "/geocaches"
+#define GPX_MAX_FILE_SIZE (64 * 1024)  // 64KB max upload
 
 // Watchdog configuration (auto-reset on hang)
 #define WDT_TIMEOUT_SEC 30  // Reset if loop hangs for 30 seconds
@@ -492,45 +497,8 @@ void setup() {
   // Initialize activity timer for display sleep
   lastActivityTime = millis();
 
-  // Test geocache data (#70) - remove after GPX import implemented
-  // Load multiple test caches into cacheList array
-  cacheList[0].valid = true;
-  cacheList[0].latitude = 39.7589;   // Sample coordinates (Dayton, OH area)
-  cacheList[0].longitude = -84.1916;
-  cacheList[0].difficulty = 2.5;
-  cacheList[0].terrain = 3.0;
-  strcpy(cacheList[0].gcCode, "GC12345");
-  strcpy(cacheList[0].name, "Test Cache #1");
-  strcpy(cacheList[0].hint, "Magnetic, look low near the fence post");
-  cacheList[0].found = false;
-  cacheList[0].foundTime = 0;
-
-  cacheList[1].valid = true;
-  cacheList[1].latitude = 39.7612;
-  cacheList[1].longitude = -84.1880;
-  cacheList[1].difficulty = 3.5;
-  cacheList[1].terrain = 2.0;
-  strcpy(cacheList[1].gcCode, "GC67890");
-  strcpy(cacheList[1].name, "Hidden Treasure");
-  strcpy(cacheList[1].hint, "Under the big oak tree");
-  cacheList[1].found = false;
-  cacheList[1].foundTime = 0;
-
-  cacheList[2].valid = true;
-  cacheList[2].latitude = 39.7550;
-  cacheList[2].longitude = -84.1950;
-  cacheList[2].difficulty = 1.5;
-  cacheList[2].terrain = 1.5;
-  strcpy(cacheList[2].gcCode, "GCABCDE");
-  strcpy(cacheList[2].name, "Park & Grab");
-  strcpy(cacheList[2].hint, "Parking lot lamp post");
-  cacheList[2].found = true;  // Pre-mark one as found for testing
-  cacheList[2].foundTime = 1707753045;
-
-  cacheListCount = 3;
-  selectedCacheIndex = 0;
-  loadCacheFoundStatus();  // Load any saved found status from SD
-  logPrintf("[GEOCACHE] %d test caches loaded\n", cacheListCount);
+  // Load geocaches from SD card (#70)
+  loadGeocachesFromSD();
 
   // Clear screen for main display
   tft.fillScreen(COLOR_BG);
@@ -1160,6 +1128,171 @@ void loadCacheFoundStatus() {
   logPrintf("[GEOCACHE] Loaded found status: %d entries\n", loadedCount);
 }
 
+// ============== GPX File Parser (#70) ==============
+
+// GPX upload state (for multipart handler)
+static String gpxUploadBuffer;
+static bool gpxUploadSuccess = false;
+static String gpxUploadError;
+
+// Decode ROT13 hint in place (geocaching.com encodes hints this way)
+void decodeROT13(char* str) {
+  for (int i = 0; str[i]; i++) {
+    char c = str[i];
+    if ((c >= 'A' && c <= 'M') || (c >= 'a' && c <= 'm')) {
+      str[i] = c + 13;
+    } else if ((c >= 'N' && c <= 'Z') || (c >= 'n' && c <= 'z')) {
+      str[i] = c - 13;
+    }
+  }
+}
+
+// Extract text between XML tags into destination buffer
+bool extractXMLField(const String& xml, const char* startTag, const char* endTag,
+                     char* dest, size_t destSize) {
+  int start = xml.indexOf(startTag);
+  if (start < 0) return false;
+  start += strlen(startTag);
+
+  int end = xml.indexOf(endTag, start);
+  if (end < 0) return false;
+
+  String value = xml.substring(start, end);
+  value.trim();
+
+  // Decode common HTML entities
+  value.replace("&amp;", "&");
+  value.replace("&lt;", "<");
+  value.replace("&gt;", ">");
+  value.replace("&quot;", "\"");
+  value.replace("&#39;", "'");
+  value.replace("&apos;", "'");
+
+  strncpy(dest, value.c_str(), destSize - 1);
+  dest[destSize - 1] = '\0';
+  return true;
+}
+
+// Extract float value from XML tags with default
+float extractXMLFloat(const String& xml, const char* startTag, const char* endTag, float defaultVal) {
+  char buf[16];
+  if (extractXMLField(xml, startTag, endTag, buf, sizeof(buf))) {
+    return atof(buf);
+  }
+  return defaultVal;
+}
+
+// Parse GPX data and populate cacheList[]
+// Returns: number of caches successfully parsed
+int parseGPXFromString(const String& gpxData) {
+  cacheListCount = 0;
+
+  int searchPos = 0;
+  while (cacheListCount < MAX_CACHES) {
+    // Find next <wpt> element
+    int wptStart = gpxData.indexOf("<wpt", searchPos);
+    if (wptStart < 0) break;
+
+    int wptEnd = gpxData.indexOf("</wpt>", wptStart);
+    if (wptEnd < 0) break;
+
+    String wptBlock = gpxData.substring(wptStart, wptEnd + 6);
+    searchPos = wptEnd + 6;
+
+    GeocacheEntry entry;
+    memset(&entry, 0, sizeof(entry));
+
+    // Extract lat/lon from <wpt lat="..." lon="...">
+    int latPos = wptBlock.indexOf("lat=\"");
+    int lonPos = wptBlock.indexOf("lon=\"");
+    if (latPos < 0 || lonPos < 0) continue;
+
+    entry.latitude = wptBlock.substring(latPos + 5, wptBlock.indexOf("\"", latPos + 5)).toFloat();
+    entry.longitude = wptBlock.substring(lonPos + 5, wptBlock.indexOf("\"", lonPos + 5)).toFloat();
+
+    // Validate coordinates
+    if (entry.latitude < -90 || entry.latitude > 90 ||
+        entry.longitude < -180 || entry.longitude > 180) continue;
+
+    // Extract <name> (GC code)
+    extractXMLField(wptBlock, "<name>", "</name>", entry.gcCode, sizeof(entry.gcCode));
+
+    // Extract display name - try groundspeak:name first, then desc
+    if (!extractXMLField(wptBlock, "<groundspeak:name>", "</groundspeak:name>",
+                         entry.name, sizeof(entry.name))) {
+      extractXMLField(wptBlock, "<desc>", "</desc>", entry.name, sizeof(entry.name));
+    }
+
+    // If still no name, use GC code
+    if (strlen(entry.name) == 0) {
+      strncpy(entry.name, entry.gcCode, sizeof(entry.name) - 1);
+    }
+
+    // Extract difficulty/terrain (default 2.5 if not found)
+    entry.difficulty = extractXMLFloat(wptBlock, "<groundspeak:difficulty>", "</groundspeak:difficulty>", 2.5);
+    entry.terrain = extractXMLFloat(wptBlock, "<groundspeak:terrain>", "</groundspeak:terrain>", 2.5);
+
+    // Extract hint (decode ROT13 if present)
+    extractXMLField(wptBlock, "<groundspeak:encoded_hints>", "</groundspeak:encoded_hints>",
+                    entry.hint, sizeof(entry.hint));
+    decodeROT13(entry.hint);  // Geocaching.com encodes hints in ROT13
+
+    entry.valid = true;
+    entry.found = false;
+    entry.foundTime = 0;
+
+    cacheList[cacheListCount++] = entry;
+  }
+
+  logPrintf("[GEOCACHE] Parsed %d waypoints from GPX\n", cacheListCount);
+  return cacheListCount;
+}
+
+// Load geocaches from saved GPX file on SD card
+void loadGeocachesFromSD() {
+  if (!sdAvailable) {
+    logPrintln("[GEOCACHE] SD not available, skipping GPX load");
+    return;
+  }
+
+  if (!SD.exists(GEOCACHE_GPX_FILE)) {
+    logPrintln("[GEOCACHE] No saved GPX file found on SD");
+    return;
+  }
+
+  File f = sdOpenSafe(GEOCACHE_GPX_FILE, "r", true);
+  if (!f) {
+    logPrintln("[GEOCACHE] Failed to open GPX file");
+    return;
+  }
+
+  // Read file into string
+  String gpxData;
+  size_t fileSize = f.size();
+  if (fileSize > GPX_MAX_FILE_SIZE) {
+    logPrintf("[GEOCACHE] GPX file too large: %d bytes (max %d)\n", fileSize, GPX_MAX_FILE_SIZE);
+    f.close();
+    return;
+  }
+
+  gpxData.reserve(fileSize);
+  while (f.available()) {
+    gpxData += (char)f.read();
+  }
+  f.close();
+  recordSDSuccess();
+
+  // Parse the GPX
+  int parsed = parseGPXFromString(gpxData);
+
+  if (parsed > 0) {
+    loadCacheFoundStatus();  // Apply saved found status
+    logPrintf("[GEOCACHE] Loaded %d caches from SD\n", parsed);
+  } else {
+    logPrintln("[GEOCACHE] No valid waypoints in saved GPX");
+  }
+}
+
 // ============== Weather Logging Functions ==============
 
 // Get current timestamp from NTP or GPS
@@ -1513,6 +1646,7 @@ void handleWebRoot() {
   html += "<a href='/env'>Environment</a>";
   html += "<a href='/imu'>IMU / Compass</a>";
   html += "<a href='/diags'>Diagnostics</a>";
+  html += "<a href='/geocaches'>Geocache Manager</a>";
   html += "<a href='/serial'>Serial Monitor</a>";
   html += "<a href='/json'>JSON API</a>";
   html += "<p style='color:#666;margin-top:20px;font-size:12px;'>http://fieldcompass.local/</p>";
@@ -1889,6 +2023,292 @@ void handleWebBattLogClear() {
   }
 }
 
+// ============== Geocache Web Handlers (#70) ==============
+
+// GET /geocaches - Main geocache manager page
+void handleWebGeocaches() {
+  String html = "<!DOCTYPE html><html><head><title>Geocaches</title>";
+  html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
+  html += "<style>";
+  html += "body{font-family:sans-serif;margin:20px;background:#1a1a1a;color:#e0e0e0;}";
+  html += "h1,h2{color:#00ffff;}";
+  html += "form{background:#2a2a2a;padding:20px;border-radius:8px;margin:20px 0;}";
+  html += "input[type=file]{margin:10px 0;color:#e0e0e0;}";
+  html += "button,.btn{background:#00aa00;color:white;padding:10px 20px;border:none;";
+  html += "border-radius:5px;cursor:pointer;font-size:14px;text-decoration:none;display:inline-block;margin:2px;}";
+  html += "button:hover,.btn:hover{background:#00cc00;}";
+  html += ".btn-warn{background:#aa6600;}.btn-warn:hover{background:#cc8800;}";
+  html += ".btn-danger{background:#aa0000;}.btn-danger:hover{background:#cc0000;}";
+  html += ".btn-small{padding:5px 10px;font-size:12px;}";
+  html += ".cache{background:#2a2a2a;padding:12px;margin:8px 0;border-radius:5px;display:flex;justify-content:space-between;align-items:center;}";
+  html += ".cache-info{flex-grow:1;}";
+  html += ".cache-actions{white-space:nowrap;}";
+  html += ".found{border-left:4px solid #00ff00;}";
+  html += ".notfound{border-left:4px solid #666;}";
+  html += ".stats{color:#888;font-size:12px;}";
+  html += "a{color:#00ff00;}";
+  html += ".msg{padding:15px;border-radius:5px;margin:15px 0;}";
+  html += ".msg-ok{background:#004400;border:1px solid #00aa00;}";
+  html += ".msg-err{background:#440000;border:1px solid #aa0000;}";
+  html += "</style></head><body>";
+
+  html += "<h1>Geocache Manager</h1>";
+
+  // Show status message if present
+  if (webServer.hasArg("msg")) {
+    String msg = webServer.arg("msg");
+    bool isError = webServer.hasArg("err");
+    html += "<div class='msg " + String(isError ? "msg-err" : "msg-ok") + "'>" + msg + "</div>";
+  }
+
+  // Upload form
+  html += "<h2>Upload GPX File</h2>";
+  html += "<form method='POST' action='/geocaches/upload' enctype='multipart/form-data'>";
+  html += "<input type='file' name='gpxfile' accept='.gpx,.xml'><br>";
+  html += "<button type='submit'>Upload GPX</button>";
+  html += "</form>";
+  html += "<p class='stats'>Max file size: 64KB | Max caches: " + String(MAX_CACHES) + "</p>";
+
+  // Action buttons
+  html += "<div style='margin:15px 0;'>";
+  html += "<a href='/geocaches/download' class='btn btn-small'>Download Found Status</a> ";
+  html += "<a href='/geocaches/clear?confirm=yes' class='btn btn-small btn-danger' onclick=\"return confirm('Clear all caches?')\">Clear All</a>";
+  html += "</div>";
+
+  // Current cache list
+  html += "<h2>Loaded Caches (" + String(cacheListCount) + ")</h2>";
+
+  if (cacheListCount == 0) {
+    html += "<p>No caches loaded. Upload a GPX file to get started.</p>";
+  } else {
+    for (int i = 0; i < cacheListCount; i++) {
+      GeocacheEntry& c = cacheList[i];
+      if (!c.valid) continue;
+
+      html += "<div class='cache " + String(c.found ? "found" : "notfound") + "'>";
+      html += "<div class='cache-info'>";
+      html += "<strong>" + String(c.gcCode) + "</strong>: " + String(c.name);
+      html += "<br><span class='stats'>";
+      html += "D" + String(c.difficulty, 1) + "/T" + String(c.terrain, 1);
+      html += " | " + String(c.latitude, 5) + ", " + String(c.longitude, 5);
+      if (c.found) html += " | <span style='color:#0f0'>FOUND</span>";
+      html += "</span></div>";
+      html += "<div class='cache-actions'>";
+      html += "<a href='/geocaches/togglefound?idx=" + String(i) + "' class='btn btn-small " + String(c.found ? "btn-warn" : "") + "'>" + String(c.found ? "Unfound" : "Found") + "</a> ";
+      html += "<a href='/geocaches/delete?idx=" + String(i) + "' class='btn btn-small btn-danger' onclick=\"return confirm('Delete this cache?')\">Del</a>";
+      html += "</div></div>";
+    }
+  }
+
+  html += "<br><a href='/'>Back to Home</a>";
+  html += "</body></html>";
+
+  webServer.send(200, "text/html", html);
+}
+
+// POST upload data handler - receives file chunks
+void handleGeocacheUploadData() {
+  HTTPUpload& upload = webServer.upload();
+
+  if (upload.status == UPLOAD_FILE_START) {
+    gpxUploadBuffer = "";
+    gpxUploadSuccess = false;
+    gpxUploadError = "";
+    logPrintf("[GEOCACHE] Upload started: %s\n", upload.filename.c_str());
+
+    // Validate file extension
+    String filename = upload.filename;
+    filename.toLowerCase();
+    if (!filename.endsWith(".gpx") && !filename.endsWith(".xml")) {
+      gpxUploadError = "Invalid file type. Please upload a .gpx file.";
+      return;
+    }
+  }
+
+  else if (upload.status == UPLOAD_FILE_WRITE) {
+    // Check size limit
+    if (gpxUploadBuffer.length() + upload.currentSize > GPX_MAX_FILE_SIZE) {
+      gpxUploadError = "File too large. Maximum size is 64KB.";
+      return;
+    }
+
+    // Append chunk to buffer
+    for (size_t i = 0; i < upload.currentSize; i++) {
+      gpxUploadBuffer += (char)upload.buf[i];
+    }
+  }
+
+  else if (upload.status == UPLOAD_FILE_END) {
+    logPrintf("[GEOCACHE] Upload complete: %d bytes\n", gpxUploadBuffer.length());
+
+    if (gpxUploadError.length() > 0) {
+      return;  // Already have an error
+    }
+
+    // Parse GPX data
+    int parsed = parseGPXFromString(gpxUploadBuffer);
+
+    if (parsed <= 0) {
+      gpxUploadError = "Failed to parse GPX file. No valid waypoints found.";
+      return;
+    }
+
+    // Save GPX to SD card
+    if (sdAvailable) {
+      // Ensure directory exists
+      if (!SD.exists(GEOCACHE_DIR)) {
+        SD.mkdir(GEOCACHE_DIR);
+      }
+
+      File f = sdOpenSafe(GEOCACHE_GPX_FILE, "w");
+      if (f) {
+        f.print(gpxUploadBuffer);
+        f.close();
+        recordSDSuccess();
+        logPrintf("[GEOCACHE] Saved GPX to SD: %d bytes\n", gpxUploadBuffer.length());
+      }
+    }
+
+    // Load any saved found status
+    loadCacheFoundStatus();
+
+    gpxUploadSuccess = true;
+    logPrintf("[GEOCACHE] Loaded %d caches from upload\n", parsed);
+  }
+
+  else if (upload.status == UPLOAD_FILE_ABORTED) {
+    gpxUploadError = "Upload aborted.";
+    gpxUploadBuffer = "";
+  }
+}
+
+// POST upload complete - send response
+void handleGeocacheUploadComplete() {
+  // Clear upload buffer to free RAM
+  gpxUploadBuffer = "";
+
+  String msg;
+  if (gpxUploadSuccess) {
+    msg = "Loaded " + String(cacheListCount) + " geocaches successfully!";
+    webServer.sendHeader("Location", "/geocaches?msg=" + msg);
+  } else {
+    msg = gpxUploadError.length() > 0 ? gpxUploadError : "Upload failed";
+    webServer.sendHeader("Location", "/geocaches?msg=" + msg + "&err=1");
+  }
+  webServer.send(302, "text/plain", "Redirecting...");
+}
+
+// GET /geocaches/download - Download found status CSV
+void handleGeocacheDownload() {
+  if (!sdAvailable || !SD.exists(GEOCACHE_FOUND_FILE)) {
+    webServer.send(404, "text/plain", "No found status file available");
+    return;
+  }
+
+  File f = sdOpenSafe(GEOCACHE_FOUND_FILE, "r");
+  if (!f) {
+    webServer.send(500, "text/plain", "Failed to open file");
+    return;
+  }
+
+  webServer.sendHeader("Content-Disposition", "attachment; filename=geocache_found.csv");
+  webServer.streamFile(f, "text/csv");
+  f.close();
+  recordSDSuccess();
+}
+
+// GET /geocaches/delete?idx=N - Delete single cache
+void handleGeocacheDelete() {
+  if (!webServer.hasArg("idx")) {
+    webServer.sendHeader("Location", "/geocaches?msg=Missing+index&err=1");
+    webServer.send(302);
+    return;
+  }
+
+  int idx = webServer.arg("idx").toInt();
+  if (idx < 0 || idx >= cacheListCount) {
+    webServer.sendHeader("Location", "/geocaches?msg=Invalid+index&err=1");
+    webServer.send(302);
+    return;
+  }
+
+  String deletedName = String(cacheList[idx].gcCode);
+
+  // Shift remaining caches
+  for (int i = idx; i < cacheListCount - 1; i++) {
+    cacheList[i] = cacheList[i + 1];
+  }
+  cacheListCount--;
+
+  // Update selected index if needed
+  if (selectedCacheIndex >= cacheListCount) {
+    selectedCacheIndex = max(0, cacheListCount - 1);
+  }
+
+  // Re-save GPX file (regenerate from memory)
+  // For simplicity, we'll just mark the change happened - a full GPX rewrite would be complex
+  logPrintf("[GEOCACHE] Deleted cache %s, %d remaining\n", deletedName.c_str(), cacheListCount);
+
+  webServer.sendHeader("Location", "/geocaches?msg=Deleted+" + deletedName);
+  webServer.send(302);
+}
+
+// GET /geocaches/clear?confirm=yes - Clear all caches
+void handleGeocacheClear() {
+  if (!webServer.hasArg("confirm") || webServer.arg("confirm") != "yes") {
+    webServer.sendHeader("Location", "/geocaches?msg=Clear+requires+confirm=yes&err=1");
+    webServer.send(302);
+    return;
+  }
+
+  int oldCount = cacheListCount;
+
+  // Clear memory
+  cacheListCount = 0;
+  selectedCacheIndex = 0;
+  memset(cacheList, 0, sizeof(cacheList));
+
+  // Delete GPX file from SD (but keep found status)
+  if (sdAvailable && SD.exists(GEOCACHE_GPX_FILE)) {
+    SD.remove(GEOCACHE_GPX_FILE);
+    recordSDSuccess();
+  }
+
+  logPrintf("[GEOCACHE] Cleared all %d caches\n", oldCount);
+  webServer.sendHeader("Location", "/geocaches?msg=Cleared+" + String(oldCount) + "+caches");
+  webServer.send(302);
+}
+
+// GET /geocaches/togglefound?idx=N - Toggle found status
+void handleGeocacheToggleFound() {
+  if (!webServer.hasArg("idx")) {
+    webServer.sendHeader("Location", "/geocaches?msg=Missing+index&err=1");
+    webServer.send(302);
+    return;
+  }
+
+  int idx = webServer.arg("idx").toInt();
+  if (idx < 0 || idx >= cacheListCount) {
+    webServer.sendHeader("Location", "/geocaches?msg=Invalid+index&err=1");
+    webServer.send(302);
+    return;
+  }
+
+  cacheList[idx].found = !cacheList[idx].found;
+  if (cacheList[idx].found) {
+    cacheList[idx].foundTime = millis() / 1000;  // Simple timestamp
+  } else {
+    cacheList[idx].foundTime = 0;
+  }
+
+  // Save updated found status
+  saveCacheFoundStatus();
+
+  String status = cacheList[idx].found ? "found" : "not+found";
+  webServer.sendHeader("Location", "/geocaches?msg=" + String(cacheList[idx].gcCode) + "+marked+" + status);
+  webServer.send(302);
+}
+
 void initWebServer() {
   if (!wifiConnected) return;
   if (webServerStarted) return;  // Already started
@@ -1912,6 +2332,14 @@ void initWebServer() {
   webServer.on("/json", handleWebJSON);
   webServer.on("/battlog", handleWebBattLog);
   webServer.on("/battlog/clear", handleWebBattLogClear);
+
+  // Geocache manager endpoints (#70)
+  webServer.on("/geocaches", HTTP_GET, handleWebGeocaches);
+  webServer.on("/geocaches/upload", HTTP_POST, handleGeocacheUploadComplete, handleGeocacheUploadData);
+  webServer.on("/geocaches/download", HTTP_GET, handleGeocacheDownload);
+  webServer.on("/geocaches/delete", HTTP_GET, handleGeocacheDelete);
+  webServer.on("/geocaches/clear", HTTP_GET, handleGeocacheClear);
+  webServer.on("/geocaches/togglefound", HTTP_GET, handleGeocacheToggleFound);
 
   webServer.begin();
   webServerStarted = true;
