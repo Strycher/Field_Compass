@@ -2305,7 +2305,14 @@ void handleWebDiags() {
   html += buf;
   sprintf(buf, "OLED:    %s\n", oledAvailable ? "OK" : "N/A");
   html += buf;
-  sprintf(buf, "FRAM:    %s\n", framAvailable ? "OK (256KB)" : "N/A");
+  if (framAvailable) {
+    sprintf(buf, "FRAM:    OK (256KB) Batt:%d/%d Wx:%d/%d %s\n",
+            framHeader.battCount, FRAM_BATT_COUNT,
+            framHeader.wxCount, FRAM_WX_COUNT,
+            (framHeader.flags & 0x01) ? "DIRTY" : "Clean");
+  } else {
+    sprintf(buf, "FRAM:    N/A\n");
+  }
   html += buf;
 
   // Temp comparison SHT41 vs BME688 (#48)
