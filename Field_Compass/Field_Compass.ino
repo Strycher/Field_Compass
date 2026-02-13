@@ -2310,6 +2310,7 @@ void handleWebRoot() {
   html += "<a href='/diags'>Diagnostics</a>";
   html += "<a href='/geocaches'>Geocache Manager</a>";
   html += "<a href='/serial'>Serial Monitor</a>";
+  html += "<a href='/logs'>Serial Logs (SD)</a>";
   html += "<a href='/json'>JSON API</a>";
   html += "<p style='color:#666;margin-top:20px;font-size:12px;'>http://fieldcompass.local/</p>";
   html += "</body></html>";
@@ -2671,6 +2672,108 @@ void handleWebSerialData() {
   }
 
   webServer.send(200, "text/plain", out);
+}
+
+// GET /logs — List serial log files with download links (#59)
+void handleWebLogs() {
+  String html = "<!DOCTYPE html><html><head><title>Serial Logs</title>";
+  html += "<meta name='color-scheme' content='dark light'>";
+  html += "<style>";
+  html += ":root{--bg:#1a1a1a;--fg:#e0e0e0;--link:#00ffff;--header:#00ffff;--tbl-border:#444;--tbl-alt:#222;}";
+  html += "@media(prefers-color-scheme:light){:root{--bg:#f5f5f5;--fg:#222;--link:#006666;--header:#008888;--tbl-border:#ccc;--tbl-alt:#eee;}}";
+  html += "body{font-family:sans-serif;margin:0;padding:10px;background:var(--bg);color:var(--fg);}";
+  html += "table{border-collapse:collapse;width:100%;margin:10px 0;}";
+  html += "th,td{padding:6px 12px;text-align:left;border-bottom:1px solid var(--tbl-border);}";
+  html += "tr:nth-child(even){background:var(--tbl-alt);}";
+  html += "a{color:var(--link);}";
+  html += "</style></head><body>";
+  html += "<h2 style='color:var(--header);margin:0 0 10px 0;'>Serial Logs</h2>";
+
+  if (!sdAvailable || !SD.exists(LOG_DIR)) {
+    html += "<p>No log files available.</p>";
+  } else {
+    // Flush current buffer before listing
+    serialLogFlush();
+
+    html += "<table><tr><th>File</th><th>Size</th><th>Action</th></tr>";
+
+    File dir = SD.open(LOG_DIR);
+    if (dir && dir.isDirectory()) {
+      File entry = dir.openNextFile();
+      while (entry) {
+        if (!entry.isDirectory()) {
+          const char* name = entry.name();
+          size_t sz = entry.size();
+          html += "<tr><td>";
+          html += name;
+          html += "</td><td>";
+          if (sz >= 1024) {
+            html += String(sz / 1024.0, 1) + " KB";
+          } else {
+            html += String((unsigned long)sz) + " B";
+          }
+          html += "</td><td><a href='/logs/download?file=";
+          html += name;
+          html += "'>Download</a></td></tr>";
+        }
+        entry.close();
+        entry = dir.openNextFile();
+      }
+      dir.close();
+    }
+    html += "</table>";
+  }
+
+  if (serialLogActive) {
+    html += "<p>Currently logging to: ";
+    html += serialLogFilename;
+    html += "</p>";
+  }
+  html += "<p><a href='/'>Back</a></p></body></html>";
+  webServer.send(200, "text/html", html);
+}
+
+// GET /logs/download?file=<filename> — Download a serial log file (#59)
+void handleWebLogDownload() {
+  if (!webServer.hasArg("file")) {
+    webServer.send(400, "text/plain", "Missing file parameter");
+    return;
+  }
+
+  String filename = webServer.arg("file");
+  // Security: prevent path traversal — only allow alphanumeric, underscore, dot, hyphen
+  for (unsigned int i = 0; i < filename.length(); i++) {
+    char c = filename[i];
+    if (!isalnum(c) && c != '_' && c != '.' && c != '-') {
+      webServer.send(400, "text/plain", "Invalid filename");
+      return;
+    }
+  }
+
+  // Flush current buffer if this is the active log file
+  if (serialLogActive) {
+    String activeName = String(serialLogFilename).substring(strlen(LOG_DIR) + 1);
+    if (filename.equals(activeName)) {
+      serialLogFlush();
+    }
+  }
+
+  String fullPath = String(LOG_DIR) + "/" + filename;
+  if (!SD.exists(fullPath)) {
+    webServer.send(404, "text/plain", "File not found");
+    return;
+  }
+
+  File f = SD.open(fullPath, "r");
+  if (!f) {
+    webServer.send(500, "text/plain", "Failed to open file");
+    return;
+  }
+
+  String disposition = "attachment; filename=" + filename;
+  webServer.sendHeader("Content-Disposition", disposition);
+  webServer.streamFile(f, "text/plain");
+  f.close();
 }
 
 void handleWebJSON() {
@@ -3049,6 +3152,10 @@ void initWebServer() {
   webServer.on("/geocaches/delete", HTTP_GET, handleGeocacheDelete);
   webServer.on("/geocaches/clear", HTTP_GET, handleGeocacheClear);
   webServer.on("/geocaches/togglefound", HTTP_GET, handleGeocacheToggleFound);
+
+  // Serial log file endpoints (#59)
+  webServer.on("/logs", HTTP_GET, handleWebLogs);
+  webServer.on("/logs/download", HTTP_GET, handleWebLogDownload);
 
   webServer.begin();
   webServerStarted = true;
