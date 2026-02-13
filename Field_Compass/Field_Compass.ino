@@ -77,6 +77,21 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 // SPI clock frequency for TFT (ILI9341 supports up to 40MHz; 32MHz safe for breadboard)
 #define TFT_SPI_FREQ  32000000
 
+// FRAM Memory Map (256KB = 262,144 bytes, MB85RS2MTA)
+#define FRAM_MAGIC          0x4652414D  // "FRAM" in ASCII
+#define FRAM_VERSION        1
+#define FRAM_HEADER_ADDR    0x00000
+#define FRAM_HEADER_SIZE    64
+#define FRAM_BSEC_ADDR     0x00040     // 512 bytes for BSEC state blob
+#define FRAM_BSEC_SIZE      512
+#define FRAM_BATT_ADDR     0x00240     // Battery ring buffer start
+#define FRAM_BATT_ENTRY     20         // Bytes per battery entry
+#define FRAM_BATT_COUNT     512        // Ring buffer capacity (~85 min at 10s)
+#define FRAM_WX_ADDR       0x02A40     // Weather ring buffer start
+#define FRAM_WX_ENTRY       24         // Bytes per weather entry
+#define FRAM_WX_COUNT       300        // Ring buffer capacity (25 hrs at 5 min)
+#define FRAM_FLUSH_INTERVAL 300000     // Flush to SD every 5 minutes (ms)
+
 // SPI pins (explicit definition for PSRAM variant compatibility)
 // Adafruit ESP32-S3 Feather default SPI pins
 #define SPI_SCK   36  // Default Feather SPI clock
@@ -214,6 +229,43 @@ bool imuAvailable = false;
 bool magAvailable = false;
 bool batteryAvailable = false;
 bool framAvailable = false;           // SPI FRAM 256KB
+
+// FRAM ring buffer header (64 bytes, stored at FRAM_HEADER_ADDR)
+struct FRAMHeader {
+  uint32_t magic;            // FRAM_MAGIC validates initialized state
+  uint8_t  version;          // Schema version
+  uint8_t  flags;            // Bit 0: dirty (unwritten data), Bit 1: BSEC valid
+  uint16_t reserved1;
+  // Battery ring
+  uint16_t battHead;         // Next write position (0 to FRAM_BATT_COUNT-1)
+  uint16_t battTail;         // Next flush position
+  uint16_t battCount;        // Entries pending flush
+  uint16_t battCapacity;     // FRAM_BATT_COUNT
+  // Weather ring
+  uint16_t wxHead;
+  uint16_t wxTail;
+  uint16_t wxCount;
+  uint16_t wxCapacity;       // FRAM_WX_COUNT
+  // BSEC metadata
+  uint32_t bsecTimestamp;    // millis() when last saved
+  uint8_t  bsecAccuracy;    // IAQ accuracy at save time
+  uint8_t  reserved2[27];   // Pad to 64 bytes total
+};
+
+struct FRAMBatteryEntry {
+  uint32_t timestamp;        // millis()
+  float    voltage;
+  float    percent;
+  float    rate;             // Charge rate (%/hr)
+  uint16_t flags;            // Reserved
+  uint16_t checksum;         // XOR checksum
+};
+// FRAMWeatherEntry: reuse existing WeatherReading struct (24 bytes, same layout)
+
+// FRAM state (in RAM — synced from FRAM header on boot)
+FRAMHeader framHeader;
+unsigned long lastFramFlush = 0;
+
 bool sdAvailable = false;
 bool rtcAvailable = false;        // Adalogger RTC
 bool wifiConnected = false;
