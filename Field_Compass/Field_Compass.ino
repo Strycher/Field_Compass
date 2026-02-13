@@ -1628,8 +1628,30 @@ bool sameLocation(float lat1, float lon1, float lat2, float lon2) {
 }
 
 // Log current weather reading to SD card
+// Write weather entry to FRAM ring buffer
+void logWeatherToFRAM(WeatherReading& reading) {
+  if (!framAvailable) return;
+
+  // WeatherReading is 24 bytes, matches our FRAM entry layout
+  uint32_t addr = FRAM_WX_ADDR + (framHeader.wxHead * FRAM_WX_ENTRY);
+  uint8_t* data = (uint8_t*)&reading;
+  for (int i = 0; i < FRAM_WX_ENTRY; i++) {
+    fram.write8(addr + i, data[i]);
+  }
+
+  framHeader.wxHead = (framHeader.wxHead + 1) % FRAM_WX_COUNT;
+  if (framHeader.wxCount < FRAM_WX_COUNT) {
+    framHeader.wxCount++;
+  } else {
+    framHeader.wxTail = (framHeader.wxTail + 1) % FRAM_WX_COUNT;
+    logPrintln("[FRAM] WARN: Weather ring overflow");
+  }
+  framHeader.flags |= 0x01;  // dirty
+  framWriteHeader();
+}
+
 void logWeatherReading() {
-  if (!sdHealth.available || (!bmeAvailable && !shtAvailable)) return;
+  if ((!sdHealth.available && !framAvailable) || (!bmeAvailable && !shtAvailable)) return;
 
   uint32_t timestamp = getCurrentTimestamp();
   if (timestamp == 0) return;  // No valid time
@@ -1651,17 +1673,21 @@ void logWeatherReading() {
   // Add to in-memory buffer
   addToWeatherHistory(reading);
 
-  // Write to SD card (silent fail OK - weather logging is non-critical)
-  char filename[32];
-  getWeatherFilename(filename, 0);
-
-  File file = sdOpenSafe(filename, "a", true);  // silent fail
-  if (file) {
-    file.printf("%lu,%.4f,%.4f,%.2f,%.2f,%.2f\n",
-                timestamp, lat, lon,
-                reading.pressure, reading.temp, reading.humidity);
-    file.close();
-    recordSDSuccess();
+  // Buffer to FRAM (SD flush happens on 5-min timer)
+  if (framAvailable) {
+    logWeatherToFRAM(reading);
+  } else if (sdAvailable) {
+    // Fallback: direct SD write
+    char filename[32];
+    getWeatherFilename(filename, 0);
+    File file = sdOpenSafe(filename, "a", true);
+    if (file) {
+      file.printf("%lu,%.4f,%.4f,%.2f,%.2f,%.2f\n",
+                  timestamp, lat, lon,
+                  reading.pressure, reading.temp, reading.humidity);
+      file.close();
+      recordSDSuccess();
+    }
   }
 }
 
