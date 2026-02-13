@@ -460,6 +460,12 @@ bool shouldAttemptReInit();
 bool trySDReInit();
 File sdOpenSafe(const char* path, const char* mode, bool silent = false);
 
+// Forward declarations for serial log to SD (#59)
+void initSerialLog();
+void serialLogAppend(const char* str);
+void serialLogFlush();
+void serialLogRotate();
+
 // ============== Serial Ring Buffer (moved before setup for use in init) ==============
 
 void serialRingAppend(const char* str) {
@@ -521,6 +527,161 @@ void logPrintf(const char* fmt, ...) {
   Serial.print(buf);
 }
 
+// ============== Serial Log to SD (#59) ==============
+
+void serialLogAppend(const char* str) {
+  if (!serialLogActive) return;
+  while (*str) {
+    serialLogBuf[serialLogBufPos++] = *str++;
+    if (serialLogBufPos >= LOG_SD_BUF_SIZE) {
+      serialLogFlush();
+    }
+  }
+}
+
+void serialLogFlush() {
+  if (!serialLogActive || serialLogBufPos == 0) return;
+  if (serialLogFile) {
+    size_t written = serialLogFile.write((uint8_t*)serialLogBuf, serialLogBufPos);
+    if (written != (size_t)serialLogBufPos) {
+      // Write failure — close and reopen, retry once
+      serialLogFile.close();
+      serialLogFile = SD.open(serialLogFilename, FILE_APPEND);
+      if (serialLogFile) {
+        serialLogFile.write((uint8_t*)serialLogBuf, serialLogBufPos);
+      } else {
+        serialLogActive = false;
+        Serial.println("[LOG] SD write failed, logging disabled");
+      }
+    }
+    serialLogFile.flush();
+  }
+  serialLogBufPos = 0;
+  lastLogFlush = millis();
+}
+
+void serialLogRotate() {
+  if (!sdAvailable) return;
+
+  File dir = SD.open(LOG_DIR);
+  if (!dir || !dir.isDirectory()) return;
+
+  // First pass: find the most recent existing log timestamp
+  time_t now;
+  time(&now);
+  time_t newestLog = 0;
+
+  File entry = dir.openNextFile();
+  while (entry) {
+    if (!entry.isDirectory()) {
+      const char* name = entry.name();
+      int yr, mo, dy, hr, mn, sc;
+      if (sscanf(name, "serial_%4d%2d%2d_%2d%2d%2d.log", &yr, &mo, &dy, &hr, &mn, &sc) == 6) {
+        struct tm t = {};
+        t.tm_year = yr - 1900;
+        t.tm_mon = mo - 1;
+        t.tm_mday = dy;
+        t.tm_hour = hr;
+        t.tm_min = mn;
+        t.tm_sec = sc;
+        time_t logTime = mktime(&t);
+        if (logTime > newestLog) newestLog = logTime;
+      }
+    }
+    entry.close();
+    entry = dir.openNextFile();
+  }
+  dir.close();
+
+  // Decide retention: normal (48h) or grace (keep all)
+  double hoursSinceNewest = (newestLog > 0) ? difftime(now, newestLog) / 3600.0 : 0;
+  bool graceMode = (newestLog > 0 && hoursSinceNewest >= LOG_RETENTION_HOURS);
+
+  if (graceMode) {
+    logPrintf("[LOG] Grace mode: last log %.0fh old, keeping all files\n", hoursSinceNewest);
+    return;  // Keep everything — rotation resumes after LOG_GRACE_HOURS of uptime
+  }
+
+  // Normal mode: delete files older than LOG_RETENTION_HOURS
+  time_t cutoff = now - ((time_t)LOG_RETENTION_HOURS * 3600);
+  int deleted = 0;
+
+  dir = SD.open(LOG_DIR);
+  entry = dir.openNextFile();
+  while (entry) {
+    if (!entry.isDirectory()) {
+      const char* name = entry.name();
+      int yr, mo, dy, hr, mn, sc;
+      if (sscanf(name, "serial_%4d%2d%2d_%2d%2d%2d.log", &yr, &mo, &dy, &hr, &mn, &sc) == 6) {
+        struct tm t = {};
+        t.tm_year = yr - 1900;
+        t.tm_mon = mo - 1;
+        t.tm_mday = dy;
+        t.tm_hour = hr;
+        t.tm_min = mn;
+        t.tm_sec = sc;
+        time_t logTime = mktime(&t);
+        if (logTime < cutoff) {
+          char fullPath[60];
+          snprintf(fullPath, sizeof(fullPath), LOG_DIR "/%s", name);
+          entry.close();
+          SD.remove(fullPath);
+          deleted++;
+          entry = dir.openNextFile();
+          continue;
+        }
+      }
+    }
+    entry.close();
+    entry = dir.openNextFile();
+  }
+  dir.close();
+
+  if (deleted > 0) {
+    logPrintf("[LOG] Rotation: deleted %d files older than %dh\n", deleted, LOG_RETENTION_HOURS);
+  }
+}
+
+void initSerialLog() {
+  if (!sdAvailable || !rtcAvailable) {
+    logPrintln("[LOG] Serial log disabled (no SD or RTC)");
+    return;
+  }
+
+  // Create /logs/ directory if missing
+  if (!SD.exists(LOG_DIR)) {
+    SD.mkdir(LOG_DIR);
+  }
+
+  // Build filename from RTC time
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    logPrintln("[LOG] Serial log disabled (no time source)");
+    return;
+  }
+
+  snprintf(serialLogFilename, sizeof(serialLogFilename),
+           LOG_DIR "/serial_%04d%02d%02d_%02d%02d%02d.log",
+           timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+           timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+
+  // Run smart rotation before opening new file
+  serialLogRotate();
+
+  // Open log file for append
+  serialLogFile = SD.open(serialLogFilename, FILE_APPEND);
+  if (!serialLogFile) {
+    logPrintf("[LOG] Failed to open %s\n", serialLogFilename);
+    return;
+  }
+
+  serialLogActive = true;
+  serialLogBufPos = 0;
+  lastLogFlush = millis();
+  lastLogRotation = millis();
+  logPrintf("[LOG] Logging to %s\n", serialLogFilename);
+}
+
 // ============== Setup ==============
 
 void setup() {
@@ -575,6 +736,7 @@ void setup() {
   initSD();
   initFRAM();   // SPI FRAM 256KB (shared bus with TFT/SD)
   initRTC();    // Adalogger RTC - sets system time if RTC has valid time
+  initSerialLog();  // Serial log to SD (#59) - needs SD + RTC
   initWiFi();   // Will sync NTP if connected, then sync RTC
 
   // Flush any FRAM data from previous session to SD
