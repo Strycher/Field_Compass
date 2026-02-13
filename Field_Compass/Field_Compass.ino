@@ -727,6 +727,14 @@ void scanI2C() {
         desc = " (LIS3MDL - Magnetometer)";
       } else if (address == 0x36) {
         desc = " (MAX17048 - Battery Gauge)";
+      } else if (address == 0x44) {
+        desc = " (SHT41 - Temp/Humidity)";
+      } else if (address == 0x29) {
+        desc = " (VEML7700 - Light Sensor)";
+      } else if (address == 0x68) {
+        desc = " (PCF8523 - RTC)";
+      } else if (address == 0x7E) {
+        desc = " (MAX17048 - Alt Addr)";
       }
       logPrintf("  Found device at 0x%02X%s\n", address, desc);
       deviceCount++;
@@ -931,19 +939,20 @@ void initSHT41() {
   }
 }
 
-// Read the 64-byte FRAM header into RAM
+// Read FRAM header into RAM (use sizeof to avoid overflowing the struct)
 void framReadHeader() {
   uint8_t buf[FRAM_HEADER_SIZE];
   for (int i = 0; i < FRAM_HEADER_SIZE; i++) {
     buf[i] = fram.read8(FRAM_HEADER_ADDR + i);
   }
-  memcpy(&framHeader, buf, FRAM_HEADER_SIZE);
+  memcpy(&framHeader, buf, sizeof(framHeader));  // only copy struct-sized bytes
 }
 
-// Write the RAM header back to FRAM
+// Write the RAM header back to FRAM (zero-pad to fill full 64-byte region)
 void framWriteHeader() {
   uint8_t buf[FRAM_HEADER_SIZE];
-  memcpy(buf, &framHeader, FRAM_HEADER_SIZE);
+  memset(buf, 0, FRAM_HEADER_SIZE);              // zero-fill padding bytes
+  memcpy(buf, &framHeader, sizeof(framHeader));   // copy struct into buffer
   for (int i = 0; i < FRAM_HEADER_SIZE; i++) {
     fram.write8(FRAM_HEADER_ADDR + i, buf[i]);
   }
@@ -963,6 +972,8 @@ void framFormat() {
 
 void initFRAM() {
   logPrint("Initializing FRAM... ");
+  // Safety check: struct must fit within FRAM header region
+  static_assert(sizeof(FRAMHeader) <= FRAM_HEADER_SIZE, "FRAMHeader exceeds FRAM_HEADER_SIZE");
 
   if (!fram.begin()) {
     logPrintln("NOT FOUND (check wiring)");
@@ -974,7 +985,8 @@ void initFRAM() {
   uint16_t prodId;
   fram.getDeviceID(&mfgId, &prodId);
   framAvailable = true;
-  logPrintf("OK (mfg:0x%02X prod:0x%04X, 256KB)\n", mfgId, prodId);
+  logPrintf("OK (mfg:0x%02X prod:0x%04X, 256KB, hdr=%d/%d bytes)\n",
+            mfgId, prodId, sizeof(FRAMHeader), FRAM_HEADER_SIZE);
 
   // Read and validate FRAM header
   framReadHeader();
