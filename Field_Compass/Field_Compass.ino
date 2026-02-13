@@ -559,6 +559,11 @@ void setup() {
   initRTC();    // Adalogger RTC - sets system time if RTC has valid time
   initWiFi();   // Will sync NTP if connected, then sync RTC
 
+  // Flush any FRAM data from previous session to SD
+  if (framAvailable && sdAvailable) {
+    framFlushToSD();
+  }
+
   // Load BSEC state: try FRAM first (fast), fall back to SD
   if (bmeAvailable) {
     if (!loadBsecFromFRAM()) {
@@ -642,6 +647,11 @@ void loop() {
       logBatteryToSD();  // Fallback: direct SD write
     }
     lastBattLog = millis();
+  }
+
+  // FRAM flush to SD (hybrid: every 5 minutes)
+  if (framAvailable && sdAvailable && (millis() - lastFramFlush > FRAM_FLUSH_INTERVAL)) {
+    framFlushToSD();
   }
 
   // Periodic status logging for web serial monitor
@@ -1391,6 +1401,76 @@ bool loadBsecFromFRAM() {
             framHeader.bsecAccuracy, framHeader.bsecTimestamp / 1000);
   bsecStateLoaded = true;
   return true;
+}
+
+// Flush all pending FRAM ring buffer entries to SD card
+void framFlushToSD() {
+  if (!framAvailable || !sdAvailable) return;
+  if (framHeader.battCount == 0 && framHeader.wxCount == 0) return;  // Nothing to flush
+
+  unsigned long startMs = millis();
+  int battFlushed = 0, wxFlushed = 0;
+
+  // --- Flush battery entries ---
+  if (framHeader.battCount > 0) {
+    File f = sdOpenSafe(BATT_LOG_FILE, "a", true);
+    if (f) {
+      if (f.size() == 0) {
+        f.println("millis,voltage,percent,rate");
+      }
+      uint16_t idx = framHeader.battTail;
+      for (int i = 0; i < framHeader.battCount; i++) {
+        FRAMBatteryEntry entry;
+        uint32_t addr = FRAM_BATT_ADDR + (idx * FRAM_BATT_ENTRY);
+        uint8_t* data = (uint8_t*)&entry;
+        for (int j = 0; j < FRAM_BATT_ENTRY; j++) {
+          data[j] = fram.read8(addr + j);
+        }
+        f.printf("%lu,%.3f,%.2f,%.2f\n", entry.timestamp, entry.voltage, entry.percent, entry.rate);
+        idx = (idx + 1) % FRAM_BATT_COUNT;
+        battFlushed++;
+      }
+      f.close();
+      recordSDSuccess();
+      framHeader.battTail = framHeader.battHead;
+      framHeader.battCount = 0;
+    }
+  }
+
+  // --- Flush weather entries ---
+  if (framHeader.wxCount > 0) {
+    char filename[32];
+    getWeatherFilename(filename, 0);  // Today's file
+    File file = sdOpenSafe(filename, "a", true);
+    if (file) {
+      uint16_t idx = framHeader.wxTail;
+      for (int i = 0; i < framHeader.wxCount; i++) {
+        WeatherReading reading;
+        uint32_t addr = FRAM_WX_ADDR + (idx * FRAM_WX_ENTRY);
+        uint8_t* data = (uint8_t*)&reading;
+        for (int j = 0; j < FRAM_WX_ENTRY; j++) {
+          data[j] = fram.read8(addr + j);
+        }
+        file.printf("%lu,%.4f,%.4f,%.2f,%.2f,%.2f\n",
+                    reading.timestamp, reading.lat, reading.lon,
+                    reading.pressure, reading.temp, reading.humidity);
+        idx = (idx + 1) % FRAM_WX_COUNT;
+        wxFlushed++;
+      }
+      file.close();
+      recordSDSuccess();
+      framHeader.wxTail = framHeader.wxHead;
+      framHeader.wxCount = 0;
+    }
+  }
+
+  // Update header: clear dirty flag
+  framHeader.flags &= ~0x01;
+  framWriteHeader();
+
+  unsigned long elapsed = millis() - startMs;
+  logPrintf("[FRAM] Flushed: batt=%d wx=%d (%lums)\n", battFlushed, wxFlushed, elapsed);
+  lastFramFlush = millis();
 }
 
 // ============== Geocache Found Status Persistence (#70) ==============
@@ -2912,6 +2992,9 @@ void handleButtons() {
 
   // Reset activity timer on any button press
   lastActivityTime = now;
+
+  // Flush FRAM buffer on button press
+  if (framAvailable && sdAvailable) framFlushToSD();
 
   // Reinit TFT on any button press (recovers from SPI glitch/white screen)
   tft.begin(TFT_SPI_FREQ);
