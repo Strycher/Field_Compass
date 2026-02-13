@@ -7,12 +7,13 @@
  * - Adafruit ILI9341 3.2" TFT 320x240 (SPI direct wiring)
  * - Adafruit Ultimate GPS FeatherWing PA1616D (Serial)
  * - Adafruit BME688 (I2C - STEMMA QT) with BSEC2
+ * - Adafruit SHT41 (I2C 0x44 - STEMMA QT) (#48)
  * - Adafruit LSM6DSOX + LIS3MDL 9-DoF IMU (I2C - STEMMA QT)
  *
  * Screens:
  * 1. Operational Info (time, uptime, WiFi, battery)
  * 2. GPS Info (coordinates, altitude, address)
- * 3. BME688 Environmental (temp, humidity, pressure, IAQ, CO2)
+ * 3. Environmental (SHT41 temp/humidity, BME688 pressure/IAQ/CO2)
  * 4. IMU/Compass (heading, orientation, acceleration)
  * 5. Diagnostics (BSEC state, weather log, system info)
  *
@@ -23,7 +24,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.19"
+#define FW_VERSION "0.20"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -45,6 +46,7 @@ const uint8_t bsec2_config[] = {
 #include <Adafruit_LSM6DSOX.h>
 #include <Adafruit_LIS3MDL.h>
 #include <Adafruit_MAX1704X.h>
+#include <Adafruit_SHT4x.h>   // SHT41 temp/humidity (#48)
 #include <RTClib.h>           // Adalogger PCF8523 RTC
 #include <SD.h>
 #include <esp_task_wdt.h>
@@ -159,6 +161,7 @@ Adafruit_SH1107 oled = Adafruit_SH1107(64, 128, &Wire);
 
 // Sensors
 Bsec2 envSensor;
+Adafruit_SHT4x sht4 = Adafruit_SHT4x();  // SHT41 temp/humidity (#48)
 Adafruit_LSM6DSOX lsm;
 Adafruit_LIS3MDL lis;
 Adafruit_MAX17048 battery;
@@ -201,6 +204,7 @@ bool oledAvailable = false;
 
 // Sensor availability flags
 bool bmeAvailable = false;
+bool shtAvailable = false;          // SHT41 temp/humidity (#48)
 bool imuAvailable = false;
 bool magAvailable = false;
 bool batteryAvailable = false;
@@ -304,6 +308,12 @@ bool buttonCLongPressHandled = false;
 
 // User settings (#70)
 bool useMetricUnits = false;  // false = imperial (ft/mi), true = metric (m/km)
+
+// SHT41 data (#48) — primary source for temp/humidity
+struct {
+  float temperature = 0;      // Temperature (C) — ±0.2°C accuracy
+  float humidity = 0;         // Relative humidity (%) — ±1.8% accuracy
+} shtData;
 
 // BME688 data (via BSEC2)
 struct {
@@ -480,6 +490,7 @@ void setup() {
   initOLED();
   initGPS();
   initBME688();
+  initSHT41();   // SHT41 temp/humidity (#48)
   initIMU();
   initBattery();
 
@@ -547,6 +558,7 @@ void loop() {
   // Update sensor data (even when display sleeping)
   readGPS();
   if (bmeAvailable) readBME688();
+  if (shtAvailable) readSHT41();   // SHT41 temp/humidity (#48)
   if (imuAvailable && magAvailable) readIMU();
 
   // Weather logging (every 5 minutes)
@@ -573,10 +585,13 @@ void loop() {
     float battR = batteryAvailable ? battery.chargeRate() : 0;
     // Include GPS TTFF in status (#68)
     const char* gpsStatus = gpsHadFirstFix ? "GPS:OK" : (gpsHadFirstReceive ? "GPS:--" : "GPS:NO");
+    // SHT41 temp/humidity preferred in status log (#48)
+    float logTempC = shtAvailable ? shtData.temperature : envData.temperature;
+    float logHumid = shtAvailable ? shtData.humidity : envData.humidity;
     snprintf(buf, sizeof(buf), "[%lus] T:%.1fF H:%.0f%% IAQ:%.0f Hdg:%.0f %s TTFF:%lus Batt:%.3fV/%.2f%%/%+.1f%%hr\n",
              millis() / 1000,
-             envData.temperature * 9.0 / 5.0 + 32.0,
-             envData.humidity,
+             logTempC * 9.0 / 5.0 + 32.0,
+             logHumid,
              envData.iaq,
              imuData.heading,
              gpsStatus,
@@ -805,6 +820,30 @@ void initBME688() {
   logPrintf("  BSEC version: %d.%d.%d.%d\n",
             envSensor.version.major, envSensor.version.minor,
             envSensor.version.major_bugfix, envSensor.version.minor_bugfix);
+}
+
+void initSHT41() {
+  logPrint("Initializing SHT41... ");
+
+  if (!sht4.begin()) {
+    logPrintln("NOT FOUND");
+    return;
+  }
+
+  // Use high precision, no heater (best accuracy, ~8.2ms measurement)
+  sht4.setPrecision(SHT4X_HIGH_PRECISION);
+  sht4.setHeater(SHT4X_NO_HEATER);
+
+  shtAvailable = true;
+  logPrintln("OK (0x44)");
+
+  // Read initial values immediately
+  sensors_event_t humEv, tempEv;
+  if (sht4.getEvent(&humEv, &tempEv)) {
+    shtData.temperature = tempEv.temperature;
+    shtData.humidity = humEv.relative_humidity;
+    logPrintf("  Initial: %.1fC / %.1f%%\n", shtData.temperature, shtData.humidity);
+  }
 }
 
 void initIMU() {
@@ -1426,7 +1465,7 @@ bool sameLocation(float lat1, float lon1, float lat2, float lon2) {
 
 // Log current weather reading to SD card
 void logWeatherReading() {
-  if (!sdHealth.available || !bmeAvailable) return;
+  if (!sdHealth.available || (!bmeAvailable && !shtAvailable)) return;
 
   uint32_t timestamp = getCurrentTimestamp();
   if (timestamp == 0) return;  // No valid time
@@ -1441,8 +1480,9 @@ void logWeatherReading() {
   reading.lat = lat;
   reading.lon = lon;
   reading.pressure = envData.pressure;
-  reading.temp = envData.temperature;
-  reading.humidity = envData.humidity;
+  // SHT41 temp/humidity preferred for weather log accuracy (#48)
+  reading.temp = shtAvailable ? shtData.temperature : envData.temperature;
+  reading.humidity = shtAvailable ? shtData.humidity : envData.humidity;
 
   // Add to in-memory buffer
   addToWeatherHistory(reading);
@@ -1572,8 +1612,9 @@ const char* getTrendArrow() {
 // Calculate weather forecast based on conditions
 const char* calculateForecast() {
   float p = envData.pressure;
-  float t = envData.temperature;
-  float h = envData.humidity;
+  // SHT41 preferred for forecast accuracy (#48)
+  float t = shtAvailable ? shtData.temperature : envData.temperature;
+  float h = shtAvailable ? shtData.humidity : envData.humidity;
   float pChange = weatherTrend.pressureChange3hr;
 
   // Location changed - can't predict
@@ -1837,20 +1878,26 @@ void handleWebEnv() {
   html += "<h2>ENVIRONMENT</h2><pre>";
 
   char buf[80];
-  if (bmeAvailable) {
-    float tempF = envData.temperature * 9.0 / 5.0 + 32.0;
-    sprintf(buf, "Temp:     %.1fF (%.1fC)\n", tempF, envData.temperature);
+  if (bmeAvailable || shtAvailable) {
+    // SHT41 preferred for temp/humidity (#48)
+    float tempC = shtAvailable ? shtData.temperature : envData.temperature;
+    float tempF = tempC * 9.0 / 5.0 + 32.0;
+    float humid = shtAvailable ? shtData.humidity : envData.humidity;
+    const char* src = shtAvailable ? "SHT41" : "BME688";
+    sprintf(buf, "Temp:     %.1fF (%.1fC) [%s]\n", tempF, tempC, src);
     html += buf;
-    sprintf(buf, "Humidity: %.1f%%\n", envData.humidity);
+    sprintf(buf, "Humidity: %.1f%% [%s]\n", humid, src);
     html += buf;
-    sprintf(buf, "IAQ:      %.0f [%s]\n", envData.iaq, getIaqAccuracyText(envData.iaqAccuracy));
-    html += buf;
-    sprintf(buf, "CO2:      %.0f ppm\n", envData.co2Equivalent);
-    html += buf;
-    sprintf(buf, "Pressure: %.1f hPa (%.2f\")\n", envData.pressure, hPaToInHg(envData.pressure));
-    html += buf;
-    sprintf(buf, "Forecast: %s %s\n", getTrendArrow(), weatherTrend.forecast);
-    html += buf;
+    if (bmeAvailable) {
+      sprintf(buf, "IAQ:      %.0f [%s]\n", envData.iaq, getIaqAccuracyText(envData.iaqAccuracy));
+      html += buf;
+      sprintf(buf, "CO2:      %.0f ppm\n", envData.co2Equivalent);
+      html += buf;
+      sprintf(buf, "Pressure: %.1f hPa (%.2f\")\n", envData.pressure, hPaToInHg(envData.pressure));
+      html += buf;
+      sprintf(buf, "Forecast: %s %s\n", getTrendArrow(), weatherTrend.forecast);
+      html += buf;
+    }
   } else {
     html += "BME688 not available\n";
   }
@@ -2058,15 +2105,19 @@ void handleWebSerialData() {
 void handleWebJSON() {
   char buf[1024];
   bool battConnected = batteryAvailable && isBatteryConnected();
+  // SHT41 preferred for temp/humidity in JSON API (#48)
+  float jsonTempC = shtAvailable ? shtData.temperature : envData.temperature;
+  float jsonHumid = shtAvailable ? shtData.humidity : envData.humidity;
   snprintf(buf, sizeof(buf),
     "{"
     "\"gps\":{\"valid\":%s,\"lat\":%.6f,\"lon\":%.6f,\"alt\":%.1f},"
-    "\"env\":{\"temp\":%.1f,\"humidity\":%.1f,\"pressure\":%.1f,\"iaq\":%.0f,\"co2\":%.0f,\"accuracy\":%d},"
+    "\"env\":{\"temp\":%.1f,\"humidity\":%.1f,\"pressure\":%.1f,\"iaq\":%.0f,\"co2\":%.0f,\"accuracy\":%d,\"tempSource\":\"%s\"},"
     "\"imu\":{\"heading\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"accel\":%.2f},"
     "\"system\":{\"uptime\":%lu,\"wifi\":%s,\"battery\":%.1f,\"batteryConnected\":%s,\"heap\":%lu}"
     "}",
     gpsData.valid ? "true" : "false", gpsData.latitude, gpsData.longitude, gpsData.altitude,
-    envData.temperature, envData.humidity, envData.pressure, envData.iaq, envData.co2Equivalent, envData.iaqAccuracy,
+    jsonTempC, jsonHumid, envData.pressure, envData.iaq, envData.co2Equivalent, envData.iaqAccuracy,
+    shtAvailable ? "SHT41" : "BME688",
     imuData.heading, imuData.roll, imuData.pitch, imuData.accelMag,
     millis() / 1000, wifiConnected ? "true" : "false",
     battConnected ? battery.cellPercent() : -1.0,
@@ -2857,6 +2908,15 @@ void parseNMEA(char* sentence) {
 
 // ============== Sensor Reading ==============
 
+void readSHT41() {
+  if (!shtAvailable) return;
+  sensors_event_t humEv, tempEv;
+  if (sht4.getEvent(&humEv, &tempEv)) {
+    shtData.temperature = tempEv.temperature;
+    shtData.humidity = humEv.relative_humidity;
+  }
+}
+
 void readBME688() {
   // BSEC2 runs via callback, just need to call run() to process
   if (!envSensor.run()) {
@@ -3174,58 +3234,71 @@ void drawScreenEnv() {
   int lineH = 28;
   char buf[40];
 
-  if (bmeAvailable) {
-    // Temperature (compensated)
-    float tempF = envData.temperature * 9.0 / 5.0 + 32.0;
+  if (bmeAvailable || shtAvailable) {
+    // Temperature — SHT41 is primary source, BME688 fallback (#48)
+    float tempC = shtAvailable ? shtData.temperature : envData.temperature;
+    float tempF = tempC * 9.0 / 5.0 + 32.0;
+    const char* tempSrc = shtAvailable ? "SHT" : "BME";
     drawLabel(labelX, y, "Temp:");
-    sprintf(buf, "%.1fF (%.1fC)", tempF, envData.temperature);
+    sprintf(buf, "%.1fF (%.1fC) %s", tempF, tempC, tempSrc);
     drawValue(valueX, y, buf);
     y += lineH;
 
-    // Humidity (compensated)
+    // Humidity — SHT41 is primary source, BME688 fallback (#48)
+    float humid = shtAvailable ? shtData.humidity : envData.humidity;
     drawLabel(labelX, y, "Humid:");
-    sprintf(buf, "%.1f%%", envData.humidity);
+    sprintf(buf, "%.1f%% %s", humid, tempSrc);
     drawValue(valueX, y, buf);
     y += lineH;
 
-    // IAQ with accuracy indicator
-    drawLabel(labelX, y, "IAQ:");
-    sprintf(buf, "%.0f [%s]", envData.iaq, getIaqAccuracyText(envData.iaqAccuracy));
-    // Color based on IAQ: 0-50 good, 51-100 moderate, 101-150 poor, 151-200 unhealthy, >200 very unhealthy
-    uint16_t color = COLOR_VALUE;
-    if (envData.iaq > 200) color = COLOR_ERROR;
-    else if (envData.iaq > 100) color = COLOR_WARN;
-    drawValue(valueX, y, buf, color);
-    y += lineH;
+    // BME688-specific readings (IAQ, CO2, pressure, forecast)
+    if (bmeAvailable) {
+      // IAQ with accuracy indicator
+      drawLabel(labelX, y, "IAQ:");
+      sprintf(buf, "%.0f [%s]", envData.iaq, getIaqAccuracyText(envData.iaqAccuracy));
+      // Color based on IAQ: 0-50 good, 51-100 moderate, 101-150 poor, 151-200 unhealthy, >200 very unhealthy
+      uint16_t color = COLOR_VALUE;
+      if (envData.iaq > 200) color = COLOR_ERROR;
+      else if (envData.iaq > 100) color = COLOR_WARN;
+      drawValue(valueX, y, buf, color);
+      y += lineH;
 
-    // CO2 equivalent
-    drawLabel(labelX, y, "CO2:");
-    sprintf(buf, "%.0f ppm", envData.co2Equivalent);
-    color = COLOR_VALUE;
-    if (envData.co2Equivalent > 2000) color = COLOR_ERROR;
-    else if (envData.co2Equivalent > 1000) color = COLOR_WARN;
-    drawValue(valueX, y, buf, color);
-    y += lineH;
+      // CO2 equivalent
+      drawLabel(labelX, y, "CO2:");
+      sprintf(buf, "%.0f ppm", envData.co2Equivalent);
+      color = COLOR_VALUE;
+      if (envData.co2Equivalent > 2000) color = COLOR_ERROR;
+      else if (envData.co2Equivalent > 1000) color = COLOR_WARN;
+      drawValue(valueX, y, buf, color);
+      y += lineH;
 
-    // Pressure (station/absolute)
-    drawLabel(labelX, y, "Press:");
-    sprintf(buf, "%.1f hPa (%.2f\")", envData.pressure, hPaToInHg(envData.pressure));
-    drawValue(valueX, y, buf);
-    y += lineH;
+      // Pressure (station/absolute)
+      drawLabel(labelX, y, "Press:");
+      sprintf(buf, "%.1f hPa (%.2f\")", envData.pressure, hPaToInHg(envData.pressure));
+      drawValue(valueX, y, buf);
+      y += lineH;
 
-    // Weather trend and forecast
-    drawLabel(labelX, y, "Fcst:");
-    sprintf(buf, "%s %s", getTrendArrow(), weatherTrend.forecast);
-    color = COLOR_VALUE;
-    if (strstr(weatherTrend.forecast, "Storm")) color = COLOR_ERROR;
-    else if (strstr(weatherTrend.forecast, "Rain") || strstr(weatherTrend.forecast, "Snow")) color = COLOR_WARN;
-    drawValue(valueX, y, buf, color);
+      // Weather trend and forecast
+      drawLabel(labelX, y, "Fcst:");
+      sprintf(buf, "%s %s", getTrendArrow(), weatherTrend.forecast);
+      color = COLOR_VALUE;
+      if (strstr(weatherTrend.forecast, "Storm")) color = COLOR_ERROR;
+      else if (strstr(weatherTrend.forecast, "Rain") || strstr(weatherTrend.forecast, "Snow")) color = COLOR_WARN;
+      drawValue(valueX, y, buf, color);
+    } else {
+      // SHT41 only — no IAQ/CO2/pressure available
+      drawLabel(labelX, y, "IAQ:");
+      drawValue(valueX, y, "N/A (no BME688)", COLOR_DIM);
+      y += lineH;
+      drawLabel(labelX, y, "Press:");
+      drawValue(valueX, y, "N/A (no BME688)", COLOR_DIM);
+    }
 
   } else {
     tft.setTextColor(COLOR_ERROR);
     tft.setTextSize(2);
     tft.setCursor(60, 100);
-    tft.println("BME688 not found");
+    tft.println("No env sensors");
   }
 }
 
@@ -3809,10 +3882,10 @@ void drawScreenDiags() {
   tft.setTextColor(COLOR_HEADER);
   tft.setCursor(labelX, y);
   tft.print("Sensors:");
-  sprintf(buf, "BME:%s IMU:%s Mag:%s Bat:%s",
+  sprintf(buf, "BME:%s SHT:%s IMU:%s Bat:%s",
           bmeAvailable ? "Y" : "N",
+          shtAvailable ? "Y" : "N",
           imuAvailable ? "Y" : "N",
-          magAvailable ? "Y" : "N",
           batteryAvailable ? "Y" : "N");
   tft.setTextColor(COLOR_VALUE);
   tft.setCursor(valueX - 80, y);
@@ -4019,11 +4092,14 @@ void drawOLEDScreenEnv() {
   oled.setCursor(0, 0);
   oled.print("ENVIRONMENT");
 
-  if (bmeAvailable) {
-    float tempF = envData.temperature * 9.0 / 5.0 + 32.0;
+  if (bmeAvailable || shtAvailable) {
+    // SHT41 temp/humidity preferred over BME688 (#48)
+    float tempC = shtAvailable ? shtData.temperature : envData.temperature;
+    float tempF = tempC * 9.0 / 5.0 + 32.0;
+    float humid = shtAvailable ? shtData.humidity : envData.humidity;
 
     oled.setCursor(0, 10);
-    sprintf(buf, "%.1fF %.1f%% IAQ:%.0f", tempF, envData.humidity, envData.iaq);
+    sprintf(buf, "%.1fF %.1f%% IAQ:%.0f", tempF, humid, envData.iaq);
     oled.print(buf);
 
     oled.setCursor(0, 22);
@@ -4035,11 +4111,11 @@ void drawOLEDScreenEnv() {
     oled.print(buf);
 
     oled.setCursor(0, 46);
-    sprintf(buf, "CO2:%.0f", envData.co2Equivalent);
+    sprintf(buf, "CO2:%.0f %s", envData.co2Equivalent, shtAvailable ? "SHT" : "BME");
     oled.print(buf);
   } else {
     oled.setCursor(0, 28);
-    oled.print("BME688 not found");
+    oled.print("No env sensors");
   }
 }
 
