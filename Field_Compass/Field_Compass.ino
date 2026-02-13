@@ -24,7 +24,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.20"
+#define FW_VERSION "0.21"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -47,6 +47,7 @@ const uint8_t bsec2_config[] = {
 #include <Adafruit_LIS3MDL.h>
 #include <Adafruit_MAX1704X.h>
 #include <Adafruit_SHT4x.h>   // SHT41 temp/humidity (#48)
+#include <Adafruit_FRAM_SPI.h> // SPI FRAM 256KB (#72 future, init now)
 #include <RTClib.h>           // Adalogger PCF8523 RTC
 #include <SD.h>
 #include <esp_task_wdt.h>
@@ -70,8 +71,11 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 #define TFT_CS    18  // A0 -> CS
 #define TFT_DC    17  // A1 -> D/C
 #define TFT_RST   16  // A2 -> RST
-#define TOUCH_CS  15  // A3 -> (resistive touch, unused for now)
+#define FRAM_CS   15  // A3 -> FRAM CS (was TOUCH_CS, repurposed for FRAM)
 #define SD_CS     10  // Adalogger FeatherWing SD slot (was 14 for TFT breakout)
+
+// SPI clock frequency for TFT (ILI9341 supports up to 40MHz; 32MHz safe for breadboard)
+#define TFT_SPI_FREQ  32000000
 
 // SPI pins (explicit definition for PSRAM variant compatibility)
 // Adafruit ESP32-S3 Feather default SPI pins
@@ -165,6 +169,7 @@ Adafruit_SHT4x sht4 = Adafruit_SHT4x();  // SHT41 temp/humidity (#48)
 Adafruit_LSM6DSOX lsm;
 Adafruit_LIS3MDL lis;
 Adafruit_MAX17048 battery;
+Adafruit_FRAM_SPI fram = Adafruit_FRAM_SPI(FRAM_CS);  // SPI FRAM 256KB
 
 // RTC (Adalogger FeatherWing PCF8523)
 RTC_PCF8523 rtc;
@@ -208,6 +213,7 @@ bool shtAvailable = false;          // SHT41 temp/humidity (#48)
 bool imuAvailable = false;
 bool magAvailable = false;
 bool batteryAvailable = false;
+bool framAvailable = false;           // SPI FRAM 256KB
 bool sdAvailable = false;
 bool rtcAvailable = false;        // Adalogger RTC
 bool wifiConnected = false;
@@ -497,6 +503,7 @@ void setup() {
   // Initialize hardware SPI for SD card (Adalogger uses different CS pin)
   SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
   initSD();
+  initFRAM();   // SPI FRAM 256KB (shared bus with TFT/SD)
   initRTC();    // Adalogger RTC - sets system time if RTC has valid time
   initWiFi();   // Will sync NTP if connected, then sync RTC
 
@@ -588,13 +595,15 @@ void loop() {
     // SHT41 temp/humidity preferred in status log (#48)
     float logTempC = shtAvailable ? shtData.temperature : envData.temperature;
     float logHumid = shtAvailable ? shtData.humidity : envData.humidity;
-    snprintf(buf, sizeof(buf), "[%lus] T:%.1fF H:%.0f%% IAQ:%.0f Hdg:%.0f %s TTFF:%lus Batt:%.3fV/%.2f%%/%+.1f%%hr\n",
+    snprintf(buf, sizeof(buf), "[%lus] T:%.1fF H:%.0f%% IAQ:%.0f Hdg:%.0f %s Sat:%d HDOP:%.1f TTFF:%lus Batt:%.3fV/%.2f%%/%+.1f%%hr\n",
              millis() / 1000,
              logTempC * 9.0 / 5.0 + 32.0,
              logHumid,
              envData.iaq,
              imuData.heading,
              gpsStatus,
+             gpsData.satellites,
+             gpsData.hdop,
              gpsHadFirstFix ? gpsFirstFixTime / 1000 : 0,
              battV, battP, battR);
     serialRingAppend(buf);
@@ -660,7 +669,7 @@ void scanI2C() {
 void initTFT() {
   logPrint("Initializing ILI9341 TFT... ");
 
-  tft.begin();
+  tft.begin(TFT_SPI_FREQ);
 
   tft.setRotation(3);  // Landscape mode, flipped 180 for ILI9341 board orientation
   tft.fillScreen(ILI9341_RED);  // Flash red to confirm TFT is working
@@ -687,7 +696,7 @@ void checkTFTHealth() {
     #endif
 
     // Re-initialize TFT
-    tft.begin();
+    tft.begin(TFT_SPI_FREQ);
     tft.setRotation(3);
     tft.fillScreen(COLOR_BG);
 
@@ -844,6 +853,22 @@ void initSHT41() {
     shtData.humidity = humEv.relative_humidity;
     logPrintf("  Initial: %.1fC / %.1f%%\n", shtData.temperature, shtData.humidity);
   }
+}
+
+void initFRAM() {
+  logPrint("Initializing FRAM... ");
+
+  if (!fram.begin()) {
+    logPrintln("NOT FOUND (check wiring)");
+    return;
+  }
+
+  // Verify FRAM by reading manufacturer/product IDs
+  uint8_t mfgId;
+  uint16_t prodId;
+  fram.getDeviceID(&mfgId, &prodId);
+  framAvailable = true;
+  logPrintf("OK (mfg:0x%02X prod:0x%04X, 256KB)\n", mfgId, prodId);
 }
 
 void initIMU() {
@@ -1981,6 +2006,8 @@ void handleWebDiags() {
   html += buf;
   sprintf(buf, "OLED:    %s\n", oledAvailable ? "OK" : "N/A");
   html += buf;
+  sprintf(buf, "FRAM:    %s\n", framAvailable ? "OK (256KB)" : "N/A");
+  html += buf;
 
   // Temp comparison SHT41 vs BME688 (#48)
   html += "\n=== Temperature Comparison ===\n";
@@ -2668,7 +2695,7 @@ void handleButtons() {
   lastActivityTime = now;
 
   // Reinit TFT on any button press (recovers from SPI glitch/white screen)
-  tft.begin();
+  tft.begin(TFT_SPI_FREQ);
   tft.setRotation(3);
   lastTFTReinit = now;
 
@@ -3910,11 +3937,12 @@ void drawScreenDiags() {
   tft.setTextColor(COLOR_HEADER);
   tft.setCursor(labelX, y);
   tft.print("Sensors:");
-  sprintf(buf, "BME:%s SHT:%s IMU:%s Bat:%s",
+  sprintf(buf, "BME:%s SHT:%s IMU:%s Bat:%s FRAM:%s",
           bmeAvailable ? "Y" : "N",
           shtAvailable ? "Y" : "N",
           imuAvailable ? "Y" : "N",
-          batteryAvailable ? "Y" : "N");
+          batteryAvailable ? "Y" : "N",
+          framAvailable ? "Y" : "N");
   tft.setTextColor(COLOR_VALUE);
   tft.setCursor(valueX - 80, y);
   tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
