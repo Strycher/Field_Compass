@@ -23,7 +23,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.16"
+#define FW_VERSION "0.18"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -45,6 +45,7 @@ const uint8_t bsec2_config[] = {
 #include <Adafruit_LSM6DSOX.h>
 #include <Adafruit_LIS3MDL.h>
 #include <Adafruit_MAX1704X.h>
+#include <RTClib.h>           // Adalogger PCF8523 RTC
 #include <SD.h>
 #include <esp_task_wdt.h>
 
@@ -68,7 +69,13 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 #define TFT_DC    17  // A1 -> DC
 #define TFT_RST   16  // A2 -> RST
 #define TOUCH_CS  15  // A3 -> TSCS (for future use)
-#define SD_CS     14  // A4 -> SDCS (TFT MicroSD slot)
+#define SD_CS     10  // Adalogger FeatherWing SD slot (was 14 for TFT breakout)
+
+// SPI pins (explicit definition for PSRAM variant compatibility)
+// Adafruit ESP32-S3 Feather default SPI pins
+#define SPI_SCK   36  // Default Feather SPI clock
+#define SPI_MOSI  35  // Default Feather SPI MOSI
+#define SPI_MISO  37  // Default Feather SPI MISO (unused for TFT)
 
 // Button pins (directly wired, active LOW)
 #define BUTTON_A 9
@@ -144,7 +151,7 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 
 // ============== Global Objects ==============
 
-// TFT Display
+// TFT Display (hardware SPI - 3-argument constructor)
 Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
 
 // OLED Display
@@ -155,6 +162,9 @@ Bsec2 envSensor;
 Adafruit_LSM6DSOX lsm;
 Adafruit_LIS3MDL lis;
 Adafruit_MAX17048 battery;
+
+// RTC (Adalogger FeatherWing PCF8523)
+RTC_PCF8523 rtc;
 
 // Web Server
 WebServer webServer(WEB_SERVER_PORT);
@@ -195,9 +205,14 @@ bool imuAvailable = false;
 bool magAvailable = false;
 bool batteryAvailable = false;
 bool sdAvailable = false;
+bool rtcAvailable = false;        // Adalogger RTC
 bool wifiConnected = false;
 bool ntpSynced = false;
 bool webServerStarted = false;
+
+// RTC sync tracking - avoid repeated syncs
+bool rtcSyncedFromGPS = false;    // RTC was synced from GPS this session
+bool rtcSyncedFromNTP = false;    // RTC was synced from NTP this session
 
 // Periodic status logging
 static unsigned long lastStatusLog = 0;
@@ -231,7 +246,11 @@ struct {
   int hour = 0;
   int minute = 0;
   int second = 0;
+  int day = 0;             // Date from RMC sentence
+  int month = 0;
+  int year = 0;
   bool timeValid = false;
+  bool dateValid = false;  // True when date has been parsed from RMC
 } gpsData;
 
 char gpsBuffer[128];
@@ -428,8 +447,8 @@ void setup() {
   serialRingAppend(banner);
   Serial.print(banner);
 
-  // Initialize SPI for TFT
-  SPI.begin();
+  // Initialize SPI for TFT with explicit pins
+  SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, TFT_CS);
 
   // Initialize TFT first for visual feedback
   initTFT();
@@ -463,8 +482,12 @@ void setup() {
   initBME688();
   initIMU();
   initBattery();
+
+  // Initialize hardware SPI for SD card (Adalogger uses different CS pin)
+  SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
   initSD();
-  initWiFi();
+  initRTC();    // Adalogger RTC - sets system time if RTC has valid time
+  initWiFi();   // Will sync NTP if connected, then sync RTC
 
   // Load weather history and BSEC state from SD
   if (sdAvailable) {
@@ -891,6 +914,63 @@ void initSD() {
   if (!SD.exists("/weather")) {
     SD.mkdir("/weather");
   }
+}
+
+void initRTC() {
+  logPrint("Initializing RTC (PCF8523)... ");
+
+  if (!rtc.begin()) {
+    logPrintln("NOT FOUND");
+    return;
+  }
+
+  rtcAvailable = true;
+
+  // Check if RTC lost power and is running with invalid time
+  if (!rtc.initialized() || rtc.lostPower()) {
+    logPrintln("OK (needs time sync)");
+    // Don't set a default time - wait for GPS or NTP to provide accurate time
+    return;
+  }
+
+  // RTC has valid time - use it to set system time
+  DateTime now = rtc.now();
+  struct tm timeinfo;
+  timeinfo.tm_year = now.year() - 1900;
+  timeinfo.tm_mon = now.month() - 1;
+  timeinfo.tm_mday = now.day();
+  timeinfo.tm_hour = now.hour();
+  timeinfo.tm_min = now.minute();
+  timeinfo.tm_sec = now.second();
+
+  time_t t = mktime(&timeinfo);
+  struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
+  settimeofday(&tv, NULL);
+
+  logPrintf("OK (%04d-%02d-%02d %02d:%02d:%02d)\n",
+            now.year(), now.month(), now.day(),
+            now.hour(), now.minute(), now.second());
+}
+
+// Sync RTC from current system time (call after GPS or NTP sync)
+void syncRTCFromSystemTime(const char* source) {
+  if (!rtcAvailable) return;
+
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) return;
+
+  // Adjust for timezone - RTC stores UTC
+  time_t now;
+  time(&now);
+  struct tm* utc = gmtime(&now);
+
+  rtc.adjust(DateTime(utc->tm_year + 1900, utc->tm_mon + 1, utc->tm_mday,
+                      utc->tm_hour, utc->tm_min, utc->tm_sec));
+
+  logPrintf("[RTC] Synced from %s: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
+            source,
+            utc->tm_year + 1900, utc->tm_mon + 1, utc->tm_mday,
+            utc->tm_hour, utc->tm_min, utc->tm_sec);
 }
 
 // ============== SD Card Health Functions ==============
@@ -1583,6 +1663,12 @@ void initWiFi() {
     if (getLocalTime(&timeinfo, 5000)) {
       ntpSynced = true;
       logPrintln("OK");
+
+      // Sync RTC from NTP (if GPS hasn't already synced it)
+      if (!rtcSyncedFromGPS && !rtcSyncedFromNTP) {
+        syncRTCFromSystemTime("NTP");
+        rtcSyncedFromNTP = true;
+      }
     } else {
       logPrintln("FAILED");
     }
@@ -2673,6 +2759,14 @@ void parseNMEA(char* sentence) {
         case 6:  // E/W
           lonDir = token[0];
           break;
+        case 9:  // Date DDMMYY
+          if (strlen(token) >= 6) {
+            gpsData.day = (token[0] - '0') * 10 + (token[1] - '0');
+            gpsData.month = (token[2] - '0') * 10 + (token[3] - '0');
+            gpsData.year = 2000 + (token[4] - '0') * 10 + (token[5] - '0');
+            gpsData.dateValid = true;
+          }
+          break;
       }
       token = strtok(NULL, ",");
       field++;
@@ -2696,6 +2790,32 @@ void parseNMEA(char* sentence) {
         gpsFirstFixTime = millis();
         gpsHadFirstFix = true;
         logPrintf("[GPS] First fix acquired in %lus (TTFF)\n", gpsFirstFixTime / 1000);
+      }
+
+      // Sync RTC from GPS time (once per session, GPS is most accurate)
+      if (gpsData.timeValid && gpsData.dateValid && !rtcSyncedFromGPS) {
+        // Set system time from GPS (UTC)
+        struct tm gpsTime;
+        gpsTime.tm_year = gpsData.year - 1900;
+        gpsTime.tm_mon = gpsData.month - 1;
+        gpsTime.tm_mday = gpsData.day;
+        gpsTime.tm_hour = gpsData.hour;
+        gpsTime.tm_min = gpsData.minute;
+        gpsTime.tm_sec = gpsData.second;
+
+        time_t t = mktime(&gpsTime);
+        // Apply timezone offset to get local time for system
+        t += GMT_OFFSET_SEC + DAYLIGHT_OFFSET_SEC;
+        struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
+        settimeofday(&tv, NULL);
+
+        // Now sync RTC (stores UTC)
+        syncRTCFromSystemTime("GPS");
+        rtcSyncedFromGPS = true;
+
+        logPrintf("[GPS] System time set: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
+                  gpsData.year, gpsData.month, gpsData.day,
+                  gpsData.hour, gpsData.minute, gpsData.second);
       }
     } else {
       // Track when signal is lost (for reacquiring elapsed time) (#68)
