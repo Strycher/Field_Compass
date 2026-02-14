@@ -249,6 +249,16 @@ bool magAvailable = false;
 bool batteryAvailable = false;
 bool framAvailable = false;           // SPI FRAM 256KB
 
+// Magnetometer calibration (hard-iron offsets)
+float magOffsetX = 0, magOffsetY = 0, magOffsetZ = 0;
+bool magCalibrated = false;
+bool magCalibrating = false;
+unsigned long magCalStartTime = 0;
+float magCalMinX, magCalMinY, magCalMinZ;
+float magCalMaxX, magCalMaxY, magCalMaxZ;
+#define MAG_CAL_DURATION_MS 15000  // 15 seconds
+#define MAG_MIN_MAGNITUDE 20.0     // µT — reject I2C dropout reads
+
 // FRAM ring buffer header (64 bytes, stored at FRAM_HEADER_ADDR)
 struct FRAMHeader {
   uint32_t magic;            // FRAM_MAGIC validates initialized state
@@ -757,9 +767,10 @@ void setup() {
     }
   }
 
-  // Load weather history from SD
+  // Load weather history and magnetometer calibration from SD
   if (sdAvailable) {
     loadWeatherHistory();
+    loadMagCal();
   }
 
   // Initialize web server
@@ -2035,6 +2046,60 @@ void logWeatherReading() {
       recordSDSuccess();
     }
   }
+}
+
+// Load magnetometer calibration from SD card
+void loadMagCal() {
+  if (!sdHealth.available) return;
+
+  File f = SD.open("/config/mag_cal.txt", FILE_READ);
+  if (!f) return;
+
+  char line[64];
+  int idx = 0;
+  while (f.available() && idx < 63) {
+    char c = f.read();
+    if (c == '\n' || c == '\r') break;
+    line[idx++] = c;
+  }
+  line[idx] = '\0';
+  f.close();
+
+  float x, y, z;
+  if (sscanf(line, "%f,%f,%f", &x, &y, &z) == 3) {
+    magOffsetX = x;
+    magOffsetY = y;
+    magOffsetZ = z;
+    magCalibrated = true;
+    char msg[64];
+    sprintf(msg, "[MAG] Calibration loaded: %.1f, %.1f, %.1f", x, y, z);
+    logPrintln(msg);
+  }
+}
+
+// Save magnetometer calibration to SD card
+void saveMagCal() {
+  if (!sdHealth.available) return;
+
+  // Ensure /config directory exists
+  if (!SD.exists("/config")) {
+    SD.mkdir("/config");
+  }
+
+  File f = SD.open("/config/mag_cal.txt", FILE_WRITE);
+  if (!f) {
+    logPrintln("[MAG] Failed to save calibration");
+    return;
+  }
+
+  char line[64];
+  sprintf(line, "%.2f,%.2f,%.2f", magOffsetX, magOffsetY, magOffsetZ);
+  f.println(line);
+  f.close();
+
+  char msg[80];
+  sprintf(msg, "[MAG] Calibration saved: %.2f, %.2f, %.2f", magOffsetX, magOffsetY, magOffsetZ);
+  logPrintln(msg);
 }
 
 // Load weather history from SD card on boot
@@ -3426,7 +3491,17 @@ void handleButtonCLongPress() {
 
   lastActivityTime = millis();
 
-  if (currentScreen == SCREEN_GEOCACHE) {
+  if (currentScreen == SCREEN_COMPASS) {
+    // Start magnetometer calibration
+    if (!magCalibrating && magAvailable) {
+      magCalibrating = true;
+      magCalStartTime = millis();
+      magCalMinX = magCalMinY = magCalMinZ = 99999;
+      magCalMaxX = magCalMaxY = magCalMaxZ = -99999;
+      tft.fillScreen(COLOR_BG);
+      logPrintln("[MAG] Calibration started — rotate device 360 degrees");
+    }
+  } else if (currentScreen == SCREEN_GEOCACHE) {
     if (geocacheSubScreen == 1) {
       // List screen: long press goes to details
       geocacheSubScreen = 2;
@@ -3654,9 +3729,48 @@ void readIMU() {
 
   float magX = mag.magnetic.x;
   float magY = mag.magnetic.y;
+  float magZ = mag.magnetic.z;
 
-  imuData.heading = atan2(magY, magX) * 180.0 / PI;
+  // Dropout rejection: check field magnitude before using values
+  float magMagnitude = sqrt(magX * magX + magY * magY + magZ * magZ);
+  if (magMagnitude < MAG_MIN_MAGNITUDE) {
+    // I2C dropout — keep previous heading
+    static unsigned long lastDropoutLog = 0;
+    if (millis() - lastDropoutLog > 5000) {
+      lastDropoutLog = millis();
+      char dbg[64];
+      sprintf(dbg, "[MAG] Dropout (mag=%.1f uT), keeping heading", magMagnitude);
+      logPrintln(dbg);
+    }
+    return;
+  }
+
+  // Calibration min/max tracking
+  if (magCalibrating) {
+    if (magX < magCalMinX) magCalMinX = magX;
+    if (magX > magCalMaxX) magCalMaxX = magX;
+    if (magY < magCalMinY) magCalMinY = magY;
+    if (magY > magCalMaxY) magCalMaxY = magY;
+    if (magZ < magCalMinZ) magCalMinZ = magZ;
+    if (magZ > magCalMaxZ) magCalMaxZ = magZ;
+  }
+
+  // Apply hard-iron calibration offsets
+  float calX = magX - magOffsetX;
+  float calY = magY - magOffsetY;
+
+  imuData.heading = atan2(calY, calX) * 180.0 / PI;
   if (imuData.heading < 0) imuData.heading += 360;
+
+  // Debug: raw mag values
+  static unsigned long lastMagDebug = 0;
+  if (millis() - lastMagDebug > 2000) {
+    lastMagDebug = millis();
+    char dbg[96];
+    sprintf(dbg, "[MAG] X=%.1f Y=%.1f Z=%.1f  Cal:%.1f,%.1f  Hdg=%.0f",
+            magX, magY, magZ, calX, calY, imuData.heading);
+    logPrintln(dbg);
+  }
 }
 
 // ============== Display Functions ==============
@@ -4010,9 +4124,91 @@ void drawScreenEnv() {
 }
 
 void drawScreenCompass() {
-  drawHeader("COMPASS");
+  char buf[64];
 
-  char buf[32];
+  // === Calibration mode overlay ===
+  if (magCalibrating) {
+    unsigned long elapsed = millis() - magCalStartTime;
+    int remaining = (MAG_CAL_DURATION_MS - elapsed) / 1000;
+
+    if (elapsed >= MAG_CAL_DURATION_MS) {
+      // Calibration complete — compute offsets
+      magOffsetX = (magCalMaxX + magCalMinX) / 2.0;
+      magOffsetY = (magCalMaxY + magCalMinY) / 2.0;
+      magOffsetZ = (magCalMaxZ + magCalMinZ) / 2.0;
+      magCalibrated = true;
+      magCalibrating = false;
+      saveMagCal();
+
+      // Show results briefly
+      tft.fillScreen(COLOR_BG);
+      drawHeader("CAL COMPLETE");
+      tft.setTextColor(COLOR_VALUE);
+      tft.setTextSize(2);
+      tft.setCursor(20, 60);
+      tft.print("Offsets saved:");
+      tft.setTextSize(1);
+      tft.setCursor(20, 90);
+      sprintf(buf, "X: %.2f", magOffsetX);
+      tft.print(buf);
+      tft.setCursor(20, 105);
+      sprintf(buf, "Y: %.2f", magOffsetY);
+      tft.print(buf);
+      tft.setCursor(20, 120);
+      sprintf(buf, "Z: %.2f", magOffsetZ);
+      tft.print(buf);
+
+      char msg[80];
+      sprintf(msg, "[MAG] Cal complete: X=%.2f Y=%.2f Z=%.2f", magOffsetX, magOffsetY, magOffsetZ);
+      logPrintln(msg);
+
+      delay(3000);
+      tft.fillScreen(COLOR_BG);
+      return;
+    }
+
+    drawHeader("CALIBRATING");
+
+    tft.setTextColor(COLOR_WARN);
+    tft.setTextSize(2);
+    tft.setCursor(20, 50);
+    tft.print("Rotate device");
+    tft.setCursor(20, 72);
+    tft.print("slowly 360");
+    // Degree symbol
+    tft.drawCircle(tft.getCursorX() + 4, 74, 3, COLOR_WARN);
+
+    // Countdown
+    tft.fillRect(20, 105, 280, 25, COLOR_BG);
+    tft.setTextColor(COLOR_TEXT);
+    tft.setTextSize(3);
+    tft.setCursor(130, 105);
+    sprintf(buf, "%d", remaining > 0 ? remaining : 0);
+    tft.print(buf);
+
+    // Live min/max
+    tft.setTextSize(1);
+    tft.setTextColor(COLOR_DIM);
+
+    tft.fillRect(20, 145, 280, 10, COLOR_BG);
+    tft.setCursor(20, 145);
+    sprintf(buf, "X: %.1f to %.1f", magCalMinX < 99998 ? magCalMinX : 0, magCalMaxX > -99998 ? magCalMaxX : 0);
+    tft.print(buf);
+
+    tft.fillRect(20, 160, 280, 10, COLOR_BG);
+    tft.setCursor(20, 160);
+    sprintf(buf, "Y: %.1f to %.1f", magCalMinY < 99998 ? magCalMinY : 0, magCalMaxY > -99998 ? magCalMaxY : 0);
+    tft.print(buf);
+
+    tft.fillRect(20, 175, 280, 10, COLOR_BG);
+    tft.setCursor(20, 175);
+    sprintf(buf, "Z: %.1f to %.1f", magCalMinZ < 99998 ? magCalMinZ : 0, magCalMaxZ > -99998 ? magCalMaxZ : 0);
+    tft.print(buf);
+
+    return;
+  }
+
+  drawHeader("COMPASS");
 
   // === Left Panel: Text Data ===
   if (imuAvailable && magAvailable) {
@@ -4811,6 +5007,22 @@ void drawScreenDiags() {
     tft.setTextColor(COLOR_WARN);
   } else {
     sprintf(buf, "No data");
+    tft.setTextColor(COLOR_DIM);
+  }
+  tft.setCursor(valueX - 80, y);
+  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
+  tft.print(buf);
+  y += lineH;
+
+  // Mag Calibration
+  tft.setTextColor(COLOR_HEADER);
+  tft.setCursor(labelX, y);
+  tft.print("MagCal:");
+  if (magCalibrated) {
+    sprintf(buf, "%.1f, %.1f, %.1f", magOffsetX, magOffsetY, magOffsetZ);
+    tft.setTextColor(COLOR_VALUE);
+  } else {
+    sprintf(buf, "None (hold C on compass)");
     tft.setTextColor(COLOR_DIM);
   }
   tft.setCursor(valueX - 80, y);
