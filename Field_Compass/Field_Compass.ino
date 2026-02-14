@@ -4144,9 +4144,10 @@ const char* getCardinal(float heading) {
 // Draw rotating 8-point compass rose
 // cx, cy = center, radius = outer ring size, heading = device heading (degrees)
 void drawCompassRose(int cx, int cy, int radius, float heading) {
-  // Clear rose area
-  tft.fillRect(cx - radius - 6, cy - radius - 6,
-               2 * radius + 12, 2 * radius + 12, COLOR_BG);
+  // Clear rose area (extra margin for degree labels outside ring)
+  int margin = 18;
+  tft.fillRect(cx - radius - margin, cy - radius - margin,
+               2 * (radius + margin), 2 * (radius + margin), COLOR_BG);
 
   // Outer circle
   tft.drawCircle(cx, cy, radius, COLOR_DIM);
@@ -4163,6 +4164,19 @@ void drawCompassRose(int cx, int cy, int radius, float heading) {
     int innerX = cx + cos(tickAngle) * (radius - tickLen);
     int innerY = cy + sin(tickAngle) * (radius - tickLen);
     tft.drawLine(innerX, innerY, outerX, outerY, COLOR_DIM);
+
+    // Degree label just outside the ring
+    int deg = i * 30;
+    char lbl[4];
+    sprintf(lbl, "%d", deg);
+    int labelRadius = radius + 2;  // Just outside the circle
+    int lblX = cx + cos(tickAngle) * labelRadius;
+    int lblY = cy + sin(tickAngle) * labelRadius;
+    int charW = strlen(lbl) * 6;  // textSize 1: 6px per char
+    tft.setTextSize(1);
+    tft.setTextColor((i % 3 == 0) ? COLOR_TEXT : COLOR_DIM);
+    tft.setCursor(lblX - charW / 2, lblY - 4);  // Center on point
+    tft.print(lbl);
   }
 
   // 8 diamond needles: cardinals (longer, wider) + intercardinals (shorter, thinner)
