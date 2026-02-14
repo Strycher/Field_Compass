@@ -3674,6 +3674,9 @@ void updateDisplay() {
       case SCREEN_OPS:
         drawScreenOps();
         break;
+      case SCREEN_COMPASS:
+        drawScreenCompass();
+        break;
       case SCREEN_GPS:
         drawScreenGPS();
         break;
@@ -4003,6 +4006,86 @@ void drawScreenEnv() {
     tft.setTextSize(2);
     tft.setCursor(60, 100);
     tft.println("No env sensors");
+  }
+}
+
+void drawScreenCompass() {
+  drawHeader("COMPASS");
+
+  char buf[32];
+
+  // === Left Panel: Text Data ===
+  if (imuAvailable && magAvailable) {
+    // Heading — large font
+    tft.fillRect(10, 40, 130, 30, COLOR_BG);
+    tft.setTextColor(COLOR_TEXT);
+    tft.setTextSize(3);
+    tft.setCursor(10, 42);
+    sprintf(buf, "%.0f", imuData.heading);
+    tft.print(buf);
+    // Degree symbol
+    int degX = tft.getCursorX() + 2;
+    tft.drawCircle(degX + 3, 44, 3, COLOR_TEXT);
+
+    // Cardinal direction
+    tft.fillRect(10, 75, 130, 20, COLOR_BG);
+    tft.setTextColor(COLOR_VALUE);
+    tft.setTextSize(2);
+    tft.setCursor(10, 78);
+    tft.print(getCardinal(imuData.heading));
+  } else {
+    tft.fillRect(10, 40, 130, 55, COLOR_BG);
+    tft.setTextColor(COLOR_ERROR);
+    tft.setTextSize(2);
+    tft.setCursor(10, 55);
+    tft.print("No IMU");
+  }
+
+  // Speed from GPS
+  tft.setTextColor(COLOR_DIM);
+  tft.setTextSize(1);
+  tft.setCursor(10, 108);
+  tft.print("Speed:");
+
+  tft.fillRect(10, 120, 130, 20, COLOR_BG);
+  tft.setTextSize(2);
+  if (gpsData.valid) {
+    float mph = gpsData.speedKnots * 1.15078;
+    tft.setTextColor(COLOR_VALUE);
+    tft.setCursor(10, 120);
+    sprintf(buf, "%.1f mph", mph);
+    tft.print(buf);
+  } else {
+    tft.setTextColor(COLOR_DIM);
+    tft.setCursor(10, 120);
+    tft.print("-- mph");
+  }
+
+  // GPS status
+  tft.fillRect(10, 150, 130, 12, COLOR_BG);
+  tft.setTextSize(1);
+  tft.setCursor(10, 152);
+  if (gpsData.valid) {
+    tft.setTextColor(COLOR_VALUE);
+    sprintf(buf, "GPS OK  Sat:%d", gpsData.satellites);
+    tft.print(buf);
+  } else if (gpsData.receiving) {
+    tft.setTextColor(COLOR_WARN);
+    tft.print("GPS Acquiring...");
+  } else {
+    tft.setTextColor(COLOR_ERROR);
+    tft.print("No GPS");
+  }
+
+  // === Right Panel: Compass Rose ===
+  if (imuAvailable && magAvailable) {
+    drawCompassRose(230, 125, 75, imuData.heading);
+  } else {
+    tft.drawCircle(230, 125, 75, COLOR_DIM);
+    tft.setTextColor(COLOR_DIM);
+    tft.setTextSize(3);
+    tft.setCursor(222, 115);
+    tft.print("?");
   }
 }
 
@@ -4784,6 +4867,9 @@ void updateOLED() {
     case SCREEN_OPS:
       drawOLEDScreenOps();
       break;
+    case SCREEN_COMPASS:
+      drawOLEDScreenCompass();
+      break;
     case SCREEN_GPS:
       drawOLEDScreenGPS();
       break;
@@ -4924,6 +5010,33 @@ void drawOLEDScreenEnv() {
   } else {
     oled.setCursor(0, 28);
     oled.print("No env sensors");
+  }
+}
+
+void drawOLEDScreenCompass() {
+  char buf[32];
+
+  oled.setTextSize(1);
+  oled.setCursor(0, 0);
+  oled.print("COMPASS");
+
+  if (imuAvailable && magAvailable) {
+    oled.setTextSize(2);
+    oled.setCursor(0, 12);
+    sprintf(buf, "%.0f %s", imuData.heading, getCardinal(imuData.heading));
+    oled.print(buf);
+
+    oled.setTextSize(1);
+    oled.setCursor(0, 36);
+    if (gpsData.valid) {
+      sprintf(buf, "%.1f mph", gpsData.speedKnots * 1.15078);
+    } else {
+      sprintf(buf, "-- mph");
+    }
+    oled.print(buf);
+  } else {
+    oled.setCursor(0, 16);
+    oled.print("No IMU");
   }
 }
 
