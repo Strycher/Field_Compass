@@ -4058,6 +4058,85 @@ const char* getCardinal(float heading) {
   return "NW";
 }
 
+// Draw rotating 8-point compass rose
+// cx, cy = center, radius = outer ring size, heading = device heading (degrees)
+void drawCompassRose(int cx, int cy, int radius, float heading) {
+  // Clear rose area
+  tft.fillRect(cx - radius - 6, cy - radius - 6,
+               2 * radius + 12, 2 * radius + 12, COLOR_BG);
+
+  // Outer circle
+  tft.drawCircle(cx, cy, radius, COLOR_DIM);
+
+  // Rotation: rose turns opposite to heading so N points north
+  float rotDeg = -heading;
+
+  // Degree ticks every 30 degrees (12 ticks)
+  for (int i = 0; i < 12; i++) {
+    float tickAngle = radians(i * 30 + rotDeg - 90);  // -90 for screen coords
+    int tickLen = (i % 3 == 0) ? 8 : 4;  // Longer at cardinals
+    int outerX = cx + cos(tickAngle) * radius;
+    int outerY = cy + sin(tickAngle) * radius;
+    int innerX = cx + cos(tickAngle) * (radius - tickLen);
+    int innerY = cy + sin(tickAngle) * (radius - tickLen);
+    tft.drawLine(innerX, innerY, outerX, outerY, COLOR_DIM);
+  }
+
+  // 8 diamond needles: cardinals (longer, wider) + intercardinals (shorter, thinner)
+  struct Needle {
+    float angle;      // Degrees from north
+    int length;       // Tip distance from center
+    int halfWidth;    // Half-width at center
+    uint16_t color;
+  };
+
+  Needle needles[] = {
+    {  0,  70, 6, COLOR_HEADER},  // N — cyan
+    { 45,  45, 4, COLOR_DIM},     // NE — gray
+    { 90,  70, 6, COLOR_TEXT},    // E — white
+    {135,  45, 4, COLOR_DIM},     // SE — gray
+    {180,  70, 6, COLOR_ERROR},   // S — red
+    {225,  45, 4, COLOR_DIM},     // SW — gray
+    {270,  70, 6, COLOR_TEXT},    // W — white
+    {315,  45, 4, COLOR_DIM},     // NW — gray
+  };
+
+  for (int i = 0; i < 8; i++) {
+    float tipRad = radians(needles[i].angle + rotDeg - 90);
+    float perpRad = tipRad + radians(90);
+
+    // Tip point (outer end of needle)
+    int tipX = cx + cos(tipRad) * needles[i].length;
+    int tipY = cy + sin(tipRad) * needles[i].length;
+
+    // Two side points at center (perpendicular to needle axis)
+    int sideX1 = cx + cos(perpRad) * needles[i].halfWidth;
+    int sideY1 = cy + sin(perpRad) * needles[i].halfWidth;
+    int sideX2 = cx - cos(perpRad) * needles[i].halfWidth;
+    int sideY2 = cy - sin(perpRad) * needles[i].halfWidth;
+
+    // Tail point (opposite end, 1/3 length)
+    float tailRad = tipRad + radians(180);
+    int tailLen = needles[i].length / 3;
+    int tailX = cx + cos(tailRad) * tailLen;
+    int tailY = cy + sin(tailRad) * tailLen;
+
+    // Draw as two triangles: tip half and tail half
+    tft.fillTriangle(tipX, tipY, sideX1, sideY1, sideX2, sideY2, needles[i].color);
+    // Tail: cardinals get dark fill, intercardinals get gray
+    uint16_t tailColor = (needles[i].color == COLOR_DIM) ? COLOR_DIM : 0x2104;
+    tft.fillTriangle(tailX, tailY, sideX1, sideY1, sideX2, sideY2, tailColor);
+  }
+
+  // Center dot
+  tft.fillCircle(cx, cy, 4, COLOR_TEXT);
+  tft.drawCircle(cx, cy, 4, COLOR_DIM);
+
+  // Fixed lubber line at top (does NOT rotate) — orange triangle
+  int lubberY = cy - radius - 3;
+  tft.fillTriangle(cx, lubberY, cx - 5, lubberY - 8, cx + 5, lubberY - 8, COLOR_WARN);
+}
+
 // ============== Geocache Helper Functions (#70) ==============
 
 // Calculate distance between two GPS coordinates using Haversine formula
