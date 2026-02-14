@@ -543,6 +543,13 @@ void logPrintf(const char* fmt, ...) {
   Serial.print(buf);
 }
 
+// Log to SD + Serial only (skips web serial mirror ring buffer)
+void magLogPrintln(const char* msg) {
+  serialLogAppend(msg);
+  serialLogAppend("\n");
+  Serial.println(msg);
+}
+
 // ============== Serial Log to SD (#59) ==============
 
 void serialLogAppend(const char* str) {
@@ -2359,7 +2366,9 @@ void checkWiFi() {
 
 void handleWebRoot() {
   String html = "<!DOCTYPE html><html><head>";
-  html += "<title>Field Compass</title>";
+  html += "<title>Field Compass v";
+  html += FW_VERSION;
+  html += "</title>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
   html += "<meta name='color-scheme' content='dark light'>";
   html += "<style>";
@@ -2369,7 +2378,9 @@ void handleWebRoot() {
   html += "text-decoration:none;background:#2a2a2a;border-radius:5px;border:1px solid #444;}";
   html += "a:hover{background:#3a3a3a;border-color:#00ff00;}";
   html += "</style></head><body>";
-  html += "<h1>Field Compass</h1>";
+  html += "<h1>Field Compass v";
+  html += FW_VERSION;
+  html += "</h1>";
   html += "<a href='/ops'>Operational Info</a>";
   html += "<a href='/gps'>GPS</a>";
   html += "<a href='/env'>Environment</a>";
@@ -2540,8 +2551,35 @@ void handleWebDiags() {
 
   char buf[80];
 
+  // Firmware info
+  html += "=== Firmware ===\n";
+  sprintf(buf, "Version:  %s\n", FW_VERSION);
+  html += buf;
+  html += "Build:    Field Compass Dual\n";
+  {
+    unsigned long totalSec = millis() / 1000;
+    int days = totalSec / 86400;
+    int hours = (totalSec % 86400) / 3600;
+    int mins = (totalSec % 3600) / 60;
+    int secs = totalSec % 60;
+    if (days > 0) {
+      sprintf(buf, "Uptime:   %dd %02d:%02d:%02d\n", days, hours, mins, secs);
+    } else {
+      sprintf(buf, "Uptime:   %02d:%02d:%02d\n", hours, mins, secs);
+    }
+    html += buf;
+  }
+  if (wifiConnected) {
+    html += "WiFi IP:  ";
+    html += WiFi.localIP().toString();
+    html += "\n";
+  } else {
+    html += "WiFi IP:  Disconnected\n";
+  }
+  html += "mDNS:     fieldcompass.local\n";
+
   // BSEC State
-  html += "=== BSEC State ===\n";
+  html += "\n=== BSEC State ===\n";
   sprintf(buf, "Loaded:   %s\n", bsecStateLoaded ? "Yes" : "No");
   html += buf;
   sprintf(buf, "Saved:    %s\n", bsecStateSaved ? "Yes" : "No");
@@ -2592,6 +2630,21 @@ void handleWebDiags() {
     sprintf(buf, "FRAM:    N/A\n");
   }
   html += buf;
+
+  // Mag Calibration
+  html += "\n=== Mag Calibration ===\n";
+  if (magCalibrated) {
+    html += "Status:   Calibrated\n";
+    sprintf(buf, "Offsets:  X=%.2f Y=%.2f Z=%.2f\n", magOffsetX, magOffsetY, magOffsetZ);
+    html += buf;
+  } else if (magCalibrating) {
+    unsigned long elapsed = (millis() - magCalStartTime) / 1000;
+    sprintf(buf, "Status:   Calibrating (%lus / 15s)\n", elapsed);
+    html += buf;
+  } else {
+    html += "Status:   Not Calibrated\n";
+    html += "          (Hold C on compass screen)\n";
+  }
 
   // Temp comparison SHT41 vs BME688 (#48)
   html += "\n=== Temperature Comparison ===\n";
@@ -2665,16 +2718,20 @@ void handleWebSerial() {
   html += "<meta name='color-scheme' content='dark light'>";
   html += "<style>";
   // Default (dark theme) styles
-  html += ":root{--bg:#1a1a1a;--fg:#e0e0e0;--log-bg:#000;--log-fg:#00ff00;--btn-bg:#2a2a2a;--btn-fg:#00ff00;--btn-border:#444;--link:#00ffff;--header:#00ffff;}";
+  html += ":root{--bg:#1a1a1a;--fg:#e0e0e0;--log-bg:#000;--log-fg:#00ff00;--btn-bg:#2a2a2a;--btn-fg:#00ff00;--btn-border:#444;--link:#00ffff;--header:#00ffff;--warn:#ffcc00;--error:#ff4444;}";
   // Light theme override
-  html += "@media(prefers-color-scheme:light){:root{--bg:#f5f5f5;--fg:#222;--log-bg:#222;--log-fg:#00cc00;--btn-bg:#ddd;--btn-fg:#006600;--btn-border:#999;--link:#006666;--header:#008888;}}";
+  html += "@media(prefers-color-scheme:light){:root{--bg:#f5f5f5;--fg:#222;--log-bg:#222;--log-fg:#00cc00;--btn-bg:#ddd;--btn-fg:#006600;--btn-border:#999;--link:#006666;--header:#008888;--warn:#cc8800;--error:#cc0000;}}";
   html += "body{font-family:sans-serif;margin:0;padding:10px;background:var(--bg);color:var(--fg);}";
   html += ".log{background:var(--log-bg);color:var(--log-fg);font-family:monospace;padding:10px;font-size:12px;";
   html += "height:500px;overflow-y:auto;border-radius:8px;white-space:pre-wrap;}";
-  html += ".controls{margin:10px 0;}";
-  html += "button{padding:8px 16px;margin-right:8px;background:var(--btn-bg);color:var(--btn-fg);";
+  html += ".log .w{color:var(--warn);}.log .e{color:var(--error);}";
+  html += ".controls{margin:10px 0;display:flex;align-items:center;gap:8px;}";
+  html += "button{padding:8px 16px;background:var(--btn-bg);color:var(--btn-fg);";
   html += "border:1px solid var(--btn-border);border-radius:4px;cursor:pointer;}";
   html += "button:hover{opacity:0.8;}";
+  html += ".badge{display:inline-block;padding:4px 12px;border-radius:12px;font-size:12px;";
+  html += "background:#333;color:#aaa;cursor:pointer;user-select:none;}";
+  html += ".badge.live{background:#004400;color:#00ff00;}";
   html += "a{color:var(--link);}";
   html += "</style></head><body>";
   html += "<h2 style='color:var(--header);margin:0 0 10px 0;'>Serial Log</h2>";
@@ -2682,31 +2739,74 @@ void handleWebSerial() {
   html += "<div class='controls'>";
   html += "<button onclick='copyLog()'>Copy</button>";
   html += "<button onclick='clearLog()'>Clear</button>";
+  html += "<span class='badge live' id='scBtn' onclick='toggleScroll()'>Live &#x25BC;</span>";
   html += "<a href='/'>Back</a>";
   html += "</div>";
   html += "<script>";
-  html += "const log=document.getElementById('log');";
+  // Core state
+  html += "var log=document.getElementById('log');";
+  html += "var scBtn=document.getElementById('scBtn');";
+  html += "var autoScroll=true;";
+  // Line classification for colorization
+  html += "function cls(l){";
+  html += "if(/ERROR|FAILED/i.test(l))return 'e';";
+  html += "if(/WARN|NOT FOUND|Dropout/i.test(l))return 'w';";
+  html += "return '';";
+  html += "}";
+  // Append text line-by-line with color spans
+  html += "function appendLines(t){";
+  html += "var lines=t.split('\\n');";
+  html += "for(var i=0;i<lines.length;i++){";
+  html += "if(i===lines.length-1&&lines[i]==='')break;";
+  html += "var s=document.createElement('span');";
+  html += "var c=cls(lines[i]);";
+  html += "if(c)s.className=c;";
+  html += "s.textContent=lines[i]+(i<lines.length-1?'\\n':'');";
+  html += "log.appendChild(s);";
+  html += "}";
+  html += "}";
+  // Check if scrolled near bottom
+  html += "function nearBottom(){return log.scrollHeight-log.scrollTop-log.clientHeight<30;}";
+  // Scroll event: auto-detect pause/resume
+  html += "log.addEventListener('scroll',function(){";
+  html += "if(nearBottom()){if(!autoScroll){autoScroll=true;updBtn();}}";
+  html += "else{if(autoScroll){autoScroll=false;updBtn();}}";
+  html += "});";
+  // Update badge appearance
+  html += "function updBtn(){";
+  html += "if(autoScroll){scBtn.textContent='Live \\u25BC';scBtn.className='badge live';}";
+  html += "else{scBtn.textContent='Paused \\u25B6';scBtn.className='badge';}";
+  html += "}";
+  // Manual toggle via badge click
+  html += "function toggleScroll(){";
+  html += "autoScroll=!autoScroll;";
+  html += "if(autoScroll)log.scrollTop=log.scrollHeight;";
+  html += "updBtn();";
+  html += "}";
+  // Poll for new data
   html += "async function poll(){";
   html += "try{";
-  html += "const r=await fetch('/serial-data');";
-  html += "const t=await r.text();";
-  html += "if(t.length>0){";
-  html += "log.textContent+=t;";
-  html += "log.scrollTop=log.scrollHeight;";
-  html += "}";
+  html += "var r=await fetch('/serial-data');";
+  html += "var t=await r.text();";
+  html += "if(t.length>0){appendLines(t);if(autoScroll)log.scrollTop=log.scrollHeight;}";
   html += "}catch(e){}";
   html += "}";
-  html += "function clearLog(){log.textContent='';}";
+  // Clear log
+  html += "function clearLog(){log.innerHTML='';autoScroll=true;updBtn();}";
+  // Copy log
   html += "function copyLog(){";
+  html += "navigator.clipboard.writeText(log.textContent)";
+  html += ".then(function(){alert('Copied!');})";
+  html += ".catch(function(){";
   html += "var ta=document.createElement('textarea');";
   html += "ta.value=log.textContent;";
-  html += "ta.style.position='fixed';";
-  html += "ta.style.left='-9999px';";
-  html += "document.body.appendChild(ta);";
-  html += "ta.select();";
+  html += "ta.style.position='fixed';ta.style.left='-9999px';";
+  html += "document.body.appendChild(ta);ta.select();";
   html += "try{document.execCommand('copy');alert('Copied!');}catch(e){alert('Copy failed');}";
   html += "document.body.removeChild(ta);";
+  html += "});";
   html += "}";
+  // Start polling
   html += "setInterval(poll,100);";
   html += "</script>";
   html += "</body></html>";
@@ -3740,7 +3840,7 @@ void readIMU() {
       lastDropoutLog = millis();
       char dbg[64];
       sprintf(dbg, "[MAG] Dropout (mag=%.1f uT), keeping heading", magMagnitude);
-      logPrintln(dbg);
+      magLogPrintln(dbg);
     }
     return;
   }
@@ -3769,7 +3869,7 @@ void readIMU() {
     char dbg[96];
     sprintf(dbg, "[MAG] X=%.1f Y=%.1f Z=%.1f  Cal:%.1f,%.1f  Hdg=%.0f",
             magX, magY, magZ, calX, calY, imuData.heading);
-    logPrintln(dbg);
+    magLogPrintln(dbg);
   }
 }
 
