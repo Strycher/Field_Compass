@@ -116,13 +116,14 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 #define DEBUG_TFT   1  // TFT display state logging (P1 blank bug debug)
 
 // Screen settings
-#define NUM_SCREENS 6
+#define NUM_SCREENS 7
 #define SCREEN_OPS 0
-#define SCREEN_GPS 1
-#define SCREEN_ENV 2
-#define SCREEN_IMU 3
-#define SCREEN_DIAGS 4
-#define SCREEN_GEOCACHE 5  // Geocaching navigation (#70)
+#define SCREEN_COMPASS 1
+#define SCREEN_GPS 2
+#define SCREEN_ENV 3
+#define SCREEN_IMU 4
+#define SCREEN_DIAGS 5
+#define SCREEN_GEOCACHE 6  // Geocaching navigation (#70)
 
 // TFT dimensions
 #define TFT_WIDTH 320
@@ -331,6 +332,7 @@ struct {
   int year = 0;
   bool timeValid = false;
   bool dateValid = false;  // True when date has been parsed from RMC
+  float speedKnots = 0;   // Ground speed from RMC sentence
 } gpsData;
 
 char gpsBuffer[128];
@@ -3497,6 +3499,11 @@ void parseNMEA(char* sentence) {
           break;
         case 6:  // E/W
           lonDir = token[0];
+          break;
+        case 7:  // Speed over ground (knots)
+          if (strlen(token) > 0) {
+            gpsData.speedKnots = atof(token);
+          }
           break;
         case 9:  // Date DDMMYY
           if (strlen(token) >= 6) {
