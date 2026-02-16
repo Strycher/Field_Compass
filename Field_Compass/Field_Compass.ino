@@ -120,13 +120,13 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 
 // Screen settings
 #define NUM_SCREENS 7
-#define SCREEN_OPS 0
-#define SCREEN_COMPASS 1
-#define SCREEN_GPS 2
-#define SCREEN_ENV 3
+#define SCREEN_COMPASS 0
+#define SCREEN_GEOCACHE 1  // Geocaching navigation (#70)
+#define SCREEN_ENV 2
+#define SCREEN_GPS 3
 #define SCREEN_IMU 4
-#define SCREEN_DIAGS 5
-#define SCREEN_GEOCACHE 6  // Geocaching navigation (#70)
+#define SCREEN_OPS 5
+#define SCREEN_DIAGS 6
 
 // Screen dimensions (landscape mode after rotation)
 #define SCREEN_W 480
@@ -261,7 +261,7 @@ static char serialLogFilename[40];  // "/logs/serial_YYYYMMDD_HHMMSS.log"
 // ============== Global State ==============
 
 // Current screen (0-3)
-int currentScreen = SCREEN_OPS;
+int currentScreen = SCREEN_COMPASS;
 
 // Button debounce
 unsigned long lastButtonPress = 0;
