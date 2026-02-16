@@ -2,9 +2,9 @@
  * Field Compass - Dual Display Firmware
  *
  * Hardware:
- * - Adafruit ESP32-S3 Feather 8MB w.FL
+ * - Adafruit ESP32-S3 Feather 4MB Flash 2MB PSRAM (PID 5477)
  * - Adafruit SH1107 OLED FeatherWing 128x64 (I2C)
- * - Adafruit ILI9341 3.2" TFT 320x240 (SPI direct wiring)
+ * - Hosyond 3.5" ST7796U IPS TFT 480x320 with FT6336U cap touch (SPI + I2C)
  * - Adafruit Ultimate GPS FeatherWing PA1616D (Serial)
  * - Adafruit BME688 (I2C - STEMMA QT) with BSEC2
  * - Adafruit SHT41 (I2C 0x44 - STEMMA QT) (#48)
@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.26"
+#define FW_VERSION "0.27"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -35,7 +35,8 @@
 #include <time.h>
 #include <stdarg.h>
 #include <Adafruit_GFX.h>
-#include <Adafruit_ILI9341.h>
+#include <TFT_eSPI.h>          // ST7796U display driver (pins in User_Setup.h)
+#include <Adafruit_FT6206.h>   // FT6336U capacitive touch (I2C 0x38)
 #include <Adafruit_SH110X.h>
 #include <bsec2.h>
 
@@ -68,15 +69,17 @@ const char* NTP_SERVER = "pool.ntp.org";
 const long GMT_OFFSET_SEC = -18000;  // EST = UTC-5
 const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 
-// TFT Display pins (ILI9341 3.2" breakout, direct SPI wiring)
-#define TFT_CS    18  // A0 -> CS
-#define TFT_DC    17  // A1 -> D/C
-#define TFT_RST   16  // A2 -> RST
-#define FRAM_CS   15  // A3 -> FRAM CS (was TOUCH_CS, repurposed for FRAM)
-#define SD_CS     10  // Adalogger FeatherWing SD slot (was 14 for TFT breakout)
+// TFT Display pins (ST7796U 3.5" IPS, SPI — also configured in TFT_eSPI User_Setup.h)
+// TFT_CS=18, TFT_DC=17, TFT_RST=16 defined by TFT_eSPI User_Setup.h
+#define FRAM_CS   15  // A3 -> FRAM CS
+#define SD_CS     10  // Adalogger FeatherWing SD slot
 
-// SPI clock frequency for TFT (ILI9341 supports up to 40MHz; 32MHz safe for breadboard)
-#define TFT_SPI_FREQ  32000000
+// Touch controller (FT6336U capacitive touch, I2C 0x38)
+#define CTP_INT   14  // A4 -> Touch interrupt (active-low, FALLING edge)
+
+// Backlight control (PWM dimming)
+#define TFT_BL     8  // A5 -> LED pin on display module
+#define TFT_BL_PWM 255 // Default brightness (0=off, 255=full)
 
 // FRAM Memory Map (256KB = 262,144 bytes, MB85RS2MTA)
 #define FRAM_MAGIC          0x4652414D  // "FRAM" in ASCII
@@ -125,9 +128,9 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 #define SCREEN_DIAGS 5
 #define SCREEN_GEOCACHE 6  // Geocaching navigation (#70)
 
-// TFT dimensions
-#define TFT_WIDTH 320
-#define TFT_HEIGHT 240
+// Screen dimensions (landscape mode after rotation)
+#define SCREEN_W 480
+#define SCREEN_H 320
 
 // Debounce time in ms
 #define DEBOUNCE_MS 200
@@ -182,8 +185,39 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 
 // ============== Global Objects ==============
 
-// TFT Display (hardware SPI - 3-argument constructor)
-Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
+// TFT Display (ST7796U via TFT_eSPI — pins configured in User_Setup.h)
+TFT_eSPI tft = TFT_eSPI();
+
+// Sprite for flicker-free double-buffering (PSRAM-backed, 480x320x16bpp = 307KB)
+TFT_eSprite spr = TFT_eSprite(&tft);
+bool spriteAvailable = false;
+bool forceDisplayUpdate = false;  // Skip 500ms throttle on next frame (screen change)
+
+// Zone-based partial push system: only push changed screen regions to TFT.
+// Full-frame pushSprite (~78ms SPI) causes visible flash on ST7796U mid-scan.
+// Partial pushSprite of small zones (1-9ms) is invisible.
+#define MAX_ZONES 20
+#define ZONE_KEY_LEN 48
+
+struct DisplayZone {
+  int16_t x, y, w, h;          // Bounding rectangle on screen
+  char key[ZONE_KEY_LEN];      // Formatted content string for change detection
+};
+
+static DisplayZone zonesCur[MAX_ZONES];
+static DisplayZone zonesPrev[MAX_ZONES];
+static uint8_t zoneCurCount = 0;
+static uint8_t zonePrevCount = 0;
+
+// Zone helper functions defined below (near display functions) to avoid
+// Arduino auto-prototype ordering issues with struct types
+void zoneBegin();
+bool zoneMark(int16_t x, int16_t y, int16_t w, int16_t h, const char* key);
+void zonePushDirty();
+
+// Capacitive touch controller (FT6336U on I2C at 0x38)
+Adafruit_FT6206 ctp = Adafruit_FT6206();
+volatile bool touchDetected = false;
 
 // OLED Display
 Adafruit_SH1107 oled = Adafruit_SH1107(64, 128, &Wire);
@@ -248,6 +282,7 @@ bool imuAvailable = false;
 bool magAvailable = false;
 bool batteryAvailable = false;
 bool framAvailable = false;           // SPI FRAM 256KB
+bool touchAvailable = false;          // FT6336U capacitive touch
 
 // Magnetometer calibration (hard-iron offsets)
 float magOffsetX = 0, magOffsetY = 0, magOffsetZ = 0;
@@ -705,6 +740,12 @@ void initSerialLog() {
   logPrintf("[LOG] Logging to %s\n", serialLogFilename);
 }
 
+// ============== Touch ISR ==============
+
+void IRAM_ATTR touchISR() {
+  touchDetected = true;  // Flag only — NO I2C in ISR
+}
+
 // ============== Setup ==============
 
 void setup() {
@@ -717,11 +758,14 @@ void setup() {
   serialRingAppend(banner);
   Serial.print(banner);
 
-  // Initialize SPI for TFT with explicit pins
-  SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, TFT_CS);
+  Serial.println(">>> About to init TFT...");
+  Serial.flush();
 
-  // Initialize TFT first for visual feedback
+  // Initialize TFT first for visual feedback (TFT_eSPI handles SPI init)
   initTFT();
+
+  Serial.println(">>> TFT init done");
+  Serial.flush();
 
   // Initialize I2C
   Wire.begin();
@@ -753,6 +797,7 @@ void setup() {
   initSHT41();   // SHT41 temp/humidity (#48)
   initIMU();
   initBattery();
+  initTouch();   // FT6336U capacitive touch (I2C 0x38)
 
   // Initialize hardware SPI for SD card (Adalogger uses different CS pin)
   SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
@@ -815,6 +860,18 @@ void setup() {
 void loop() {
   // Handle button navigation
   handleButtons();
+
+  // Handle touch input (interrupt-driven)
+  if (touchDetected && touchAvailable) {
+    touchDetected = false;
+    if (ctp.touched()) {
+      TS_Point p = ctp.getPoint();
+      // Touch detected — for now just log coordinates
+      // TODO: Map touch to screen actions (screen cycling, etc.)
+      logPrintf("[TOUCH] x=%d y=%d\n", p.x, p.y);
+      lastActivityTime = millis();  // Reset sleep timer on touch
+    }
+  }
 
   // Check display sleep timeout
   checkDisplaySleep();
@@ -944,6 +1001,8 @@ void scanI2C() {
         desc = " (LIS3MDL - Magnetometer)";
       } else if (address == 0x36) {
         desc = " (MAX17048 - Battery Gauge)";
+      } else if (address == 0x38) {
+        desc = " (FT6336U - Cap Touch)";
       } else if (address == 0x44) {
         desc = " (SHT41 - Temp/Humidity)";
       } else if (address == 0x29) {
@@ -963,28 +1022,52 @@ void scanI2C() {
 // ============== Initialization Functions ==============
 
 void initTFT() {
-  logPrint("Initializing ILI9341 TFT... ");
+  logPrint("Initializing ST7796U TFT... ");
 
-  tft.begin(TFT_SPI_FREQ);
+  tft.init();
 
-  tft.setRotation(3);  // Landscape mode, flipped 180 for ILI9341 board orientation
-  tft.fillScreen(ILI9341_RED);  // Flash red to confirm TFT is working
+  // Turn on backlight via PWM
+  pinMode(TFT_BL, OUTPUT);
+  analogWrite(TFT_BL, TFT_BL_PWM);
+
+  tft.setRotation(1);  // Landscape mode (480x320) — rotation 1 for Hosyond MSP3526 panel
+  tft.fillScreen(TFT_RED);  // Flash red to confirm TFT is working
   delay(100);
   tft.fillScreen(COLOR_BG);
 
   lastTFTReinit = millis();  // Track init time
-  logPrintln("OK (320x240)");
+
+  // Create PSRAM-backed sprite for flicker-free double-buffering
+  if (psramFound()) {
+    void* ptr = spr.createSprite(SCREEN_W, SCREEN_H);
+    if (ptr) {
+      spriteAvailable = true;
+      spr.fillSprite(COLOR_BG);
+      logPrintf("OK (480x320) + Sprite (%dKB PSRAM, %dKB free)\n",
+                (SCREEN_W * SCREEN_H * 2) / 1024, ESP.getFreePsram() / 1024);
+    } else {
+      logPrintln("OK (480x320) — sprite alloc failed, direct draw");
+    }
+  } else {
+    logPrintln("OK (480x320) — no PSRAM, direct draw");
+  }
 }
 
 // Preventive TFT re-initialization (P1 blank bug workaround)
 // TFT goes blank after ~40 minutes with no errors - re-init as workaround
+// With sprite mode, pushSprite overwrites every pixel each frame — self-healing.
+// Only needed in direct-draw mode as a safety net.
 void checkTFTHealth() {
+  // Sprite mode: pushSprite(0,0) writes all 153,600 pixels every frame,
+  // so any SPI glitch is corrected within 500ms. No reinit needed.
+  if (spriteAvailable) return;
+
   unsigned long now = millis();
 
   // Skip if TFT is sleeping (intentional blank)
   if (tftSleeping) return;
 
-  // Preventive re-init every 30 minutes
+  // Preventive re-init every 30 minutes (direct-draw mode only)
   if (now - lastTFTReinit > TFT_REINIT_INTERVAL) {
     #if DEBUG_TFT
     logPrintf("[TFT] Preventive re-init at %lus (updates:%lu)\n",
@@ -992,8 +1075,8 @@ void checkTFTHealth() {
     #endif
 
     // Re-initialize TFT
-    tft.begin(TFT_SPI_FREQ);
-    tft.setRotation(3);
+    tft.init();
+    tft.setRotation(1);
     tft.fillScreen(COLOR_BG);
 
     lastTFTReinit = now;
@@ -1263,6 +1346,23 @@ void initBattery() {
 
   batteryAvailable = true;
   logPrintln("OK");
+}
+
+void initTouch() {
+  logPrint("Initializing FT6336U touch... ");
+
+  if (!ctp.begin(40)) {  // 40 = sensitivity threshold
+    logPrintln("NOT FOUND at 0x38");
+    return;
+  }
+
+  touchAvailable = true;
+
+  // Configure interrupt pin (CTP_INT is active-low, open-drain)
+  pinMode(CTP_INT, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(CTP_INT), touchISR, FALLING);
+
+  logPrintln("OK (interrupt on GPIO 14)");
 }
 
 // Log battery data to SD card for analysis
@@ -2604,6 +2704,17 @@ void handleWebDiags() {
   html += buf;
   sprintf(buf, "CPU Freq:  %lu MHz\n", (unsigned long)ESP.getCpuFreqMHz());
   html += buf;
+  if (psramFound()) {
+    sprintf(buf, "PSRAM:     %luK / %luK (Sprite: %s)\n",
+            (unsigned long)ESP.getFreePsram() / 1024,
+            (unsigned long)ESP.getPsramSize() / 1024,
+            spriteAvailable ? "Active" : "Failed");
+  } else {
+    sprintf(buf, "PSRAM:     Not detected\n");
+  }
+  html += buf;
+  sprintf(buf, "Sprite:    %s\n", spriteAvailable ? "480x320 double-buffer" : "Direct draw (no sprite)");
+  html += buf;
 
   // Sensors
   html += "\n=== Sensors ===\n";
@@ -2620,6 +2731,8 @@ void handleWebDiags() {
   sprintf(buf, "SD Card: %s\n", sdAvailable ? "OK" : "N/A");
   html += buf;
   sprintf(buf, "OLED:    %s\n", oledAvailable ? "OK" : "N/A");
+  html += buf;
+  sprintf(buf, "Touch:   %s\n", touchAvailable ? "OK (FT6336U)" : "N/A");
   html += buf;
   if (framAvailable) {
     sprintf(buf, "FRAM:    OK (256KB) Batt:%d/%d Wx:%d/%d %s\n",
@@ -2793,18 +2906,21 @@ void handleWebSerial() {
   html += "}";
   // Clear log
   html += "function clearLog(){log.innerHTML='';autoScroll=true;updBtn();}";
-  // Copy log
+  // Copy log (try Clipboard API first, textarea fallback for HTTP)
   html += "function copyLog(){";
+  html += "try{";
   html += "navigator.clipboard.writeText(log.textContent)";
   html += ".then(function(){alert('Copied!');})";
-  html += ".catch(function(){";
+  html += ".catch(function(){copyFallback();});";
+  html += "}catch(e){copyFallback();}";
+  html += "}";
+  html += "function copyFallback(){";
   html += "var ta=document.createElement('textarea');";
   html += "ta.value=log.textContent;";
   html += "ta.style.position='fixed';ta.style.left='-9999px';";
   html += "document.body.appendChild(ta);ta.select();";
   html += "try{document.execCommand('copy');alert('Copied!');}catch(e){alert('Copy failed');}";
   html += "document.body.removeChild(ta);";
-  html += "});";
   html += "}";
   // Start polling
   html += "setInterval(poll,100);";
@@ -3376,7 +3492,8 @@ void sleepTFT() {
   if (tftSleeping) return;
 
   tftSleeping = true;
-  tft.sendCommand(ILI9341_SLPIN);
+  analogWrite(TFT_BL, 0);            // Backlight off
+  tft.writecommand(0x10);  // MIPI DCS Sleep In
   #if DEBUG_SLEEP
   Serial.println("TFT sleeping");
   #endif
@@ -3386,8 +3503,9 @@ void wakeTFT() {
   if (!tftSleeping) return;
 
   tftSleeping = false;
-  tft.sendCommand(ILI9341_SLPOUT);
-  delay(120);  // ILI9341 datasheet: 120ms delay after sleep out
+  tft.writecommand(0x11);  // MIPI DCS Sleep Out
+  delay(120);  // ST7796U datasheet: 120ms delay after sleep out
+  analogWrite(TFT_BL, TFT_BL_PWM);   // Backlight on
   tft.fillScreen(COLOR_BG);  // Clear screen on wake
   #if DEBUG_SLEEP
   Serial.println("TFT woke up");
@@ -3487,10 +3605,13 @@ void handleButtons() {
   // Flush FRAM buffer on button press
   if (framAvailable && sdAvailable) framFlushToSD();
 
-  // Reinit TFT on any button press (recovers from SPI glitch/white screen)
-  tft.begin(TFT_SPI_FREQ);
-  tft.setRotation(3);
-  lastTFTReinit = now;
+  // Reinit TFT on button press only in direct-draw mode (recovers from SPI glitch/white screen)
+  // With sprite double-buffering, pushSprite overwrites every pixel — self-healing
+  if (!spriteAvailable) {
+    tft.init();
+    tft.setRotation(1);
+    lastTFTReinit = now;
+  }
 
   // Handle A/B based on current screen and sub-screen
   if (currentScreen == SCREEN_GEOCACHE && geocacheSubScreen != 0) {
@@ -3504,7 +3625,8 @@ void handleButtons() {
       if (currentScreen < 0) currentScreen = NUM_SCREENS - 1;
       geocacheSubScreen = 0;  // Reset sub-screen when leaving
       lastButtonPress = now;
-      tft.fillScreen(COLOR_BG);
+      if (spriteAvailable) forceDisplayUpdate = true;
+      else tft.fillScreen(COLOR_BG);
     }
 
     if (buttonB) {
@@ -3512,7 +3634,8 @@ void handleButtons() {
       if (currentScreen >= NUM_SCREENS) currentScreen = 0;
       geocacheSubScreen = 0;  // Reset sub-screen when leaving
       lastButtonPress = now;
-      tft.fillScreen(COLOR_BG);
+      if (spriteAvailable) forceDisplayUpdate = true;
+      else tft.fillScreen(COLOR_BG);
     }
   }
 }
@@ -3542,7 +3665,8 @@ void handleGeocacheButtons(bool buttonA, bool buttonB) {
       listHighlightIndex++;
     }
   }
-  tft.fillScreen(COLOR_BG);  // Clear on sub-screen change
+  if (spriteAvailable) forceDisplayUpdate = true;
+  else tft.fillScreen(COLOR_BG);
 }
 
 // Button C short press handler
@@ -3561,12 +3685,14 @@ void handleButtonCShortPress() {
       geocacheSubScreen = 1;
       listHighlightIndex = selectedCacheIndex;
       listScrollOffset = max(0, listHighlightIndex - 2);
-      tft.fillScreen(COLOR_BG);
+      if (spriteAvailable) forceDisplayUpdate = true;
+      else tft.fillScreen(COLOR_BG);
     } else if (geocacheSubScreen == 1) {
       // List screen: short press selects cache and returns to nav
       selectedCacheIndex = listHighlightIndex;
       geocacheSubScreen = 0;
-      tft.fillScreen(COLOR_BG);
+      if (spriteAvailable) forceDisplayUpdate = true;
+      else tft.fillScreen(COLOR_BG);
     } else if (geocacheSubScreen == 2) {
       // Details screen: short press toggles found status
       if (cacheListCount > 0 && listHighlightIndex < cacheListCount) {
@@ -3575,7 +3701,8 @@ void handleButtonCShortPress() {
           cacheList[listHighlightIndex].foundTime = millis() / 1000;  // Simple timestamp
         }
         saveCacheFoundStatus();  // Persist to SD
-        tft.fillScreen(COLOR_BG);
+        if (spriteAvailable) forceDisplayUpdate = true;
+        else tft.fillScreen(COLOR_BG);
       }
     }
   }
@@ -3598,18 +3725,21 @@ void handleButtonCLongPress() {
       magCalStartTime = millis();
       magCalMinX = magCalMinY = magCalMinZ = 99999;
       magCalMaxX = magCalMaxY = magCalMaxZ = -99999;
-      tft.fillScreen(COLOR_BG);
+      if (spriteAvailable) forceDisplayUpdate = true;
+      else tft.fillScreen(COLOR_BG);
       logPrintln("[MAG] Calibration started — rotate device 360 degrees");
     }
   } else if (currentScreen == SCREEN_GEOCACHE) {
     if (geocacheSubScreen == 1) {
       // List screen: long press goes to details
       geocacheSubScreen = 2;
-      tft.fillScreen(COLOR_BG);
+      if (spriteAvailable) forceDisplayUpdate = true;
+      else tft.fillScreen(COLOR_BG);
     } else if (geocacheSubScreen == 2) {
       // Details screen: long press goes back to list
       geocacheSubScreen = 1;
-      tft.fillScreen(COLOR_BG);
+      if (spriteAvailable) forceDisplayUpdate = true;
+      else tft.fillScreen(COLOR_BG);
     }
   }
 }
@@ -3875,41 +4005,75 @@ void readIMU() {
 
 // ============== Display Functions ==============
 
+// Zone helper implementations (prototypes declared near DisplayZone struct)
+void zoneBegin() {
+  zoneCurCount = 0;
+}
+
+bool zoneMark(int16_t x, int16_t y, int16_t w, int16_t h, const char* key) {
+  if (zoneCurCount >= MAX_ZONES) return true;
+  uint8_t idx = zoneCurCount++;
+  DisplayZone& z = zonesCur[idx];
+  z.x = x; z.y = y; z.w = w; z.h = h;
+  strncpy(z.key, key, ZONE_KEY_LEN - 1);
+  z.key[ZONE_KEY_LEN - 1] = '\0';
+  if (idx < zonePrevCount) {
+    return strcmp(z.key, zonesPrev[idx].key) != 0;
+  }
+  return true;
+}
+
+void zonePushDirty() {
+  if (!spriteAvailable) return;
+  for (uint8_t i = 0; i < zoneCurCount; i++) {
+    if (i >= zonePrevCount || strcmp(zonesCur[i].key, zonesPrev[i].key) != 0) {
+      DisplayZone& z = zonesCur[i];
+      spr.pushSprite(z.x, z.y, z.x, z.y, z.w, z.h);
+    }
+  }
+  memcpy(zonesPrev, zonesCur, sizeof(DisplayZone) * zoneCurCount);
+  zonePrevCount = zoneCurCount;
+}
+
 void updateDisplay() {
   static unsigned long lastUpdate = 0;
 
-  // Update every 500ms to reduce flicker
-  if (millis() - lastUpdate < 500) return;
+  // Save forceDisplayUpdate BEFORE clearing (race fix)
+  bool wasForced = forceDisplayUpdate;
+  forceDisplayUpdate = false;
+
+  // Throttle: update every 500ms, or immediately if forced
+  if (!wasForced && millis() - lastUpdate < 500) return;
   lastUpdate = millis();
 
   // Update TFT display (if not sleeping)
   if (!tftSleeping) {
-    switch (currentScreen) {
-      case SCREEN_OPS:
-        drawScreenOps();
-        break;
-      case SCREEN_COMPASS:
-        drawScreenCompass();
-        break;
-      case SCREEN_GPS:
-        drawScreenGPS();
-        break;
-      case SCREEN_ENV:
-        drawScreenEnv();
-        break;
-      case SCREEN_IMU:
-        drawScreenIMU();
-        break;
-      case SCREEN_DIAGS:
-        drawScreenDiags();
-        break;
-      case SCREEN_GEOCACHE:
-        drawScreenGeocache();
-        break;
+    TFT_eSprite* c = &spr;
+
+    // On screen change: clear sprite + push full black frame to TFT to erase old content,
+    // then invalidate all zones so the new screen's first frame pushes everything.
+    static int lastDrawnScreen = -1;
+    if (spriteAvailable && (currentScreen != lastDrawnScreen || wasForced)) {
+      spr.fillSprite(COLOR_BG);
+      spr.pushSprite(0, 0);  // Full push to clear old screen artifacts from TFT
+      zonePrevCount = 0;     // Force all zones dirty on next frame
+      lastDrawnScreen = currentScreen;
     }
 
-    // Draw screen indicator at bottom
-    drawNavBar();
+    // Each drawScreenXxx calls zoneBegin(), registers zones with zoneMark(),
+    // and only draws content for dirty zones. drawNavBar is called inside each screen.
+    switch (currentScreen) {
+      case SCREEN_OPS:      drawScreenOps(c);      break;
+      case SCREEN_COMPASS:  drawScreenCompass(c);   break;
+      case SCREEN_GPS:      drawScreenGPS(c);       break;
+      case SCREEN_ENV:      drawScreenEnv(c);       break;
+      case SCREEN_IMU:      drawScreenIMU(c);       break;
+      case SCREEN_DIAGS:    drawScreenDiags(c);     break;
+      case SCREEN_GEOCACHE: drawScreenGeocache(c);  break;
+    }
+
+    // Push only dirty zones to TFT (small partial SPI transfers = no visible flash)
+    zonePushDirty();
 
     // Track TFT update for health monitoring
     lastTFTUpdate = millis();
@@ -3922,90 +4086,102 @@ void updateDisplay() {
   }
 }
 
-void drawHeader(const char* title) {
-  tft.fillRect(0, 0, TFT_WIDTH, 30, COLOR_HEADER);
-  tft.setTextColor(COLOR_BG);
-  tft.setTextSize(2);
-  tft.setCursor(10, 7);
-  tft.print(title);
+void drawHeader(TFT_eSprite* c, const char* title) {
+  c->fillRect(0, 0, SCREEN_W, 30, COLOR_HEADER);
+  c->setTextColor(COLOR_BG);
+  c->setTextSize(2);
+  c->setCursor(10, 7);
+  c->print(title);
 }
 
-void drawNavBar() {
-  int y = TFT_HEIGHT - 25;
-  tft.fillRect(0, y, TFT_WIDTH, 25, 0x18C3);  // Dark gray
+void drawNavBar(TFT_eSprite* c) {
+  int y = SCREEN_H - 25;
+  c->fillRect(0, y, SCREEN_W, 25, 0x18C3);  // Dark gray
 
-  tft.setTextColor(COLOR_TEXT);
-  tft.setTextSize(2);
+  c->setTextColor(COLOR_TEXT);
+  c->setTextSize(2);
 
   // Screen indicators - adjusted spacing for 5 screens
   int startX = 60;
   int spacing = 36;
   for (int i = 0; i < NUM_SCREENS; i++) {
     if (i == currentScreen) {
-      tft.fillRect(startX + i * spacing, y + 3, 28, 19, COLOR_HEADER);
-      tft.setTextColor(COLOR_BG);
+      c->fillRect(startX + i * spacing, y + 3, 28, 19, COLOR_HEADER);
+      c->setTextColor(COLOR_BG);
     } else {
-      tft.setTextColor(COLOR_DIM);
+      c->setTextColor(COLOR_DIM);
     }
-    tft.setCursor(startX + 6 + i * spacing, y + 5);
-    tft.print(i + 1);
-    tft.setTextColor(COLOR_TEXT);
+    c->setCursor(startX + 6 + i * spacing, y + 5);
+    c->print(i + 1);
+    c->setTextColor(COLOR_TEXT);
   }
 
   // Button hints
-  tft.setTextSize(1);
-  tft.setCursor(10, y + 8);
-  tft.print("A<");
-  tft.setCursor(TFT_WIDTH - 25, y + 8);
-  tft.print(">B");
+  c->setTextSize(1);
+  c->setCursor(10, y + 8);
+  c->print("A<");
+  c->setCursor(SCREEN_W - 25, y + 8);
+  c->print(">B");
 }
 
-void drawLabel(int x, int y, const char* label) {
-  tft.setTextColor(COLOR_DIM);
-  tft.setTextSize(2);
-  tft.setCursor(x, y);
-  tft.print(label);
+void drawLabel(TFT_eSprite* c, int x, int y, const char* label) {
+  c->setTextColor(COLOR_DIM);
+  c->setTextSize(2);
+  c->setCursor(x, y);
+  c->print(label);
 }
 
-void drawValue(int x, int y, const char* value, uint16_t color = COLOR_VALUE, int clearWidth = 200) {
-  // Clear the value area first to prevent ghosting
-  tft.fillRect(x, y, clearWidth, 18, COLOR_BG);
-  tft.setTextColor(color);
-  tft.setTextSize(2);
-  tft.setCursor(x, y);
-  tft.print(value);
+void drawValue(TFT_eSprite* c, int x, int y, const char* value, uint16_t color = COLOR_VALUE, int clearWidth = 200) {
+  c->fillRect(x, y, clearWidth, 18, COLOR_BG);  // Clear value area before drawing
+  c->setTextColor(color);
+  c->setTextSize(2);
+  c->setCursor(x, y);
+  c->print(value);
 }
 
-void drawScreenOps() {
-  drawHeader("OPERATIONAL");
+void drawScreenOps(TFT_eSprite* c) {
+  zoneBegin();
 
-  char buf[32];
+  char buf[ZONE_KEY_LEN];
   int y = 50;
   int labelX = 20;
   int valueX = 120;
   int lineH = 35;
 
-  // Time
-  drawLabel(labelX, y, "Time:");
+  // Zone 0: Header
+  if (zoneMark(0, 0, SCREEN_W, 30, "OPERATIONAL"))
+    drawHeader(c, "OPERATIONAL");
+
+  // Zone 1: Time label (static)
+  if (zoneMark(labelX, y, 90, 18, "Time:"))
+    drawLabel(c, labelX, y, "Time:");
+
+  // Zone 2: Time value
+  uint16_t timeColor = COLOR_VALUE;
   if (gpsData.timeValid) {
     int hour = gpsData.hour + (GMT_OFFSET_SEC / 3600);
     if (hour < 0) hour += 24;
     if (hour >= 24) hour -= 24;
     sprintf(buf, "%02d:%02d:%02d GPS", hour, gpsData.minute, gpsData.second);
-    drawValue(valueX, y, buf);
   } else if (ntpSynced) {
     struct tm timeinfo;
     if (getLocalTime(&timeinfo)) {
       strftime(buf, sizeof(buf), "%H:%M:%S NTP", &timeinfo);
-      drawValue(valueX, y, buf);
+    } else {
+      strcpy(buf, "--:--:-- N/A"); timeColor = COLOR_WARN;
     }
   } else {
-    drawValue(valueX, y, "--:--:-- N/A", COLOR_WARN);
+    strcpy(buf, "--:--:-- N/A"); timeColor = COLOR_WARN;
   }
+  if (zoneMark(valueX, y, 200, 18, buf))
+    drawValue(c, valueX, y, buf, timeColor);
   y += lineH;
 
-  // Uptime
-  drawLabel(labelX, y, "Uptime:");
+  // Zone 3: Uptime label (static)
+  if (zoneMark(labelX, y, 90, 18, "Uptime:"))
+    drawLabel(c, labelX, y, "Uptime:");
+
+  // Zone 4: Uptime value
   unsigned long totalSec = millis() / 1000;
   int days = totalSec / 86400;
   int hours = (totalSec % 86400) / 3600;
@@ -4016,218 +4192,313 @@ void drawScreenOps() {
   } else {
     sprintf(buf, "%02d:%02d:%02d", hours, mins, secs);
   }
-  drawValue(valueX, y, buf);
+  if (zoneMark(valueX, y, 200, 18, buf))
+    drawValue(c, valueX, y, buf);
   y += lineH;
 
-  // WiFi
-  drawLabel(labelX, y, "WiFi:");
+  // Zone 5: WiFi label (static)
+  if (zoneMark(labelX, y, 90, 18, "WiFi:"))
+    drawLabel(c, labelX, y, "WiFi:");
+
+  // Zone 6: WiFi value
+  uint16_t wifiColor = COLOR_VALUE;
   if (wifiConnected) {
-    drawValue(valueX, y, WiFi.SSID().c_str());
+    snprintf(buf, sizeof(buf), "%s", WiFi.SSID().c_str());
   } else {
-    drawValue(valueX, y, "Disconnected", COLOR_ERROR);
+    strcpy(buf, "Disconnected"); wifiColor = COLOR_ERROR;
   }
+  if (zoneMark(valueX, y, 200, 18, buf))
+    drawValue(c, valueX, y, buf, wifiColor);
   y += lineH;
 
-  // Battery
-  drawLabel(labelX, y, "Battery:");
+  // Zone 7: Battery label (static)
+  if (zoneMark(labelX, y, 90, 18, "Battery:"))
+    drawLabel(c, labelX, y, "Battery:");
+
+  // Zone 8: Battery value
+  uint16_t battColor = COLOR_VALUE;
   if (batteryAvailable && isBatteryConnected()) {
     float pct = battery.cellPercent();
     float volt = battery.cellVoltage();
     sprintf(buf, "%.0f%% (%.2fV)", pct, volt);
-    uint16_t color = (pct > 20) ? COLOR_VALUE : COLOR_ERROR;
-    drawValue(valueX, y, buf, color);
+    if (pct <= 20) battColor = COLOR_ERROR;
   } else if (batteryAvailable) {
-    drawValue(valueX, y, "USB Only", COLOR_DIM);
+    strcpy(buf, "USB Only"); battColor = COLOR_DIM;
   } else {
-    drawValue(valueX, y, "N/A", COLOR_DIM);
+    strcpy(buf, "N/A"); battColor = COLOR_DIM;
   }
+  if (zoneMark(valueX, y, 200, 18, buf))
+    drawValue(c, valueX, y, buf, battColor);
+
+  // Zone 9: NavBar
+  sprintf(buf, "nav_%d", currentScreen);
+  if (zoneMark(0, SCREEN_H - 25, SCREEN_W, 25, buf))
+    drawNavBar(c);
 }
 
-void drawScreenGPS() {
-  drawHeader("GPS");
-
-  // Clear content area if GPS validity state changed
-  static bool lastDrawnValid = false;
-  if (gpsData.valid != lastDrawnValid) {
-    tft.fillRect(0, 30, TFT_WIDTH, TFT_HEIGHT - 55, COLOR_BG);
-    lastDrawnValid = gpsData.valid;
-  }
+void drawScreenGPS(TFT_eSprite* c) {
+  zoneBegin();
+  char buf[ZONE_KEY_LEN];
 
   int y = 50;
   int labelX = 20;
   int valueX = 120;
   int lineH = 35;
-  char buf[32];
+
+  // Zone 0: Header
+  if (zoneMark(0, 0, SCREEN_W, 30, "GPS"))
+    drawHeader(c, "GPS");
+
+  // Detect layout mode: 0=fix, 1=acquiring, 2=no data
+  // Include mode in zone keys so layout changes force full redraw
+  int gpsMode = gpsData.valid ? 0 : (gpsData.receiving ? 1 : 2);
+
+  // Clear content area on layout mode change — push to erase old layout artifacts
+  static int lastGpsMode = -1;
+  if (gpsMode != lastGpsMode) {
+    c->fillRect(0, 30, SCREEN_W, SCREEN_H - 55, COLOR_BG);
+    spr.pushSprite(0, 0);  // Full push to clear old layout from TFT
+    zonePrevCount = 0;      // Force all zones dirty
+    lastGpsMode = gpsMode;
+  }
 
   if (gpsData.valid) {
-    // Latitude
-    drawLabel(labelX, y, "Lat:");
+    // Zone 1: Lat label
+    if (zoneMark(labelX, y, 90, 18, "Lat:"))
+      drawLabel(c, labelX, y, "Lat:");
+    // Zone 2: Lat value
     sprintf(buf, "%.6f %c", fabs(gpsData.latitude), gpsData.latitude >= 0 ? 'N' : 'S');
-    drawValue(valueX, y, buf);
+    if (zoneMark(valueX, y, 200, 18, buf))
+      drawValue(c, valueX, y, buf);
     y += lineH;
 
-    // Longitude
-    drawLabel(labelX, y, "Lon:");
+    // Zone 3: Lon label
+    if (zoneMark(labelX, y, 90, 18, "Lon:"))
+      drawLabel(c, labelX, y, "Lon:");
+    // Zone 4: Lon value
     sprintf(buf, "%.6f %c", fabs(gpsData.longitude), gpsData.longitude >= 0 ? 'E' : 'W');
-    drawValue(valueX, y, buf);
+    if (zoneMark(valueX, y, 200, 18, buf))
+      drawValue(c, valueX, y, buf);
     y += lineH;
 
-    // Altitude
-    drawLabel(labelX, y, "Alt:");
+    // Zone 5: Alt label
+    if (zoneMark(labelX, y, 90, 18, "Alt:"))
+      drawLabel(c, labelX, y, "Alt:");
+    // Zone 6: Alt value
     sprintf(buf, "%.1f m", gpsData.altitude);
-    drawValue(valueX, y, buf);
+    if (zoneMark(valueX, y, 200, 18, buf))
+      drawValue(c, valueX, y, buf);
     y += lineH;
 
-    // Status with TTFF (#68)
-    drawLabel(labelX, y, "Status:");
+    // Zone 7: Status label
+    if (zoneMark(labelX, y, 90, 18, "Status:"))
+      drawLabel(c, labelX, y, "Status:");
+    // Zone 8: Status value
     if (gpsHadFirstFix) {
       sprintf(buf, "Fix OK (TTFF %lus)", gpsFirstFixTime / 1000);
-      drawValue(valueX, y, buf, COLOR_VALUE);
     } else {
-      drawValue(valueX, y, "Fix OK", COLOR_VALUE);
+      strcpy(buf, "Fix OK");
     }
+    if (zoneMark(valueX, y, 200, 18, buf))
+      drawValue(c, valueX, y, buf, COLOR_VALUE);
 
   } else if (gpsData.receiving) {
-    // Clear content area for acquiring state (uses raw print, not drawValue)
-    tft.fillRect(0, 30, TFT_WIDTH, TFT_HEIGHT - 55, COLOR_BG);
+    // Zone 1: Acquiring message
+    if (zoneMark(60, 80, 300, 20, "Acquiring fix...")) {
+      c->fillRect(60, 80, 300, 20, COLOR_BG);
+      c->setTextColor(COLOR_WARN);
+      c->setTextSize(2);
+      c->setCursor(60, 80);
+      c->println("Acquiring fix...");
+    }
 
-    tft.setTextColor(COLOR_WARN);
-    tft.setTextSize(2);
-    tft.setCursor(60, 80);
-    tft.println("Acquiring fix...");
-
-    // Show elapsed time since boot (#68)
+    // Zone 2: Elapsed time
     unsigned long elapsed = millis() / 1000;
-    tft.setCursor(60, 110);
-    tft.setTextColor(COLOR_DIM);
     sprintf(buf, "Elapsed: %lum %lus", elapsed / 60, elapsed % 60);
-    tft.println(buf);
+    if (zoneMark(60, 110, 300, 20, buf)) {
+      c->fillRect(60, 110, 300, 20, COLOR_BG);
+      c->setCursor(60, 110);
+      c->setTextColor(COLOR_DIM);
+      c->setTextSize(2);
+      c->println(buf);
+    }
 
-    tft.setCursor(60, 140);
-    tft.println("Need clear sky view");
+    // Zone 3: Sky view hint (static)
+    if (zoneMark(60, 140, 300, 20, "Need clear sky view")) {
+      c->setTextColor(COLOR_DIM);
+      c->setTextSize(2);
+      c->setCursor(60, 140);
+      c->println("Need clear sky view");
+    }
 
+    // Zone 4: GPS time (if available)
     if (gpsData.timeValid) {
-      tft.setCursor(60, 170);
-      tft.setTextColor(COLOR_VALUE);
-      tft.print("Time: ");
       int hour = gpsData.hour + (GMT_OFFSET_SEC / 3600);
       if (hour < 0) hour += 24;
       if (hour >= 24) hour -= 24;
-      sprintf(buf, "%02d:%02d:%02d", hour, gpsData.minute, gpsData.second);
-      tft.print(buf);
+      sprintf(buf, "Time: %02d:%02d:%02d", hour, gpsData.minute, gpsData.second);
+    } else {
+      strcpy(buf, "Time: --:--:--");
     }
-  } else {
-    // Clear content area for no-data state
-    tft.fillRect(0, 30, TFT_WIDTH, TFT_HEIGHT - 55, COLOR_BG);
+    if (zoneMark(60, 170, 300, 20, buf)) {
+      c->fillRect(60, 170, 300, 20, COLOR_BG);
+      c->setCursor(60, 170);
+      c->setTextColor(COLOR_VALUE);
+      c->setTextSize(2);
+      c->print(buf);
+    }
 
-    tft.setTextColor(COLOR_ERROR);
-    tft.setTextSize(2);
-    tft.setCursor(80, 100);
-    tft.println("No GPS data");
-    tft.setCursor(60, 140);
-    tft.setTextColor(COLOR_DIM);
-    tft.println("Check connection");
+  } else {
+    // Zone 1: No GPS message
+    if (zoneMark(80, 100, 300, 20, "No GPS data")) {
+      c->setTextColor(COLOR_ERROR);
+      c->setTextSize(2);
+      c->setCursor(80, 100);
+      c->println("No GPS data");
+    }
+    // Zone 2: Check connection (static)
+    if (zoneMark(60, 140, 300, 20, "Check connection")) {
+      c->setTextColor(COLOR_DIM);
+      c->setTextSize(2);
+      c->setCursor(60, 140);
+      c->println("Check connection");
+    }
   }
+
+  // NavBar
+  sprintf(buf, "nav_%d", currentScreen);
+  if (zoneMark(0, SCREEN_H - 25, SCREEN_W, 25, buf))
+    drawNavBar(c);
 }
 
-void drawScreenEnv() {
-  drawHeader("ENVIRONMENT");
+void drawScreenEnv(TFT_eSprite* c) {
+  zoneBegin();
+  char buf[ZONE_KEY_LEN];
 
   int y = 42;
   int labelX = 10;
-  int valueX = 70;      // Moved left for textSize 1 labels (#55)
-  int lineH = 16;        // Reduced for textSize 1 (~8px char + 8px gap) (#55)
-  char buf[40];
+  int valueX = 70;
+  int lineH = 16;
 
-  // ENV-specific drawing at textSize 1 to prevent pressure wrap (#55)
-  // Other screens continue using drawLabel/drawValue at textSize 2
+  // ENV-specific lambdas at textSize 1 (#55)
   auto envLabel = [&](int x, int y, const char* label) {
-    tft.setTextColor(COLOR_DIM);
-    tft.setTextSize(1);
-    tft.setCursor(x, y);
-    tft.print(label);
+    c->setTextColor(COLOR_DIM);
+    c->setTextSize(1);
+    c->setCursor(x, y);
+    c->print(label);
   };
   auto envValue = [&](int x, int y, const char* value, uint16_t color = COLOR_VALUE) {
-    tft.fillRect(x, y, 250, 10, COLOR_BG);
-    tft.setTextColor(color);
-    tft.setTextSize(1);
-    tft.setCursor(x, y);
-    tft.print(value);
+    c->fillRect(x, y, 250, 10, COLOR_BG);
+    c->setTextColor(color);
+    c->setTextSize(1);
+    c->setCursor(x, y);
+    c->print(value);
   };
 
+  // Zone 0: Header
+  if (zoneMark(0, 0, SCREEN_W, 30, "ENVIRONMENT"))
+    drawHeader(c, "ENVIRONMENT");
+
   if (bmeAvailable || shtAvailable) {
-    // Temperature — SHT41 is primary source, BME688 fallback (#48)
     float tempC = shtAvailable ? shtData.temperature : envData.temperature;
     float tempF = tempC * 9.0 / 5.0 + 32.0;
     const char* tempSrc = shtAvailable ? "SHT" : "BME";
-    envLabel(labelX, y, "Temp:");
+
+    // Zone 1: Temp label
+    if (zoneMark(labelX, y, 55, 10, "Temp:"))
+      envLabel(labelX, y, "Temp:");
+    // Zone 2: Temp value
     sprintf(buf, "%.1fF (%.1fC) %s", tempF, tempC, tempSrc);
-    envValue(valueX, y, buf);
-    y += lineH;
-
-    // Humidity — SHT41 is primary source, BME688 fallback (#48)
-    float humid = shtAvailable ? shtData.humidity : envData.humidity;
-    envLabel(labelX, y, "Humid:");
-    sprintf(buf, "%.1f%% %s", humid, tempSrc);
-    envValue(valueX, y, buf);
-    y += lineH;
-
-    // BME688-specific readings (IAQ, CO2, pressure, forecast)
-    if (bmeAvailable) {
-      // IAQ with accuracy indicator
-      envLabel(labelX, y, "IAQ:");
-      sprintf(buf, "%.0f [%s]", envData.iaq, getIaqAccuracyText(envData.iaqAccuracy));
-      // Color based on IAQ: 0-50 good, 51-100 moderate, 101-150 poor, 151-200 unhealthy, >200 very unhealthy
-      uint16_t color = COLOR_VALUE;
-      if (envData.iaq > 200) color = COLOR_ERROR;
-      else if (envData.iaq > 100) color = COLOR_WARN;
-      envValue(valueX, y, buf, color);
-      y += lineH;
-
-      // CO2 equivalent
-      envLabel(labelX, y, "CO2:");
-      sprintf(buf, "%.0f ppm", envData.co2Equivalent);
-      color = COLOR_VALUE;
-      if (envData.co2Equivalent > 2000) color = COLOR_ERROR;
-      else if (envData.co2Equivalent > 1000) color = COLOR_WARN;
-      envValue(valueX, y, buf, color);
-      y += lineH;
-
-      // Pressure (station/absolute)
-      envLabel(labelX, y, "Press:");
-      sprintf(buf, "%.1f hPa (%.2f\")", envData.pressure, hPaToInHg(envData.pressure));
+    if (zoneMark(valueX, y, 250, 10, buf))
       envValue(valueX, y, buf);
+    y += lineH;
+
+    // Zone 3: Humid label
+    float humid = shtAvailable ? shtData.humidity : envData.humidity;
+    if (zoneMark(labelX, y, 55, 10, "Humid:"))
+      envLabel(labelX, y, "Humid:");
+    // Zone 4: Humid value
+    sprintf(buf, "%.1f%% %s", humid, tempSrc);
+    if (zoneMark(valueX, y, 250, 10, buf))
+      envValue(valueX, y, buf);
+    y += lineH;
+
+    if (bmeAvailable) {
+      // Zone 5: IAQ label
+      if (zoneMark(labelX, y, 55, 10, "IAQ:"))
+        envLabel(labelX, y, "IAQ:");
+      // Zone 6: IAQ value
+      sprintf(buf, "%.0f [%s]", envData.iaq, getIaqAccuracyText(envData.iaqAccuracy));
+      uint16_t iaqColor = COLOR_VALUE;
+      if (envData.iaq > 200) iaqColor = COLOR_ERROR;
+      else if (envData.iaq > 100) iaqColor = COLOR_WARN;
+      if (zoneMark(valueX, y, 250, 10, buf))
+        envValue(valueX, y, buf, iaqColor);
       y += lineH;
 
-      // Weather trend and forecast
-      envLabel(labelX, y, "Fcst:");
+      // Zone 7: CO2 label
+      if (zoneMark(labelX, y, 55, 10, "CO2:"))
+        envLabel(labelX, y, "CO2:");
+      // Zone 8: CO2 value
+      sprintf(buf, "%.0f ppm", envData.co2Equivalent);
+      uint16_t co2Color = COLOR_VALUE;
+      if (envData.co2Equivalent > 2000) co2Color = COLOR_ERROR;
+      else if (envData.co2Equivalent > 1000) co2Color = COLOR_WARN;
+      if (zoneMark(valueX, y, 250, 10, buf))
+        envValue(valueX, y, buf, co2Color);
+      y += lineH;
+
+      // Zone 9: Pressure label
+      if (zoneMark(labelX, y, 55, 10, "Press:"))
+        envLabel(labelX, y, "Press:");
+      // Zone 10: Pressure value
+      sprintf(buf, "%.1f hPa (%.2f\")", envData.pressure, hPaToInHg(envData.pressure));
+      if (zoneMark(valueX, y, 250, 10, buf))
+        envValue(valueX, y, buf);
+      y += lineH;
+
+      // Zone 11: Forecast label
+      if (zoneMark(labelX, y, 55, 10, "Fcst:"))
+        envLabel(labelX, y, "Fcst:");
+      // Zone 12: Forecast value
       sprintf(buf, "%s %s", getTrendArrow(), weatherTrend.forecast);
-      color = COLOR_VALUE;
-      if (strstr(weatherTrend.forecast, "Storm")) color = COLOR_ERROR;
-      else if (strstr(weatherTrend.forecast, "Rain") || strstr(weatherTrend.forecast, "Snow")) color = COLOR_WARN;
-      envValue(valueX, y, buf, color);
+      uint16_t fcstColor = COLOR_VALUE;
+      if (strstr(weatherTrend.forecast, "Storm")) fcstColor = COLOR_ERROR;
+      else if (strstr(weatherTrend.forecast, "Rain") || strstr(weatherTrend.forecast, "Snow")) fcstColor = COLOR_WARN;
+      if (zoneMark(valueX, y, 250, 10, buf))
+        envValue(valueX, y, buf, fcstColor);
     } else {
-      // SHT41 only — no IAQ/CO2/pressure available
-      envLabel(labelX, y, "IAQ:");
-      envValue(valueX, y, "N/A (no BME688)", COLOR_DIM);
+      if (zoneMark(labelX, y, 55, 10, "IAQ:"))
+        envLabel(labelX, y, "IAQ:");
+      if (zoneMark(valueX, y, 250, 10, "N/A (no BME688)"))
+        envValue(valueX, y, "N/A (no BME688)", COLOR_DIM);
       y += lineH;
-      envLabel(labelX, y, "Press:");
-      envValue(valueX, y, "N/A (no BME688)", COLOR_DIM);
+      if (zoneMark(labelX, y, 55, 10, "Press:"))
+        envLabel(labelX, y, "Press:");
+      if (zoneMark(valueX, y, 250, 10, "N/A (no BME688) p"))
+        envValue(valueX, y, "N/A (no BME688)", COLOR_DIM);
     }
-
   } else {
-    tft.setTextColor(COLOR_ERROR);
-    tft.setTextSize(2);
-    tft.setCursor(60, 100);
-    tft.println("No env sensors");
+    if (zoneMark(60, 100, 300, 20, "No env sensors")) {
+      c->setTextColor(COLOR_ERROR);
+      c->setTextSize(2);
+      c->setCursor(60, 100);
+      c->println("No env sensors");
+    }
   }
+
+  // Zone 13: NavBar
+  sprintf(buf, "nav_%d", currentScreen);
+  if (zoneMark(0, SCREEN_H - 25, SCREEN_W, 25, buf))
+    drawNavBar(c);
 }
 
-void drawScreenCompass() {
+void drawScreenCompass(TFT_eSprite* c) {
   char buf[64];
 
-  // === Calibration mode overlay ===
+  // === Calibration mode overlay — bypass zone system, direct full push ===
   if (magCalibrating) {
+    zoneBegin();  // Reset zones so zonePushDirty() is a no-op after return
     unsigned long elapsed = millis() - magCalStartTime;
     int remaining = (MAG_CAL_DURATION_MS - elapsed) / 1000;
 
@@ -4240,190 +4511,242 @@ void drawScreenCompass() {
       magCalibrating = false;
       saveMagCal();
 
-      // Show results briefly
-      tft.fillScreen(COLOR_BG);
-      drawHeader("CAL COMPLETE");
-      tft.setTextColor(COLOR_VALUE);
-      tft.setTextSize(2);
-      tft.setCursor(20, 60);
-      tft.print("Offsets saved:");
-      tft.setTextSize(1);
-      tft.setCursor(20, 90);
+      // Show results briefly (draws to canvas, pushed by updateDisplay)
+      drawHeader(c, "CAL COMPLETE");
+      c->setTextColor(COLOR_VALUE);
+      c->setTextSize(2);
+      c->setCursor(20, 60);
+      c->print("Offsets saved:");
+      c->setTextSize(1);
+      c->setCursor(20, 90);
       sprintf(buf, "X: %.2f", magOffsetX);
-      tft.print(buf);
-      tft.setCursor(20, 105);
+      c->print(buf);
+      c->setCursor(20, 105);
       sprintf(buf, "Y: %.2f", magOffsetY);
-      tft.print(buf);
-      tft.setCursor(20, 120);
+      c->print(buf);
+      c->setCursor(20, 120);
       sprintf(buf, "Z: %.2f", magOffsetZ);
-      tft.print(buf);
+      c->print(buf);
 
       char msg[80];
       sprintf(msg, "[MAG] Cal complete: X=%.2f Y=%.2f Z=%.2f", magOffsetX, magOffsetY, magOffsetZ);
       logPrintln(msg);
 
+      // Force push + delay so user sees results before next frame clears
+      if (spriteAvailable) { spr.pushSprite(0, 0); }
       delay(3000);
-      tft.fillScreen(COLOR_BG);
       return;
     }
 
-    drawHeader("CALIBRATING");
+    drawHeader(c, "CALIBRATING");
 
-    tft.setTextColor(COLOR_WARN);
-    tft.setTextSize(2);
-    tft.setCursor(20, 50);
-    tft.print("Rotate device");
-    tft.setCursor(20, 72);
-    tft.print("slowly 360");
+    c->setTextColor(COLOR_WARN);
+    c->setTextSize(2);
+    c->setCursor(20, 50);
+    c->print("Rotate device");
+    c->setCursor(20, 72);
+    c->print("slowly 360");
     // Degree symbol
-    tft.drawCircle(tft.getCursorX() + 4, 74, 3, COLOR_WARN);
+    c->drawCircle(c->getCursorX() + 4, 74, 3, COLOR_WARN);
 
     // Countdown
-    tft.fillRect(20, 105, 280, 25, COLOR_BG);
-    tft.setTextColor(COLOR_TEXT);
-    tft.setTextSize(3);
-    tft.setCursor(130, 105);
+    c->fillRect(20, 105, 280, 25, COLOR_BG);
+    c->setTextColor(COLOR_TEXT);
+    c->setTextSize(3);
+    c->setCursor(130, 105);
     sprintf(buf, "%d", remaining > 0 ? remaining : 0);
-    tft.print(buf);
+    c->print(buf);
 
     // Live min/max
-    tft.setTextSize(1);
-    tft.setTextColor(COLOR_DIM);
+    c->setTextSize(1);
+    c->setTextColor(COLOR_DIM);
 
-    tft.fillRect(20, 145, 280, 10, COLOR_BG);
-    tft.setCursor(20, 145);
+    c->fillRect(20, 145, 280, 10, COLOR_BG);
+    c->setCursor(20, 145);
     sprintf(buf, "X: %.1f to %.1f", magCalMinX < 99998 ? magCalMinX : 0, magCalMaxX > -99998 ? magCalMaxX : 0);
-    tft.print(buf);
+    c->print(buf);
 
-    tft.fillRect(20, 160, 280, 10, COLOR_BG);
-    tft.setCursor(20, 160);
+    c->fillRect(20, 160, 280, 10, COLOR_BG);
+    c->setCursor(20, 160);
     sprintf(buf, "Y: %.1f to %.1f", magCalMinY < 99998 ? magCalMinY : 0, magCalMaxY > -99998 ? magCalMaxY : 0);
-    tft.print(buf);
+    c->print(buf);
 
-    tft.fillRect(20, 175, 280, 10, COLOR_BG);
-    tft.setCursor(20, 175);
+    c->fillRect(20, 175, 280, 10, COLOR_BG);
+    c->setCursor(20, 175);
     sprintf(buf, "Z: %.1f to %.1f", magCalMinZ < 99998 ? magCalMinZ : 0, magCalMaxZ > -99998 ? magCalMaxZ : 0);
-    tft.print(buf);
+    c->print(buf);
 
+    // Direct full push for calibration UI (bypasses zone system)
+    if (spriteAvailable) { spr.pushSprite(0, 0); }
     return;
   }
 
-  drawHeader("COMPASS");
+  // Normal compass mode — use zone system
+  zoneBegin();
+
+  // Zone 0: Header
+  if (zoneMark(0, 0, SCREEN_W, 30, "COMPASS"))
+    drawHeader(c, "COMPASS");
 
   // === Left Panel: Text Data ===
   if (imuAvailable && magAvailable) {
-    // Heading — large font
-    tft.fillRect(10, 40, 130, 30, COLOR_BG);
-    tft.setTextColor(COLOR_TEXT);
-    tft.setTextSize(3);
-    tft.setCursor(10, 42);
+    // Zone 1: Heading (integer degrees + degree symbol)
     sprintf(buf, "%.0f", imuData.heading);
-    tft.print(buf);
-    // Degree symbol
-    int degX = tft.getCursorX() + 2;
-    tft.drawCircle(degX + 3, 44, 3, COLOR_TEXT);
+    if (zoneMark(10, 40, 130, 30, buf)) {
+      c->fillRect(10, 40, 130, 30, COLOR_BG);
+      c->setTextColor(COLOR_TEXT);
+      c->setTextSize(3);
+      c->setCursor(10, 42);
+      c->print(buf);
+      int degX = c->getCursorX() + 2;
+      c->drawCircle(degX + 3, 44, 3, COLOR_TEXT);
+    }
 
-    // Cardinal direction
-    tft.fillRect(10, 75, 130, 20, COLOR_BG);
-    tft.setTextColor(COLOR_VALUE);
-    tft.setTextSize(2);
-    tft.setCursor(10, 78);
-    tft.print(getCardinal(imuData.heading));
+    // Zone 2: Cardinal direction
+    const char* cardinal = getCardinal(imuData.heading);
+    if (zoneMark(10, 75, 130, 20, cardinal)) {
+      c->fillRect(10, 75, 130, 20, COLOR_BG);
+      c->setTextColor(COLOR_VALUE);
+      c->setTextSize(2);
+      c->setCursor(10, 78);
+      c->print(cardinal);
+    }
   } else {
-    tft.fillRect(10, 40, 130, 55, COLOR_BG);
-    tft.setTextColor(COLOR_ERROR);
-    tft.setTextSize(2);
-    tft.setCursor(10, 55);
-    tft.print("No IMU");
+    if (zoneMark(10, 40, 130, 55, "No IMU")) {
+      c->fillRect(10, 40, 130, 55, COLOR_BG);
+      c->setTextColor(COLOR_ERROR);
+      c->setTextSize(2);
+      c->setCursor(10, 55);
+      c->print("No IMU");
+    }
   }
 
-  // Speed from GPS
-  tft.setTextColor(COLOR_DIM);
-  tft.setTextSize(1);
-  tft.setCursor(10, 108);
-  tft.print("Speed:");
+  // Zone 3: Speed label (static)
+  if (zoneMark(10, 108, 50, 10, "Speed:")) {
+    c->setTextColor(COLOR_DIM);
+    c->setTextSize(1);
+    c->setCursor(10, 108);
+    c->print("Speed:");
+  }
 
-  tft.fillRect(10, 120, 130, 20, COLOR_BG);
-  tft.setTextSize(2);
+  // Zone 4: Speed value
   if (gpsData.valid) {
     float mph = gpsData.speedKnots * 1.15078;
-    tft.setTextColor(COLOR_VALUE);
-    tft.setCursor(10, 120);
     sprintf(buf, "%.1f mph", mph);
-    tft.print(buf);
   } else {
-    tft.setTextColor(COLOR_DIM);
-    tft.setCursor(10, 120);
-    tft.print("-- mph");
+    strcpy(buf, "-- mph");
+  }
+  if (zoneMark(10, 120, 130, 20, buf)) {
+    c->fillRect(10, 120, 130, 20, COLOR_BG);
+    c->setTextSize(2);
+    c->setCursor(10, 120);
+    c->setTextColor(gpsData.valid ? COLOR_VALUE : COLOR_DIM);
+    c->print(buf);
   }
 
-  // GPS status
-  tft.fillRect(10, 150, 130, 12, COLOR_BG);
-  tft.setTextSize(1);
-  tft.setCursor(10, 152);
+  // Zone 5: GPS status
   if (gpsData.valid) {
-    tft.setTextColor(COLOR_VALUE);
     sprintf(buf, "GPS OK  Sat:%d", gpsData.satellites);
-    tft.print(buf);
   } else if (gpsData.receiving) {
-    tft.setTextColor(COLOR_WARN);
-    tft.print("GPS Acquiring...");
+    strcpy(buf, "GPS Acquiring...");
   } else {
-    tft.setTextColor(COLOR_ERROR);
-    tft.print("No GPS");
+    strcpy(buf, "No GPS");
+  }
+  if (zoneMark(10, 150, 130, 12, buf)) {
+    c->fillRect(10, 150, 130, 12, COLOR_BG);
+    c->setTextSize(1);
+    c->setCursor(10, 152);
+    if (gpsData.valid) c->setTextColor(COLOR_VALUE);
+    else if (gpsData.receiving) c->setTextColor(COLOR_WARN);
+    else c->setTextColor(COLOR_ERROR);
+    c->print(buf);
   }
 
   // === Right Panel: Compass Rose ===
+  // Zone 6: Compass rose — key on heading rounded to 2° steps
   if (imuAvailable && magAvailable) {
-    drawCompassRose(230, 125, 75, imuData.heading);
+    int roseHeading = ((int)imuData.heading / 2) * 2;
+    sprintf(buf, "rose_%d", roseHeading);
+    if (zoneMark(137, 32, 186, 186, buf))
+      drawCompassRose(c, 230, 125, 75, imuData.heading);
   } else {
-    tft.drawCircle(230, 125, 75, COLOR_DIM);
-    tft.setTextColor(COLOR_DIM);
-    tft.setTextSize(3);
-    tft.setCursor(222, 115);
-    tft.print("?");
+    if (zoneMark(137, 32, 186, 186, "rose_none")) {
+      c->drawCircle(230, 125, 75, COLOR_DIM);
+      c->setTextColor(COLOR_DIM);
+      c->setTextSize(3);
+      c->setCursor(222, 115);
+      c->print("?");
+    }
   }
+
+  // Zone 7: NavBar
+  sprintf(buf, "nav_%d", currentScreen);
+  if (zoneMark(0, SCREEN_H - 25, SCREEN_W, 25, buf))
+    drawNavBar(c);
 }
 
-void drawScreenIMU() {
-  drawHeader("IMU / COMPASS");
+void drawScreenIMU(TFT_eSprite* c) {
+  zoneBegin();
+  char buf[ZONE_KEY_LEN];
 
   int y = 50;
   int labelX = 20;
   int valueX = 140;
   int lineH = 35;
-  char buf[32];
+
+  // Zone 0: Header
+  if (zoneMark(0, 0, SCREEN_W, 30, "IMU / COMPASS"))
+    drawHeader(c, "IMU / COMPASS");
 
   if (imuAvailable && magAvailable) {
-    // Compass heading
-    drawLabel(labelX, y, "Heading:");
+    // Zone 1: Heading label
+    if (zoneMark(labelX, y, 110, 18, "Heading:"))
+      drawLabel(c, labelX, y, "Heading:");
+    // Zone 2: Heading value
     sprintf(buf, "%.0f %s", imuData.heading, getCardinal(imuData.heading));
-    drawValue(valueX, y, buf);
+    if (zoneMark(valueX, y, 200, 18, buf))
+      drawValue(c, valueX, y, buf);
     y += lineH;
 
-    // Roll
-    drawLabel(labelX, y, "Roll:");
+    // Zone 3: Roll label
+    if (zoneMark(labelX, y, 110, 18, "Roll:"))
+      drawLabel(c, labelX, y, "Roll:");
+    // Zone 4: Roll value
     sprintf(buf, "%.0f deg", imuData.roll);
-    drawValue(valueX, y, buf);
+    if (zoneMark(valueX, y, 200, 18, buf))
+      drawValue(c, valueX, y, buf);
     y += lineH;
 
-    // Pitch
-    drawLabel(labelX, y, "Pitch:");
+    // Zone 5: Pitch label
+    if (zoneMark(labelX, y, 110, 18, "Pitch:"))
+      drawLabel(c, labelX, y, "Pitch:");
+    // Zone 6: Pitch value
     sprintf(buf, "%.0f deg", imuData.pitch);
-    drawValue(valueX, y, buf);
+    if (zoneMark(valueX, y, 200, 18, buf))
+      drawValue(c, valueX, y, buf);
     y += lineH;
 
-    // Acceleration
-    drawLabel(labelX, y, "Accel:");
+    // Zone 7: Accel label
+    if (zoneMark(labelX, y, 110, 18, "Accel:"))
+      drawLabel(c, labelX, y, "Accel:");
+    // Zone 8: Accel value
     sprintf(buf, "%.2f m/s2", imuData.accelMag);
-    drawValue(valueX, y, buf);
+    if (zoneMark(valueX, y, 200, 18, buf))
+      drawValue(c, valueX, y, buf);
 
   } else {
-    tft.setTextColor(COLOR_ERROR);
-    tft.setTextSize(2);
-    tft.setCursor(60, 100);
-    tft.println("IMU not available");
+    if (zoneMark(60, 100, 300, 20, "IMU not available")) {
+      c->setTextColor(COLOR_ERROR);
+      c->setTextSize(2);
+      c->setCursor(60, 100);
+      c->println("IMU not available");
+    }
   }
+
+  // Zone 9: NavBar
+  sprintf(buf, "nav_%d", currentScreen);
+  if (zoneMark(0, SCREEN_H - 25, SCREEN_W, 25, buf))
+    drawNavBar(c);
 }
 
 const char* getCardinal(float heading) {
@@ -4439,14 +4762,14 @@ const char* getCardinal(float heading) {
 
 // Draw rotating 8-point compass rose
 // cx, cy = center, radius = outer ring size, heading = device heading (degrees)
-void drawCompassRose(int cx, int cy, int radius, float heading) {
-  // Clear rose area (extra margin for degree labels outside ring)
+void drawCompassRose(TFT_eSprite* c, int cx, int cy, int radius, float heading) {
+  // Clear rose area before redrawing rotated lines
   int margin = 18;
-  tft.fillRect(cx - radius - margin, cy - radius - margin,
+  c->fillRect(cx - radius - margin, cy - radius - margin,
                2 * (radius + margin), 2 * (radius + margin), COLOR_BG);
 
   // Outer circle
-  tft.drawCircle(cx, cy, radius, COLOR_DIM);
+  c->drawCircle(cx, cy, radius, COLOR_DIM);
 
   // Rotation: rose turns opposite to heading so N points north
   float rotDeg = -heading;
@@ -4459,7 +4782,7 @@ void drawCompassRose(int cx, int cy, int radius, float heading) {
     int outerY = cy + sin(tickAngle) * radius;
     int innerX = cx + cos(tickAngle) * (radius - tickLen);
     int innerY = cy + sin(tickAngle) * (radius - tickLen);
-    tft.drawLine(innerX, innerY, outerX, outerY, COLOR_DIM);
+    c->drawLine(innerX, innerY, outerX, outerY, COLOR_DIM);
 
     // Degree label just outside the ring
     int deg = i * 30;
@@ -4469,10 +4792,10 @@ void drawCompassRose(int cx, int cy, int radius, float heading) {
     int lblX = cx + cos(tickAngle) * labelRadius;
     int lblY = cy + sin(tickAngle) * labelRadius;
     int charW = strlen(lbl) * 6;  // textSize 1: 6px per char
-    tft.setTextSize(1);
-    tft.setTextColor((i % 3 == 0) ? COLOR_TEXT : COLOR_DIM);
-    tft.setCursor(lblX - charW / 2, lblY - 4);  // Center on point
-    tft.print(lbl);
+    c->setTextSize(1);
+    c->setTextColor((i % 3 == 0) ? COLOR_TEXT : COLOR_DIM);
+    c->setCursor(lblX - charW / 2, lblY - 4);  // Center on point
+    c->print(lbl);
   }
 
   // 8 diamond needles: cardinals (longer, wider) + intercardinals (shorter, thinner)
@@ -4515,19 +4838,19 @@ void drawCompassRose(int cx, int cy, int radius, float heading) {
     int tailY = cy + sin(tailRad) * tailLen;
 
     // Draw as two triangles: tip half and tail half
-    tft.fillTriangle(tipX, tipY, sideX1, sideY1, sideX2, sideY2, needles[i].color);
+    c->fillTriangle(tipX, tipY, sideX1, sideY1, sideX2, sideY2, needles[i].color);
     // Tail: cardinals get dark fill, intercardinals get gray
     uint16_t tailColor = (needles[i].color == COLOR_DIM) ? COLOR_DIM : 0x2104;
-    tft.fillTriangle(tailX, tailY, sideX1, sideY1, sideX2, sideY2, tailColor);
+    c->fillTriangle(tailX, tailY, sideX1, sideY1, sideX2, sideY2, tailColor);
   }
 
   // Center dot
-  tft.fillCircle(cx, cy, 4, COLOR_TEXT);
-  tft.drawCircle(cx, cy, 4, COLOR_DIM);
+  c->fillCircle(cx, cy, 4, COLOR_TEXT);
+  c->drawCircle(cx, cy, 4, COLOR_DIM);
 
   // Fixed lubber line at top (does NOT rotate) — orange triangle
   int lubberY = cy - radius - 3;
-  tft.fillTriangle(cx, lubberY, cx - 5, lubberY - 8, cx + 5, lubberY - 8, COLOR_WARN);
+  c->fillTriangle(cx, lubberY, cx - 5, lubberY - 8, cx + 5, lubberY - 8, COLOR_WARN);
 }
 
 // ============== Geocache Helper Functions (#70) ==============
@@ -4567,7 +4890,7 @@ uint16_t getAccuracyColor(float accuracyM) {
 }
 
 // Draw Google Maps style navigation triangle
-void drawNavTriangle(int cx, int cy, int size, float angle, uint16_t color) {
+void drawNavTriangle(TFT_eSprite* c, int cx, int cy, int size, float angle, uint16_t color) {
   // angle = 0 means pointing up (north), increases clockwise
   float rad = radians(angle - 90);  // Adjust for screen coordinates
 
@@ -4589,12 +4912,12 @@ void drawNavTriangle(int cx, int cy, int size, float angle, uint16_t color) {
   int rearCenterY = cy + sin(rearCenterRad) * size * 0.3;
 
   // Draw as two triangles for notched rear
-  tft.fillTriangle(tipX, tipY, rear1X, rear1Y, rearCenterX, rearCenterY, color);
-  tft.fillTriangle(tipX, tipY, rear2X, rear2Y, rearCenterX, rearCenterY, color);
+  c->fillTriangle(tipX, tipY, rear1X, rear1Y, rearCenterX, rearCenterY, color);
+  c->fillTriangle(tipX, tipY, rear2X, rear2Y, rearCenterX, rearCenterY, color);
 }
 
 // Draw pulsing search zone circle that shrinks as we get closer
-void drawSearchZoneCircle(int cx, int cy, float distanceM, float accuracyM) {
+void drawSearchZoneCircle(TFT_eSprite* c, int cx, int cy, float distanceM, float accuracyM) {
   // Circle size shrinks as we get closer (visual "getting warmer")
   int maxRadius = 60;
   int minRadius = 20;
@@ -4607,52 +4930,67 @@ void drawSearchZoneCircle(int cx, int cy, float distanceM, float accuracyM) {
   radius += pulseOffset * 2;
 
   // Draw filled circle with outline
-  tft.fillCircle(cx, cy, radius, COLOR_WARN);
-  tft.drawCircle(cx, cy, radius + 2, COLOR_TEXT);
+  c->fillCircle(cx, cy, radius, COLOR_WARN);
+  c->drawCircle(cx, cy, radius + 2, COLOR_TEXT);
 
   // Center dot
-  tft.fillCircle(cx, cy, 4, COLOR_TEXT);
+  c->fillCircle(cx, cy, 4, COLOR_TEXT);
 }
 
 // ============== Geocache Navigation Screen (#70) ==============
 
 // Forward declarations for sub-screens
-void drawCacheNavScreen();
-void drawCacheListScreen();
-void drawCacheDetailsScreen();
+void drawCacheNavScreen(TFT_eSprite* c);
+void drawCacheListScreen(TFT_eSprite* c);
+void drawCacheDetailsScreen(TFT_eSprite* c);
 
-void drawScreenGeocache() {
+void drawScreenGeocache(TFT_eSprite* c) {
+  zoneBegin();
+
+  // Track sub-screen changes — clear and push to erase old sub-screen artifacts
+  static int lastGeoSubScreen = -1;
+  if (geocacheSubScreen != lastGeoSubScreen) {
+    c->fillRect(0, 30, SCREEN_W, SCREEN_H - 30, COLOR_BG);
+    spr.pushSprite(0, 0);  // Full push to clear old sub-screen artifacts from TFT
+    zonePrevCount = 0;      // Force all zones dirty
+    lastGeoSubScreen = geocacheSubScreen;
+  }
+
   // Dispatch to appropriate sub-screen
   switch (geocacheSubScreen) {
     case 1:
-      drawCacheListScreen();
+      drawCacheListScreen(c);
       break;
     case 2:
-      drawCacheDetailsScreen();
+      drawCacheDetailsScreen(c);
       break;
     default:
-      drawCacheNavScreen();
+      drawCacheNavScreen(c);
       break;
   }
 }
 
 // Sub-screen 0: Navigation (main geocache screen)
-void drawCacheNavScreen() {
-  drawHeader("GEOCACHE");
+void drawCacheNavScreen(TFT_eSprite* c) {
+  char buf[ZONE_KEY_LEN];
+
+  // Zone: Header
+  if (zoneMark(0, 0, SCREEN_W, 30, "GEOCACHE"))
+    drawHeader(c, "GEOCACHE");
 
   // Check if we have any caches and if selected cache is valid
   if (cacheListCount == 0 || selectedCacheIndex >= cacheListCount || !cacheList[selectedCacheIndex].valid) {
-    tft.setCursor(80, 120);
-    tft.setTextColor(COLOR_DIM);
-    tft.setTextSize(2);
-    tft.print("No cache loaded");
-    drawNavBar();
+    if (zoneMark(0, 30, SCREEN_W, SCREEN_H - 30, "no_cache")) {
+      c->setCursor(80, 120);
+      c->setTextColor(COLOR_DIM);
+      c->setTextSize(2);
+      c->print("No cache loaded");
+    }
     return;
   }
 
   // Get reference to selected cache for cleaner code
   GeocacheEntry& cache = cacheList[selectedCacheIndex];
-  char buf[64];
 
   // Calculate distance and bearing
   float distKm = calcDistanceKm(gpsData.latitude, gpsData.longitude,
@@ -4663,524 +5001,579 @@ void drawCacheNavScreen() {
   float accuracyM = getGpsAccuracyMeters();
   bool inSearchZone = (distM < accuracyM);
 
-  // Row 1: Cache name CENTERED
-  tft.setTextSize(2);
-  tft.setTextColor(COLOR_TEXT);
-  int nameLen = strlen(cache.name);
-  int nameX = (320 - nameLen * 12) / 2;  // Center text (12px per char at size 2)
-  if (nameX < 10) nameX = 10;  // Clamp to screen edge
-  tft.setCursor(nameX, 35);
-  tft.print(cache.name);
+  // Zone: Cache name (changes when selected cache changes)
+  snprintf(buf, ZONE_KEY_LEN, "n_%d_%s", selectedCacheIndex, cache.name);
+  if (zoneMark(0, 33, SCREEN_W, 20, buf)) {
+    c->fillRect(0, 33, SCREEN_W, 20, COLOR_BG);
+    c->setTextSize(2);
+    c->setTextColor(COLOR_TEXT);
+    int nameLen = strlen(cache.name);
+    int nameX = (SCREEN_W - nameLen * 12) / 2;
+    if (nameX < 10) nameX = 10;
+    c->setCursor(nameX, 35);
+    c->print(cache.name);
+  }
 
-  // Row 2: Distance/SearchZone + D/T (left), Heading (right)
-  // Clear row 2 area first to prevent ghosting
-  tft.fillRect(10, 55, 300, 20, COLOR_BG);
-
-  tft.setCursor(10, 55);
-  tft.setTextSize(2);
-
+  // Zone: Distance + D/T row (left side, 260px wide)
   if (inSearchZone) {
-    tft.setTextColor(COLOR_WARN);
-    tft.print("SEARCH ZONE");
+    snprintf(buf, ZONE_KEY_LEN, "SEARCHZONE D:%.1f T:%.1f", cache.difficulty, cache.terrain);
   } else {
-    tft.setTextColor(COLOR_VALUE);
+    char distBuf[20];
     if (useMetricUnits) {
-      if (distKm >= 1.0) {
-        sprintf(buf, "%.1f km", distKm);
-      } else {
-        sprintf(buf, "%.0f m", distM);
-      }
+      if (distKm >= 1.0) sprintf(distBuf, "%.1f km", distKm);
+      else sprintf(distBuf, "%.0f m", distM);
     } else {
       float distMi = distKm * 0.621371;
-      float distFt = distKm * 3280.84;
-      if (distMi >= 1.0) {
-        sprintf(buf, "%.1f mi", distMi);
+      if (distMi >= 1.0) sprintf(distBuf, "%.1f mi", distMi);
+      else sprintf(distBuf, "%.0f ft", distKm * 3280.84);
+    }
+    snprintf(buf, ZONE_KEY_LEN, "%s D:%.1f T:%.1f", distBuf, cache.difficulty, cache.terrain);
+  }
+  if (zoneMark(10, 55, 250, 20, buf)) {
+    c->fillRect(10, 55, 250, 20, COLOR_BG);
+    c->setCursor(10, 55);
+    c->setTextSize(2);
+    if (inSearchZone) {
+      c->setTextColor(COLOR_WARN);
+      c->print("SEARCH ZONE");
+    } else {
+      c->setTextColor(COLOR_VALUE);
+      // Re-format distance for drawing
+      if (useMetricUnits) {
+        if (distKm >= 1.0) sprintf(buf, "%.1f km", distKm);
+        else sprintf(buf, "%.0f m", distM);
       } else {
-        sprintf(buf, "%.0f ft", distFt);
+        float distMi = distKm * 0.621371;
+        if (distMi >= 1.0) sprintf(buf, "%.1f mi", distMi);
+        else sprintf(buf, "%.0f ft", distKm * 3280.84);
+      }
+      c->print(buf);
+    }
+    c->setTextSize(1);
+    c->setTextColor(COLOR_DIM);
+    sprintf(buf, " D:%.1f T:%.1f", cache.difficulty, cache.terrain);
+    c->print(buf);
+  }
+
+  // Zone: Bearing (right side)
+  snprintf(buf, ZONE_KEY_LEN, "brg_%d", (int)bearing);
+  if (zoneMark(260, 55, 60, 20, buf)) {
+    c->fillRect(260, 55, 60, 20, COLOR_BG);
+    c->setCursor(265, 55);
+    c->setTextColor(COLOR_VALUE);
+    c->setTextSize(2);
+    sprintf(buf, "%d", (int)bearing);
+    c->print(buf);
+    c->setTextSize(1);
+    c->print((char)247);  // Degree symbol
+  }
+
+  // Zone: Nav graphic (triangle or search zone circle)
+  // Key on rounded bearing (2°), heading (2°), and search zone state
+  int roundedBrg = ((int)bearing / 2) * 2;
+  int roundedHdg = ((int)imuData.heading / 2) * 2;
+  int roundedDist = (int)(distM / 2) * 2;  // Round to 2m for search zone pulse
+  if (inSearchZone)
+    snprintf(buf, ZONE_KEY_LEN, "nav_sz_%d_%d", roundedDist, (int)accuracyM);
+  else
+    snprintf(buf, ZONE_KEY_LEN, "nav_%d_%d", roundedBrg, roundedHdg);
+  if (zoneMark(100, 75, 120, 110, buf)) {
+    c->fillRect(100, 75, 120, 110, COLOR_BG);
+    if (inSearchZone) {
+      drawSearchZoneCircle(c, 160, 130, distM, accuracyM);
+    } else {
+      float triangleAngle = bearing - imuData.heading;
+      if (triangleAngle < 0) triangleAngle += 360;
+      if (triangleAngle >= 360) triangleAngle -= 360;
+      drawNavTriangle(c, 160, 130, 50, triangleAngle, COLOR_HEADER);
+    }
+  }
+
+  // Zone: GPS accuracy
+  if (useMetricUnits)
+    snprintf(buf, ZONE_KEY_LEN, "+/-%.0fm", accuracyM);
+  else
+    snprintf(buf, ZONE_KEY_LEN, "+/-%.0fft", accuracyM * 3.28084);
+  if (zoneMark(80, 185, 160, 20, buf)) {
+    c->fillRect(80, 185, 160, 20, COLOR_BG);
+    uint16_t accColor = getAccuracyColor(accuracyM);
+    c->setTextColor(accColor);
+    c->setTextSize(2);
+    // buf already has formatted accuracy from zone key
+    int accLen = strlen(buf);
+    int accX = (SCREEN_W - accLen * 12) / 2;
+    c->setCursor(accX, 185);
+    c->print(buf);
+  }
+
+  // Zone: Hint area
+  // Key includes search zone state and hint content (truncated for key)
+  if (strlen(cache.hint) > 0) {
+    char hintKey[ZONE_KEY_LEN];
+    snprintf(hintKey, ZONE_KEY_LEN, "hint_%d_%.20s", inSearchZone ? 1 : 0, cache.hint);
+    if (zoneMark(10, 200, SCREEN_W - 20, 30, hintKey)) {
+      c->fillRect(10, 200, SCREEN_W - 20, 30, COLOR_BG);
+      c->setTextColor(COLOR_DIM);
+      c->setTextSize(1);
+      if (inSearchZone) {
+        c->setCursor(10, 205);
+        c->print("Hint: ");
+        c->print(cache.hint);
+      } else {
+        c->setCursor(10, 220);
+        char hintPreview[35];
+        strncpy(hintPreview, cache.hint, 30);
+        hintPreview[30] = '\0';
+        if (strlen(cache.hint) > 30) strcat(hintPreview, "...");
+        c->print("Hint: ");
+        c->print(hintPreview);
       }
     }
-    tft.print(buf);
   }
-
-  // D/T rating (after distance, same row)
-  tft.setTextSize(1);
-  tft.setTextColor(COLOR_DIM);
-  sprintf(buf, " D:%.1f T:%.1f", cache.difficulty, cache.terrain);
-  tft.print(buf);
-
-  // Heading (right side)
-  tft.setCursor(265, 55);
-  tft.setTextColor(COLOR_VALUE);
-  tft.setTextSize(2);
-  sprintf(buf, "%d", (int)bearing);
-  tft.print(buf);
-  tft.setTextSize(1);
-  tft.print((char)247);  // Degree symbol
-
-  // Center: Nav triangle OR search zone pulsing circle
-  // Clear center area first to prevent ghosting on rotation
-  tft.fillRect(100, 75, 120, 110, COLOR_BG);
-
-  if (inSearchZone) {
-    // Pulsing circle that shrinks as we get closer
-    drawSearchZoneCircle(160, 130, distM, accuracyM);
-  } else {
-    // Google Maps style nav triangle
-    float triangleAngle = bearing - imuData.heading;
-    if (triangleAngle < 0) triangleAngle += 360;
-    if (triangleAngle >= 360) triangleAngle -= 360;
-    drawNavTriangle(160, 130, 50, triangleAngle, COLOR_HEADER);
-  }
-
-  // GPS accuracy indicator (below center graphic)
-  // Clear accuracy area first to prevent ghosting
-  tft.fillRect(80, 185, 160, 20, COLOR_BG);
-
-  uint16_t accColor = getAccuracyColor(accuracyM);
-  tft.setTextColor(accColor);
-  tft.setTextSize(2);
-
-  if (useMetricUnits) {
-    sprintf(buf, "+/-%.0fm", accuracyM);
-  } else {
-    sprintf(buf, "+/-%.0fft", accuracyM * 3.28084);
-  }
-  int accLen = strlen(buf);
-  int accX = (320 - accLen * 12) / 2;  // Center
-  tft.setCursor(accX, 185);
-  tft.print(buf);
-
-  // Bottom: Hint (teaser in normal mode, FULL in search zone)
-  tft.setTextColor(COLOR_DIM);
-  tft.setTextSize(1);
-
-  if (strlen(cache.hint) > 0) {
-    if (inSearchZone) {
-      // FULL HINT in search zone (multi-line)
-      tft.setCursor(10, 205);
-      tft.print("Hint: ");
-      tft.print(cache.hint);  // Full hint (may wrap)
-    } else {
-      // Teaser only
-      tft.setCursor(10, 220);
-      char hintPreview[35];
-      strncpy(hintPreview, cache.hint, 30);
-      hintPreview[30] = '\0';
-      if (strlen(cache.hint) > 30) strcat(hintPreview, "...");
-      tft.print("Hint: ");
-      tft.print(hintPreview);
-    }
-  }
-
-  drawNavBar();
 }
 
 // Sub-screen 1: Cache List
-void drawCacheListScreen() {
-  drawHeader("CACHE LIST");
+void drawCacheListScreen(TFT_eSprite* c) {
+  char buf[ZONE_KEY_LEN];
 
-  char buf[64];
-  int y = 38;
-  int lineH = 28;
-  int maxVisible = 5;  // 5 entries visible at once
+  // Zone: Header
+  if (zoneMark(0, 0, SCREEN_W, 30, "CACHE LIST"))
+    drawHeader(c, "CACHE LIST");
 
-  // Show count in header area
-  tft.setTextSize(1);
-  tft.setTextColor(COLOR_DIM);
-  sprintf(buf, "[%d/%d]", listHighlightIndex + 1, cacheListCount);
-  tft.setCursor(280, 10);
-  tft.print(buf);
+  // Zone: Count indicator
+  snprintf(buf, ZONE_KEY_LEN, "[%d/%d]", listHighlightIndex + 1, cacheListCount);
+  if (zoneMark(270, 8, 50, 12, buf)) {
+    c->fillRect(270, 8, 50, 12, COLOR_BG);
+    c->setTextSize(1);
+    c->setTextColor(COLOR_DIM);
+    c->setCursor(280, 10);
+    c->print(buf);
+  }
 
   if (cacheListCount == 0) {
-    tft.setCursor(80, 120);
-    tft.setTextColor(COLOR_DIM);
-    tft.setTextSize(2);
-    tft.print("No caches loaded");
-    drawNavBar();
+    if (zoneMark(0, 30, SCREEN_W, SCREEN_H - 30, "no_caches")) {
+      c->setCursor(80, 120);
+      c->setTextColor(COLOR_DIM);
+      c->setTextSize(2);
+      c->print("No caches loaded");
+    }
     return;
   }
 
-  // Draw visible cache entries
+  // Zone: Entire list area — key on scroll offset + highlight + distances
+  // The list has interleaved selection highlighting, distances, and names.
+  // Treat the whole visible list as one zone keyed on state that affects it.
+  int y = 38;
+  int lineH = 28;
+  int maxVisible = 5;
+
+  // Build a composite key from scroll state + all visible row data
+  char listKey[ZONE_KEY_LEN];
+  snprintf(listKey, ZONE_KEY_LEN, "l_%d_%d", listScrollOffset, listHighlightIndex);
+  // Append abbreviated distance data for visible rows
   for (int i = 0; i < maxVisible && (listScrollOffset + i) < cacheListCount; i++) {
     int cacheIdx = listScrollOffset + i;
-    GeocacheEntry& cache = cacheList[cacheIdx];
-    bool isSelected = (cacheIdx == listHighlightIndex);
-
-    // Highlight background for selected item
-    if (isSelected) {
-      tft.fillRect(0, y - 2, 320, lineH, COLOR_HEADER & 0x18E3);  // Darker cyan
-    }
-
-    int x = 5;
-
-    // Selection indicator
-    tft.setTextSize(2);
-    tft.setTextColor(isSelected ? COLOR_HEADER : COLOR_DIM);
-    tft.setCursor(x, y + 2);
-    tft.print(isSelected ? ">" : " ");
-    x += 18;
-
-    // Distance
     float distKm = calcDistanceKm(gpsData.latitude, gpsData.longitude,
-                                   cache.latitude, cache.longitude);
-    tft.setTextColor(COLOR_VALUE);
-    tft.setTextSize(1);
-    tft.setCursor(x, y + 4);
-    if (useMetricUnits) {
-      if (distKm >= 1.0) {
-        sprintf(buf, "%4.1fkm", distKm);
-      } else {
-        sprintf(buf, "%4.0fm", distKm * 1000);
-      }
-    } else {
-      float distMi = distKm * 0.621371;
-      if (distMi >= 1.0) {
-        sprintf(buf, "%4.1fmi", distMi);
-      } else {
-        sprintf(buf, "%4.0fft", distKm * 3280.84);
-      }
+                                   cacheList[cacheIdx].latitude, cacheList[cacheIdx].longitude);
+    char d[8];
+    snprintf(d, 8, "%.0f", distKm * 1000);
+    // Append if space allows
+    int curLen = strlen(listKey);
+    if (curLen + strlen(d) + 1 < ZONE_KEY_LEN) {
+      listKey[curLen] = '_';
+      strcpy(listKey + curLen + 1, d);
     }
-    tft.print(buf);
-    x += 48;
-
-    // Cache name (truncated)
-    tft.setTextColor(COLOR_TEXT);
-    tft.setCursor(x, y + 4);
-    char nameBuf[20];
-    strncpy(nameBuf, cache.name, 16);
-    nameBuf[16] = '\0';
-    if (strlen(cache.name) > 16) {
-      nameBuf[14] = '.';
-      nameBuf[15] = '.';
-    }
-    tft.print(nameBuf);
-    x += 100;
-
-    // Found checkmark
-    if (cache.found) {
-      tft.setTextColor(COLOR_VALUE);
-      tft.setCursor(x, y + 4);
-      tft.print("*");  // Checkmark indicator
-    }
-    x += 12;
-
-    // D/T rating
-    tft.setTextColor(COLOR_DIM);
-    tft.setCursor(x, y + 4);
-    sprintf(buf, "D:%d T:%d", (int)cache.difficulty, (int)cache.terrain);
-    tft.print(buf);
-
-    y += lineH;
   }
 
-  // Draw button hints at bottom
-  tft.setTextSize(1);
-  tft.setTextColor(COLOR_DIM);
-  tft.setCursor(10, 190);
-  tft.print("[A]Up [B]Down [C]Select [C+]Details");
+  if (zoneMark(0, 36, SCREEN_W, maxVisible * lineH + 4, listKey)) {
+    // Clear list area
+    c->fillRect(0, 36, SCREEN_W, maxVisible * lineH + 4, COLOR_BG);
 
-  drawNavBar();
+    for (int i = 0; i < maxVisible && (listScrollOffset + i) < cacheListCount; i++) {
+      int cacheIdx = listScrollOffset + i;
+      GeocacheEntry& cache = cacheList[cacheIdx];
+      bool isSelected = (cacheIdx == listHighlightIndex);
+
+      if (isSelected) {
+        c->fillRect(0, y - 2, SCREEN_W, lineH, COLOR_HEADER & 0x18E3);
+      }
+
+      int x = 5;
+
+      c->setTextSize(2);
+      c->setTextColor(isSelected ? COLOR_HEADER : COLOR_DIM);
+      c->setCursor(x, y + 2);
+      c->print(isSelected ? ">" : " ");
+      x += 18;
+
+      float distKm = calcDistanceKm(gpsData.latitude, gpsData.longitude,
+                                     cache.latitude, cache.longitude);
+      c->setTextColor(COLOR_VALUE);
+      c->setTextSize(1);
+      c->setCursor(x, y + 4);
+      if (useMetricUnits) {
+        if (distKm >= 1.0) sprintf(buf, "%4.1fkm", distKm);
+        else sprintf(buf, "%4.0fm", distKm * 1000);
+      } else {
+        float distMi = distKm * 0.621371;
+        if (distMi >= 1.0) sprintf(buf, "%4.1fmi", distMi);
+        else sprintf(buf, "%4.0fft", distKm * 3280.84);
+      }
+      c->print(buf);
+      x += 48;
+
+      c->setTextColor(COLOR_TEXT);
+      c->setCursor(x, y + 4);
+      char nameBuf[20];
+      strncpy(nameBuf, cache.name, 16);
+      nameBuf[16] = '\0';
+      if (strlen(cache.name) > 16) {
+        nameBuf[14] = '.';
+        nameBuf[15] = '.';
+      }
+      c->print(nameBuf);
+      x += 100;
+
+      if (cache.found) {
+        c->setTextColor(COLOR_VALUE);
+        c->setCursor(x, y + 4);
+        c->print("*");
+      }
+      x += 12;
+
+      c->setTextColor(COLOR_DIM);
+      c->setCursor(x, y + 4);
+      sprintf(buf, "D:%d T:%d", (int)cache.difficulty, (int)cache.terrain);
+      c->print(buf);
+
+      y += lineH;
+    }
+  }
+
+  // Zone: Button hints (static)
+  if (zoneMark(10, 188, SCREEN_W - 20, 12, "list_hints")) {
+    c->setTextSize(1);
+    c->setTextColor(COLOR_DIM);
+    c->setCursor(10, 190);
+    c->print("[A]Up [B]Down [C]Select [C+]Details");
+  }
 }
 
 // Sub-screen 2: Cache Details
-void drawCacheDetailsScreen() {
+void drawCacheDetailsScreen(TFT_eSprite* c) {
+  char buf[ZONE_KEY_LEN];
+
   if (cacheListCount == 0 || listHighlightIndex >= cacheListCount) {
-    drawHeader("CACHE DETAILS");
-    tft.setCursor(80, 120);
-    tft.setTextColor(COLOR_DIM);
-    tft.setTextSize(2);
-    tft.print("No cache");
-    drawNavBar();
+    if (zoneMark(0, 0, SCREEN_W, 30, "CACHE DETAILS"))
+      drawHeader(c, "CACHE DETAILS");
+    if (zoneMark(0, 30, SCREEN_W, SCREEN_H - 30, "no_cache_d")) {
+      c->setCursor(80, 120);
+      c->setTextColor(COLOR_DIM);
+      c->setTextSize(2);
+      c->print("No cache");
+    }
     return;
   }
 
   GeocacheEntry& cache = cacheList[listHighlightIndex];
-  char buf[64];
 
-  drawHeader("CACHE DETAILS");
+  // Zone: Header
+  if (zoneMark(0, 0, SCREEN_W, 30, "CACHE DETAILS"))
+    drawHeader(c, "CACHE DETAILS");
 
-  // Count indicator in header
-  tft.setTextSize(1);
-  tft.setTextColor(COLOR_DIM);
-  sprintf(buf, "[%d/%d]", listHighlightIndex + 1, cacheListCount);
-  tft.setCursor(280, 10);
-  tft.print(buf);
+  // Zone: Count indicator
+  snprintf(buf, ZONE_KEY_LEN, "[%d/%d]", listHighlightIndex + 1, cacheListCount);
+  if (zoneMark(270, 8, 50, 12, buf)) {
+    c->fillRect(270, 8, 50, 12, COLOR_BG);
+    c->setTextSize(1);
+    c->setTextColor(COLOR_DIM);
+    c->setCursor(280, 10);
+    c->print(buf);
+  }
 
   int y = 35;
   int lineH = 18;
 
-  // Cache name (large)
-  tft.setTextSize(2);
-  tft.setTextColor(COLOR_TEXT);
-  tft.setCursor(10, y);
-  // Truncate name if too long
-  char nameBuf[24];
-  strncpy(nameBuf, cache.name, 22);
-  nameBuf[22] = '\0';
-  tft.print(nameBuf);
+  // Zone: Cache name (changes when selected cache changes)
+  snprintf(buf, ZONE_KEY_LEN, "dn_%d", listHighlightIndex);
+  if (zoneMark(10, y, SCREEN_W - 20, 20, buf)) {
+    c->fillRect(10, y, SCREEN_W - 20, 20, COLOR_BG);
+    c->setTextSize(2);
+    c->setTextColor(COLOR_TEXT);
+    c->setCursor(10, y);
+    char nameBuf[24];
+    strncpy(nameBuf, cache.name, 22);
+    nameBuf[22] = '\0';
+    c->print(nameBuf);
+  }
   y += 22;
 
-  // GC Code
-  tft.setTextSize(1);
-  tft.setTextColor(COLOR_HEADER);
-  tft.setCursor(10, y);
-  tft.print(cache.gcCode);
+  // Zone: GC Code (changes with cache selection)
+  snprintf(buf, ZONE_KEY_LEN, "gc_%s", cache.gcCode);
+  if (zoneMark(10, y, 200, 12, buf)) {
+    c->fillRect(10, y, 200, 12, COLOR_BG);
+    c->setTextSize(1);
+    c->setTextColor(COLOR_HEADER);
+    c->setCursor(10, y);
+    c->print(cache.gcCode);
+  }
   y += lineH + 4;
 
-  // Coordinates
-  tft.setTextColor(COLOR_VALUE);
-  tft.setCursor(10, y);
-  sprintf(buf, "%.4f%c  %.4f%c",
-          fabs(cache.latitude), cache.latitude >= 0 ? 'N' : 'S',
-          fabs(cache.longitude), cache.longitude >= 0 ? 'E' : 'W');
-  tft.print(buf);
+  // Zone: Coordinates (static per cache)
+  snprintf(buf, ZONE_KEY_LEN, "%.4f%c %.4f%c",
+           fabs(cache.latitude), cache.latitude >= 0 ? 'N' : 'S',
+           fabs(cache.longitude), cache.longitude >= 0 ? 'E' : 'W');
+  if (zoneMark(10, y, SCREEN_W - 20, 12, buf)) {
+    c->fillRect(10, y, SCREEN_W - 20, 12, COLOR_BG);
+    c->setTextColor(COLOR_VALUE);
+    c->setTextSize(1);
+    c->setCursor(10, y);
+    c->print(buf);
+  }
   y += lineH;
 
-  // Difficulty/Terrain
-  tft.setTextColor(COLOR_TEXT);
-  tft.setCursor(10, y);
-  sprintf(buf, "Difficulty: %.1f  Terrain: %.1f", cache.difficulty, cache.terrain);
-  tft.print(buf);
+  // Zone: D/T (static per cache)
+  snprintf(buf, ZONE_KEY_LEN, "D:%.1f T:%.1f", cache.difficulty, cache.terrain);
+  if (zoneMark(10, y, SCREEN_W - 20, 12, buf)) {
+    c->fillRect(10, y, SCREEN_W - 20, 12, COLOR_BG);
+    c->setTextColor(COLOR_TEXT);
+    c->setTextSize(1);
+    c->setCursor(10, y);
+    sprintf(buf, "Difficulty: %.1f  Terrain: %.1f", cache.difficulty, cache.terrain);
+    c->print(buf);
+  }
   y += lineH + 4;
 
-  // Current distance/bearing
+  // Zone: Distance/Bearing (dynamic - changes with GPS position)
   float distKm = calcDistanceKm(gpsData.latitude, gpsData.longitude,
                                  cache.latitude, cache.longitude);
   float bearing = calcBearing(gpsData.latitude, gpsData.longitude,
                                cache.latitude, cache.longitude);
-  tft.setTextColor(COLOR_VALUE);
-  tft.setCursor(10, y);
-  if (useMetricUnits) {
-    sprintf(buf, "Distance: %.2f km  Bearing: %d", distKm, (int)bearing);
-  } else {
-    sprintf(buf, "Distance: %.2f mi  Bearing: %d", distKm * 0.621371, (int)bearing);
+  if (useMetricUnits)
+    snprintf(buf, ZONE_KEY_LEN, "%.2fkm %d", distKm, (int)bearing);
+  else
+    snprintf(buf, ZONE_KEY_LEN, "%.2fmi %d", distKm * 0.621371, (int)bearing);
+  if (zoneMark(10, y, SCREEN_W - 20, 12, buf)) {
+    c->fillRect(10, y, SCREEN_W - 20, 12, COLOR_BG);
+    c->setTextColor(COLOR_VALUE);
+    c->setTextSize(1);
+    c->setCursor(10, y);
+    if (useMetricUnits)
+      sprintf(buf, "Distance: %.2f km  Bearing: %d", distKm, (int)bearing);
+    else
+      sprintf(buf, "Distance: %.2f mi  Bearing: %d", distKm * 0.621371, (int)bearing);
+    c->print(buf);
+    c->print((char)247);
   }
-  tft.print(buf);
-  tft.print((char)247);  // Degree symbol
   y += lineH + 4;
 
-  // Hint (full, multi-line)
+  // Zone: Hint (static per cache)
   if (strlen(cache.hint) > 0) {
-    tft.setTextColor(COLOR_DIM);
-    tft.setCursor(10, y);
-    tft.print("Hint: ");
-    tft.setTextColor(COLOR_TEXT);
-    // Word wrap hint - simple approach, just print and let TFT wrap
-    tft.setCursor(10, y + 10);
-    // Print hint in chunks to avoid overflow
-    int hintLen = strlen(cache.hint);
-    int pos = 0;
-    int lineY = y + 10;
-    while (pos < hintLen && lineY < 175) {
-      int chunkLen = min(50, hintLen - pos);  // ~50 chars per line at size 1
-      char chunk[52];
-      strncpy(chunk, cache.hint + pos, chunkLen);
-      chunk[chunkLen] = '\0';
-      tft.setCursor(10, lineY);
-      tft.print(chunk);
-      pos += chunkLen;
-      lineY += 10;
+    snprintf(buf, ZONE_KEY_LEN, "dh_%d_%.20s", listHighlightIndex, cache.hint);
+    if (zoneMark(10, y, SCREEN_W - 20, 50, buf)) {
+      c->fillRect(10, y, SCREEN_W - 20, 50, COLOR_BG);
+      c->setTextColor(COLOR_DIM);
+      c->setTextSize(1);
+      c->setCursor(10, y);
+      c->print("Hint: ");
+      c->setTextColor(COLOR_TEXT);
+      c->setCursor(10, y + 10);
+      int hintLen = strlen(cache.hint);
+      int pos = 0;
+      int lineY = y + 10;
+      while (pos < hintLen && lineY < 175) {
+        int chunkLen = min(50, hintLen - pos);
+        char chunk[52];
+        strncpy(chunk, cache.hint + pos, chunkLen);
+        chunk[chunkLen] = '\0';
+        c->setCursor(10, lineY);
+        c->print(chunk);
+        pos += chunkLen;
+        lineY += 10;
+      }
     }
   }
 
-  // Found status (interactive area)
-  y = 180;
-  tft.setCursor(10, y);
-  tft.setTextSize(2);
-  if (cache.found) {
-    tft.setTextColor(COLOR_VALUE);
-    tft.print("[* FOUND]");
-  } else {
-    tft.setTextColor(COLOR_DIM);
-    tft.print("[ NOT FOUND ]");
+  // Zone: Found status (changes on toggle)
+  snprintf(buf, ZONE_KEY_LEN, "found_%d_%d", listHighlightIndex, cache.found ? 1 : 0);
+  if (zoneMark(10, 178, SCREEN_W - 20, 20, buf)) {
+    c->fillRect(10, 178, SCREEN_W - 20, 20, COLOR_BG);
+    c->setCursor(10, 180);
+    c->setTextSize(2);
+    if (cache.found) {
+      c->setTextColor(COLOR_VALUE);
+      c->print("[* FOUND]");
+    } else {
+      c->setTextColor(COLOR_DIM);
+      c->print("[ NOT FOUND ]");
+    }
   }
 
-  // Button hints
-  tft.setTextSize(1);
-  tft.setTextColor(COLOR_DIM);
-  tft.setCursor(10, 205);
-  tft.print("[A]Prev [B]Next [C]Toggle [C+]Back");
-
-  drawNavBar();
+  // Zone: Button hints (static)
+  if (zoneMark(10, 203, SCREEN_W - 20, 12, "detail_hints")) {
+    c->setTextSize(1);
+    c->setTextColor(COLOR_DIM);
+    c->setCursor(10, 205);
+    c->print("[A]Prev [B]Next [C]Toggle [C+]Back");
+  }
 }
 
-void drawScreenDiags() {
-  drawHeader("DIAGNOSTICS");
+void drawScreenDiags(TFT_eSprite* c) {
+  zoneBegin();
+  char buf[ZONE_KEY_LEN];
 
   int y = 38;
   int labelX = 10;
-  int valueX = 140;
+  int vX = 60;  // Value start (label+value on same row)
   int lineH = 24;
-  char buf[40];
 
-  tft.setTextSize(1);
+  // Helper: draw a diag row (label in COLOR_HEADER + value in given color)
+  auto diagRow = [&](int y, const char* label, const char* value, uint16_t valColor) {
+    c->setTextSize(1);
+    c->setTextColor(COLOR_HEADER);
+    c->setCursor(labelX, y);
+    c->print(label);
+    c->setTextColor(valColor);
+    c->setCursor(vX, y);
+    c->fillRect(vX, y, 260, 10, COLOR_BG);
+    c->print(value);
+  };
 
-  // BSEC State section
-  tft.setTextColor(COLOR_HEADER);
-  tft.setCursor(labelX, y);
-  tft.print("BSEC:");
+  // Zone 0: Header
+  if (zoneMark(0, 0, SCREEN_W, 30, "DIAGNOSTICS"))
+    drawHeader(c, "DIAGNOSTICS");
+
+  // Zone 1: BSEC
   sprintf(buf, "Load:%s Save:%s Acc:%s",
-          bsecStateLoaded ? "Y" : "N",
-          bsecStateSaved ? "Y" : "N",
+          bsecStateLoaded ? "Y" : "N", bsecStateSaved ? "Y" : "N",
           getIaqAccuracyText(envData.iaqAccuracy));
-  tft.setTextColor(bsecStateLoaded ? COLOR_VALUE : COLOR_DIM);
-  tft.setCursor(valueX - 80, y);
-  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
-  tft.print(buf);
+  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
+    diagRow(y, "BSEC:", buf, bsecStateLoaded ? COLOR_VALUE : COLOR_DIM);
   y += lineH;
 
-  // Weather Log
-  tft.setTextColor(COLOR_HEADER);
-  tft.setCursor(labelX, y);
-  tft.print("Weather:");
+  // Zone 2: Weather
   sprintf(buf, "Mem:%d Files:%d Tot:%d",
           weatherHistoryCount, weatherLogFileCount, weatherLogEntryCount);
-  tft.setTextColor(COLOR_VALUE);
-  tft.setCursor(valueX - 80, y);
-  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
-  tft.print(buf);
+  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
+    diagRow(y, "Weather:", buf, COLOR_VALUE);
   y += lineH;
 
-  // Memory
-  tft.setTextColor(COLOR_HEADER);
-  tft.setCursor(labelX, y);
-  tft.print("Heap:");
-  sprintf(buf, "%lu / %lu bytes",
-          (unsigned long)ESP.getFreeHeap(),
-          (unsigned long)ESP.getHeapSize());
-  tft.setTextColor(COLOR_VALUE);
-  tft.setCursor(valueX - 80, y);
-  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
-  tft.print(buf);
+  // Zone 3: Heap
+  sprintf(buf, "%luK / %luK",
+          (unsigned long)ESP.getFreeHeap() / 1024,
+          (unsigned long)ESP.getHeapSize() / 1024);
+  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
+    diagRow(y, "Heap:", buf, COLOR_VALUE);
   y += lineH;
 
-  // Sensors status
-  tft.setTextColor(COLOR_HEADER);
-  tft.setCursor(labelX, y);
-  tft.print("Sensors:");
-  sprintf(buf, "BME:%s SHT:%s IMU:%s Bat:%s FRAM:%s",
-          bmeAvailable ? "Y" : "N",
-          shtAvailable ? "Y" : "N",
-          imuAvailable ? "Y" : "N",
-          batteryAvailable ? "Y" : "N",
-          framAvailable ? "Y" : "N");
-  tft.setTextColor(COLOR_VALUE);
-  tft.setCursor(valueX - 80, y);
-  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
-  tft.print(buf);
+  // Zone 4: PSRAM
+  if (psramFound()) {
+    sprintf(buf, "%luK / %luK  Spr:%s",
+            (unsigned long)ESP.getFreePsram() / 1024,
+            (unsigned long)ESP.getPsramSize() / 1024,
+            spriteAvailable ? "Y" : "N");
+  } else {
+    strcpy(buf, "Not available");
+  }
+  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
+    diagRow(y, "PSRAM:", buf, psramFound() ? COLOR_VALUE : COLOR_DIM);
   y += lineH;
 
-  // Temp comparison: SHT41 vs BME688 (#48)
-  tft.setTextColor(COLOR_HEADER);
-  tft.setCursor(labelX, y);
-  tft.print("Temps:");
+  // Zone 5: Sensors
+  sprintf(buf, "BME:%s SHT:%s IMU:%s Bat:%s FRAM:%s CTP:%s",
+          bmeAvailable ? "Y" : "N", shtAvailable ? "Y" : "N",
+          imuAvailable ? "Y" : "N", batteryAvailable ? "Y" : "N",
+          framAvailable ? "Y" : "N", touchAvailable ? "Y" : "N");
+  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
+    diagRow(y, "Sensors:", buf, COLOR_VALUE);
+  y += lineH;
+
+  // Zone 6: Temps
   if (shtAvailable && bmeAvailable) {
     float shtF = shtData.temperature * 9.0 / 5.0 + 32.0;
     float bmeF = envData.temperature * 9.0 / 5.0 + 32.0;
-    float deltaF = shtF - bmeF;
-    sprintf(buf, "SHT:%.1fF BME:%.1fF (%+.1f)", shtF, bmeF, deltaF);
+    sprintf(buf, "SHT:%.1fF BME:%.1fF (%+.1f)", shtF, bmeF, shtF - bmeF);
   } else if (shtAvailable) {
-    float shtF = shtData.temperature * 9.0 / 5.0 + 32.0;
-    sprintf(buf, "SHT:%.1fF BME:N/A", shtF);
+    sprintf(buf, "SHT:%.1fF BME:N/A", shtData.temperature * 9.0 / 5.0 + 32.0);
   } else if (bmeAvailable) {
-    float bmeF = envData.temperature * 9.0 / 5.0 + 32.0;
-    sprintf(buf, "SHT:N/A BME:%.1fF", bmeF);
+    sprintf(buf, "SHT:N/A BME:%.1fF", envData.temperature * 9.0 / 5.0 + 32.0);
   } else {
-    sprintf(buf, "No sensors");
+    strcpy(buf, "No sensors");
   }
-  tft.setTextColor(COLOR_VALUE);
-  tft.setCursor(valueX - 80, y);
-  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
-  tft.print(buf);
+  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
+    diagRow(y, "Temps:", buf, COLOR_VALUE);
   y += lineH;
 
-  // GPS TTFF (#68)
-  tft.setTextColor(COLOR_HEADER);
-  tft.setCursor(labelX, y);
-  tft.print("GPS:");
+  // Zone 7: GPS
+  uint16_t gpsColor = COLOR_VALUE;
   if (gpsHadFirstFix) {
     sprintf(buf, "Fix in %lus", gpsFirstFixTime / 1000);
-    tft.setTextColor(COLOR_VALUE);
   } else if (gpsHadFirstReceive) {
     unsigned long elapsed = millis() / 1000;
     sprintf(buf, "Acquiring (%lum %lus)", elapsed / 60, elapsed % 60);
-    tft.setTextColor(COLOR_WARN);
+    gpsColor = COLOR_WARN;
   } else {
-    sprintf(buf, "No data");
-    tft.setTextColor(COLOR_DIM);
+    strcpy(buf, "No data"); gpsColor = COLOR_DIM;
   }
-  tft.setCursor(valueX - 80, y);
-  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
-  tft.print(buf);
+  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
+    diagRow(y, "GPS:", buf, gpsColor);
   y += lineH;
 
-  // Mag Calibration
-  tft.setTextColor(COLOR_HEADER);
-  tft.setCursor(labelX, y);
-  tft.print("MagCal:");
+  // Zone 8: MagCal
   if (magCalibrated) {
     sprintf(buf, "%.1f, %.1f, %.1f", magOffsetX, magOffsetY, magOffsetZ);
-    tft.setTextColor(COLOR_VALUE);
   } else {
-    sprintf(buf, "None (hold C on compass)");
-    tft.setTextColor(COLOR_DIM);
+    strcpy(buf, "None (hold C on compass)");
   }
-  tft.setCursor(valueX - 80, y);
-  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
-  tft.print(buf);
+  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
+    diagRow(y, "MagCal:", buf, magCalibrated ? COLOR_VALUE : COLOR_DIM);
   y += lineH;
 
-  // Storage & Display with SD health
-  tft.setTextColor(COLOR_HEADER);
-  tft.setCursor(labelX, y);
-  tft.print("Storage:");
-
-  // Format SD status with health info
+  // Zone 9: Storage
+  uint16_t sdColor = COLOR_VALUE;
   if (sdHealth.available) {
     unsigned long ageMin = (millis() - sdHealth.lastSuccess) / 60000;
     if (sdHealth.errorCount == 0) {
-      sprintf(buf, "SD:OK %lum OLED:%s",
-              ageMin, oledAvailable ? "Y" : "N");
-      tft.setTextColor(COLOR_VALUE);
+      sprintf(buf, "SD:OK %lum OLED:%s", ageMin, oledAvailable ? "Y" : "N");
     } else {
       sprintf(buf, "SD:WARN E:%d R:%d OLED:%s",
-              sdHealth.errorCount, sdHealth.reInitCount,
-              oledAvailable ? "Y" : "N");
-      tft.setTextColor(COLOR_WARN);
+              sdHealth.errorCount, sdHealth.reInitCount, oledAvailable ? "Y" : "N");
+      sdColor = COLOR_WARN;
     }
   } else {
     sprintf(buf, "SD:FAIL E:%d R:%d OLED:%s",
-            sdHealth.errorCount, sdHealth.reInitCount,
-            oledAvailable ? "Y" : "N");
-    tft.setTextColor(COLOR_ERROR);
+            sdHealth.errorCount, sdHealth.reInitCount, oledAvailable ? "Y" : "N");
+    sdColor = COLOR_ERROR;
   }
-  tft.setCursor(valueX - 80, y);
-  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
-  tft.print(buf);
+  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
+    diagRow(y, "Storage:", buf, sdColor);
   y += lineH;
 
-  // Network
-  tft.setTextColor(COLOR_HEADER);
-  tft.setCursor(labelX, y);
-  tft.print("Network:");
+  // Zone 10: Network
   if (wifiConnected) {
-    sprintf(buf, "%s", WiFi.localIP().toString().c_str());
-    tft.setTextColor(COLOR_VALUE);
+    snprintf(buf, sizeof(buf), "%s", WiFi.localIP().toString().c_str());
   } else {
-    sprintf(buf, "Disconnected");
-    tft.setTextColor(COLOR_ERROR);
+    strcpy(buf, "Disconnected");
   }
-  tft.setCursor(valueX - 80, y);
-  tft.fillRect(valueX - 80, y, 200, 10, COLOR_BG);
-  tft.print(buf);
+  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
+    diagRow(y, "Network:", buf, wifiConnected ? COLOR_VALUE : COLOR_ERROR);
   y += lineH;
 
-  // Web URL hint
-  if (wifiConnected) {
-    tft.setTextColor(COLOR_DIM);
-    tft.setCursor(labelX, y);
-    tft.print("Web: http://fieldcompass.local/");
+  // Zone 11: Web URL (static when wifi connected)
+  const char* webKey = wifiConnected ? "Web: fieldcompass.local" : "web_none";
+  if (zoneMark(labelX, y, SCREEN_W - 20, 10, webKey)) {
+    if (wifiConnected) {
+      c->setTextColor(COLOR_DIM);
+      c->setTextSize(1);
+      c->setCursor(labelX, y);
+      c->print("Web: http://fieldcompass.local/");
+    }
   }
+
+  // Zone 12: NavBar
+  sprintf(buf, "nav_%d", currentScreen);
+  if (zoneMark(0, SCREEN_H - 25, SCREEN_W, 25, buf))
+    drawNavBar(c);
 }
 
 // ============== OLED Display Functions ==============
