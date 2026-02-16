@@ -219,6 +219,14 @@ void zonePushDirty();
 Adafruit_FT6206 ctp = Adafruit_FT6206();
 volatile bool touchDetected = false;
 
+// Swipe gesture detection
+#define SWIPE_MIN_DISTANCE  40   // Minimum px to qualify as a swipe
+#define SWIPE_MAX_TIME_MS   500  // Maximum ms from touch-down to release
+bool     swipeTracking  = false; // Currently tracking a potential swipe
+int16_t  swipeStartX    = 0;     // Screen-X at touch-down (mapped from touch Y)
+int16_t  swipeStartY    = 0;     // Screen-Y at touch-down (mapped from touch X)
+uint32_t swipeStartTime = 0;     // millis() at touch-down
+
 // OLED Display
 Adafruit_SH1107 oled = Adafruit_SH1107(64, 128, &Wire);
 
@@ -292,7 +300,7 @@ unsigned long magCalStartTime = 0;
 float magCalMinX, magCalMinY, magCalMinZ;
 float magCalMaxX, magCalMaxY, magCalMaxZ;
 #define MAG_CAL_DURATION_MS 15000  // 15 seconds
-#define MAG_MIN_MAGNITUDE 20.0     // µT — reject I2C dropout reads
+#define MAG_MIN_MAGNITUDE 5.0      // µT — lowered for steel breadboard environment
 
 // FRAM ring buffer header (64 bytes, stored at FRAM_HEADER_ADDR)
 struct FRAMHeader {
@@ -861,15 +869,81 @@ void loop() {
   // Handle button navigation
   handleButtons();
 
-  // Handle touch input (interrupt-driven)
+  // Handle touch input (interrupt-driven swipe detection)
   if (touchDetected && touchAvailable) {
     touchDetected = false;
     if (ctp.touched()) {
       TS_Point p = ctp.getPoint();
-      // Touch detected — for now just log coordinates
-      // TODO: Map touch to screen actions (screen cycling, etc.)
-      logPrintf("[TOUCH] x=%d y=%d\n", p.x, p.y);
+      // FT6336U reports in native portrait coords (320×480).
+      // With TFT rotation=1 (landscape) + 180° panel mount:
+      //   touchY (0-480) = long axis = screen horizontal
+      //   touchX (0-320) = short axis = screen vertical
+      int16_t screenX = 480 - p.y;  // horizontal (0-479)
+      int16_t screenY = p.x;        // vertical   (0-319)
+
       lastActivityTime = millis();  // Reset sleep timer on touch
+
+      if (!swipeTracking) {
+        // Touch-down: start tracking
+        swipeTracking  = true;
+        swipeStartX    = screenX;
+        swipeStartY    = screenY;
+        swipeStartTime = millis();
+      }
+    } else {
+      // No touch — finger lifted
+      if (swipeTracking) {
+        swipeTracking = false;
+        // We need the last known position, but FT6336U doesn't report on release.
+        // Re-read isn't possible — instead, use interrupt-driven approach:
+        // Poll one more time to see if we can catch final position.
+      }
+    }
+  }
+
+  // Swipe timeout / completion check — poll touch state each loop iteration
+  if (swipeTracking && touchAvailable) {
+    if (ctp.touched()) {
+      TS_Point p = ctp.getPoint();
+      int16_t screenX = 480 - p.y;
+      int16_t screenY = p.x;
+
+      int16_t deltaX = screenX - swipeStartX;
+      int16_t deltaY = screenY - swipeStartY;
+      uint32_t elapsed = millis() - swipeStartTime;
+
+      // Normalize deltaY for 480:320 (3:2) aspect ratio so physical angles are accurate
+      // Then require 1.5:1 ratio (rejects physical angles > ~34° off horizontal)
+      int16_t normDY = abs(deltaY) * 3 / 2;  // Scale 320-range up to match 480-range
+      if (elapsed < SWIPE_MAX_TIME_MS && abs(deltaX) >= SWIPE_MIN_DISTANCE
+          && abs(deltaX) * 2 > normDY * 3) {
+        swipeTracking = false;  // Consume the gesture
+
+        if (deltaX < 0) {
+          // Left swipe → next screen
+          logPrintf("[SWIPE] LEFT → next screen\n");
+          currentScreen++;
+          if (currentScreen >= NUM_SCREENS) currentScreen = 0;
+        } else {
+          // Right swipe → previous screen
+          logPrintf("[SWIPE] RIGHT → prev screen\n");
+          currentScreen--;
+          if (currentScreen < 0) currentScreen = NUM_SCREENS - 1;
+        }
+        geocacheSubScreen = 0;  // Reset sub-screen when swiping away
+        if (spriteAvailable) forceDisplayUpdate = true;
+        else tft.fillScreen(COLOR_BG);
+
+        // Debounce: wait for finger to lift before allowing next swipe
+        delay(150);
+        touchDetected = false;
+      } else if (elapsed >= SWIPE_MAX_TIME_MS) {
+        // Took too long — not a swipe (maybe a long press or tap)
+        swipeTracking = false;
+      }
+    } else {
+      // Finger lifted before threshold — could be a tap (future use)
+      swipeTracking = false;
     }
   }
 
@@ -3989,16 +4063,31 @@ void readIMU() {
   float calX = magX - magOffsetX;
   float calY = magY - magOffsetY;
 
-  imuData.heading = atan2(calY, calX) * 180.0 / PI;
-  if (imuData.heading < 0) imuData.heading += 360;
+  float rawHeading = atan2(calY, calX) * 180.0 / PI;
+  if (rawHeading < 0) rawHeading += 360;
 
-  // Debug: raw mag values
+  // Exponential moving average with circular wrap handling
+  // Alpha 0.05 = steady when still, settles in ~3-4s on rotation
+  static float smoothedHeading = -1;
+  if (smoothedHeading < 0) {
+    smoothedHeading = rawHeading;  // First reading — no history
+  } else {
+    float diff = rawHeading - smoothedHeading;
+    if (diff > 180) diff -= 360;
+    if (diff < -180) diff += 360;
+    smoothedHeading += 0.05 * diff;
+    if (smoothedHeading < 0) smoothedHeading += 360;
+    if (smoothedHeading >= 360) smoothedHeading -= 360;
+  }
+  imuData.heading = smoothedHeading;
+
+  // Debug: raw mag values + magnitude (every 1s for diagnostic visibility)
   static unsigned long lastMagDebug = 0;
-  if (millis() - lastMagDebug > 2000) {
+  if (millis() - lastMagDebug > 1000) {
     lastMagDebug = millis();
     char dbg[96];
-    sprintf(dbg, "[MAG] X=%.1f Y=%.1f Z=%.1f  Cal:%.1f,%.1f  Hdg=%.0f",
-            magX, magY, magZ, calX, calY, imuData.heading);
+    sprintf(dbg, "[MAG] X=%.1f Y=%.1f Z=%.1f  Mag=%.1fuT  Cal:%.1f,%.1f  Hdg=%.0f",
+            magX, magY, magZ, magMagnitude, calX, calY, imuData.heading);
     magLogPrintln(dbg);
   }
 }
@@ -4497,7 +4586,9 @@ void drawScreenCompass(TFT_eSprite* c) {
   char buf[64];
 
   // === Calibration mode overlay — bypass zone system, direct full push ===
+  static bool wasCalibrating = false;
   if (magCalibrating) {
+    wasCalibrating = true;  // Track so we can clean up when cal ends
     zoneBegin();  // Reset zones so zonePushDirty() is a no-op after return
     unsigned long elapsed = millis() - magCalStartTime;
     int remaining = (MAG_CAL_DURATION_MS - elapsed) / 1000;
@@ -4511,7 +4602,8 @@ void drawScreenCompass(TFT_eSprite* c) {
       magCalibrating = false;
       saveMagCal();
 
-      // Show results briefly (draws to canvas, pushed by updateDisplay)
+      // Show results on a clean background
+      spr.fillSprite(COLOR_BG);
       drawHeader(c, "CAL COMPLETE");
       c->setTextColor(COLOR_VALUE);
       c->setTextSize(2);
@@ -4538,6 +4630,8 @@ void drawScreenCompass(TFT_eSprite* c) {
       return;
     }
 
+    // Clear sprite each frame for clean calibration UI
+    spr.fillSprite(COLOR_BG);
     drawHeader(c, "CALIBRATING");
 
     c->setTextColor(COLOR_WARN);
@@ -4550,7 +4644,6 @@ void drawScreenCompass(TFT_eSprite* c) {
     c->drawCircle(c->getCursorX() + 4, 74, 3, COLOR_WARN);
 
     // Countdown
-    c->fillRect(20, 105, 280, 25, COLOR_BG);
     c->setTextColor(COLOR_TEXT);
     c->setTextSize(3);
     c->setCursor(130, 105);
@@ -4561,17 +4654,14 @@ void drawScreenCompass(TFT_eSprite* c) {
     c->setTextSize(1);
     c->setTextColor(COLOR_DIM);
 
-    c->fillRect(20, 145, 280, 10, COLOR_BG);
     c->setCursor(20, 145);
     sprintf(buf, "X: %.1f to %.1f", magCalMinX < 99998 ? magCalMinX : 0, magCalMaxX > -99998 ? magCalMaxX : 0);
     c->print(buf);
 
-    c->fillRect(20, 160, 280, 10, COLOR_BG);
     c->setCursor(20, 160);
     sprintf(buf, "Y: %.1f to %.1f", magCalMinY < 99998 ? magCalMinY : 0, magCalMaxY > -99998 ? magCalMaxY : 0);
     c->print(buf);
 
-    c->fillRect(20, 175, 280, 10, COLOR_BG);
     c->setCursor(20, 175);
     sprintf(buf, "Z: %.1f to %.1f", magCalMinZ < 99998 ? magCalMinZ : 0, magCalMaxZ > -99998 ? magCalMaxZ : 0);
     c->print(buf);
@@ -4582,6 +4672,14 @@ void drawScreenCompass(TFT_eSprite* c) {
   }
 
   // Normal compass mode — use zone system
+  // Detect return from calibration: clear TFT to erase cal screen artifacts
+  if (wasCalibrating) {
+    spr.fillSprite(COLOR_BG);
+    spr.pushSprite(0, 0);  // Full push to clear cal artifacts from TFT
+    zonePrevCount = 0;      // Force all zones dirty
+    wasCalibrating = false;
+  }
+
   zoneBegin();
 
   // Zone 0: Header
