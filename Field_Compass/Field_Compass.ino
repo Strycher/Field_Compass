@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.28"
+#define FW_VERSION "0.29"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -75,7 +75,7 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 #define SD_CS     10  // Adalogger FeatherWing SD slot
 
 // Touch controller (FT6336U capacitive touch, I2C 0x38)
-#define CTP_INT   14  // A4 -> Touch interrupt (active-low, FALLING edge)
+#define CTP_INT   14  // A4 -> Touch interrupt (active-low, CHANGE — fires on touch + release)
 
 // Backlight control (PWM dimming)
 #define TFT_BL     8  // A5 -> LED pin on display module
@@ -127,6 +127,7 @@ const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
 #define SCREEN_IMU 4
 #define SCREEN_OPS 5
 #define SCREEN_DIAGS 6
+#define SCREEN_SETTINGS 7  // Modal overlay — outside NUM_SCREENS, not in swipe/button cycling
 
 // Screen dimensions (landscape mode after rotation)
 #define SCREEN_W 480
@@ -220,12 +221,23 @@ Adafruit_FT6206 ctp = Adafruit_FT6206();
 volatile bool touchDetected = false;
 
 // Swipe gesture detection
-#define SWIPE_MIN_DISTANCE  40   // Minimum px to qualify as a swipe
-#define SWIPE_MAX_TIME_MS   500  // Maximum ms from touch-down to release
+#define SWIPE_MIN_DISTANCE  20   // Minimum px to qualify as a swipe (~4% of 480px width)
+#define SWIPE_MAX_TIME_MS   600  // Maximum ms from touch-down to release
 bool     swipeTracking  = false; // Currently tracking a potential swipe
 int16_t  swipeStartX    = 0;     // Screen-X at touch-down (mapped from touch Y)
 int16_t  swipeStartY    = 0;     // Screen-Y at touch-down (mapped from touch X)
 uint32_t swipeStartTime = 0;     // millis() at touch-down
+
+// Tap detection (for gear icon, future touch targets)
+#define TAP_MAX_DISTANCE  15   // Max px movement to still count as a tap
+#define TAP_MAX_TIME_MS   300  // Max ms for a tap
+bool     tapFiredOnContact = false;  // Guard: true if tap already fired on touch-down
+
+// Settings screen state
+int  settingsSubScreen = 0;    // 0=menu, 1=compass cal, 2=diagnostics, ...
+int  previousScreen    = 0;    // Screen to return to when exiting settings
+int  settingsMenuIndex = 0;    // Currently highlighted menu item
+#define SETTINGS_MENU_COUNT 2  // Number of menu items (Phase 1: placeholder items)
 
 // OLED Display
 Adafruit_SH1107 oled = Adafruit_SH1107(64, 128, &Wire);
@@ -889,14 +901,24 @@ void loop() {
         swipeStartX    = screenX;
         swipeStartY    = screenY;
         swipeStartTime = millis();
+        tapFiredOnContact = false;  // Reset guard for new touch
+
+        // Fire-on-contact: gear icon tap (small corner hitbox — safe for immediate action)
+        if (!tftSleeping && screenX >= 440 && screenY <= 34 && currentScreen != SCREEN_SETTINGS) {
+          handleTap(screenX, screenY);
+          tapFiredOnContact = true;
+          swipeTracking = false;  // Consume gesture — don't also detect as swipe
+        }
       }
     } else {
-      // No touch — finger lifted
+      // No touch — finger lifted (CHANGE interrupt fires on RISING edge too)
       if (swipeTracking) {
+        uint32_t elapsed = millis() - swipeStartTime;
         swipeTracking = false;
-        // We need the last known position, but FT6336U doesn't report on release.
-        // Re-read isn't possible — instead, use interrupt-driven approach:
-        // Poll one more time to see if we can catch final position.
+        // Check for tap on release (backup path — fire-on-contact handles gear icon)
+        if (!tapFiredOnContact && elapsed < TAP_MAX_TIME_MS) {
+          handleTap(swipeStartX, swipeStartY);
+        }
       }
     }
   }
@@ -919,20 +941,23 @@ void loop() {
           && abs(deltaX) * 2 > normDY * 3) {
         swipeTracking = false;  // Consume the gesture
 
-        if (deltaX < 0) {
-          // Left swipe → next screen
-          logPrintf("[SWIPE] LEFT → next screen\n");
-          currentScreen++;
-          if (currentScreen >= NUM_SCREENS) currentScreen = 0;
-        } else {
-          // Right swipe → previous screen
-          logPrintf("[SWIPE] RIGHT → prev screen\n");
-          currentScreen--;
-          if (currentScreen < 0) currentScreen = NUM_SCREENS - 1;
+        // Swipe cycling is disabled on the Settings modal screen
+        if (currentScreen != SCREEN_SETTINGS) {
+          if (deltaX < 0) {
+            // Left swipe → next screen
+            logPrintf("[SWIPE] LEFT → next screen\n");
+            currentScreen++;
+            if (currentScreen >= NUM_SCREENS) currentScreen = 0;
+          } else {
+            // Right swipe → previous screen
+            logPrintf("[SWIPE] RIGHT → prev screen\n");
+            currentScreen--;
+            if (currentScreen < 0) currentScreen = NUM_SCREENS - 1;
+          }
+          geocacheSubScreen = 0;  // Reset sub-screen when swiping away
+          if (spriteAvailable) forceDisplayUpdate = true;
+          else tft.fillScreen(COLOR_BG);
         }
-        geocacheSubScreen = 0;  // Reset sub-screen when swiping away
-        if (spriteAvailable) forceDisplayUpdate = true;
-        else tft.fillScreen(COLOR_BG);
 
         // Debounce: wait for finger to lift before allowing next swipe
         delay(150);
@@ -942,8 +967,13 @@ void loop() {
         swipeTracking = false;
       }
     } else {
-      // Finger lifted before threshold — could be a tap (future use)
+      // Finger lifted before swipe threshold — check if it's a tap
       swipeTracking = false;
+      uint32_t elapsed = millis() - swipeStartTime;
+      if (!tapFiredOnContact && elapsed < TAP_MAX_TIME_MS) {
+        // Short touch with no significant movement → tap
+        handleTap(swipeStartX, swipeStartY);
+      }
     }
   }
 
@@ -1434,7 +1464,7 @@ void initTouch() {
 
   // Configure interrupt pin (CTP_INT is active-low, open-drain)
   pinMode(CTP_INT, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(CTP_INT), touchISR, FALLING);
+  attachInterrupt(digitalPinToInterrupt(CTP_INT), touchISR, CHANGE);
 
   logPrintln("OK (interrupt on GPIO 14)");
 }
@@ -3688,7 +3718,11 @@ void handleButtons() {
   }
 
   // Handle A/B based on current screen and sub-screen
-  if (currentScreen == SCREEN_GEOCACHE && geocacheSubScreen != 0) {
+  if (currentScreen == SCREEN_SETTINGS) {
+    // Settings screen: A/B navigate menu
+    handleSettingsButtons(buttonA, buttonB);
+    lastButtonPress = now;
+  } else if (currentScreen == SCREEN_GEOCACHE && geocacheSubScreen != 0) {
     // Geocache sub-screen navigation
     handleGeocacheButtons(buttonA, buttonB);
     lastButtonPress = now;
@@ -3743,6 +3777,75 @@ void handleGeocacheButtons(bool buttonA, bool buttonB) {
   else tft.fillScreen(COLOR_BG);
 }
 
+// Settings screen menu item labels
+static const char* settingsMenuItems[] = {
+  "Compass Cal",
+  "Diagnostics"
+};
+
+// Handle A/B buttons on Settings screen
+void handleSettingsButtons(bool buttonA, bool buttonB) {
+  if (settingsSubScreen == 0) {
+    // Menu: A=up, B=down
+    if (buttonA && settingsMenuIndex > 0) {
+      settingsMenuIndex--;
+      if (spriteAvailable) forceDisplayUpdate = true;
+    }
+    if (buttonB && settingsMenuIndex < SETTINGS_MENU_COUNT - 1) {
+      settingsMenuIndex++;
+      if (spriteAvailable) forceDisplayUpdate = true;
+    }
+  }
+  // Sub-screens can handle A/B in future phases
+}
+
+// Handle C short press on Settings screen
+void handleSettingsCSelect() {
+  if (settingsSubScreen == 0) {
+    // Menu: select highlighted item
+    settingsSubScreen = settingsMenuIndex + 1;  // 1-indexed sub-screens
+    logPrintf("[SETTINGS] Selected: %s\n", settingsMenuItems[settingsMenuIndex]);
+    if (spriteAvailable) forceDisplayUpdate = true;
+    else tft.fillScreen(COLOR_BG);
+  }
+  // Sub-screen-specific C actions handled here in Phase 2
+}
+
+// Handle C long press on Settings screen (back navigation)
+void handleSettingsCLongPress() {
+  if (settingsSubScreen > 0) {
+    // Sub-screen → back to menu
+    settingsSubScreen = 0;
+    logPrintf("[SETTINGS] Back to menu\n");
+  } else {
+    // Menu → back to previous screen
+    currentScreen = previousScreen;
+    settingsSubScreen = 0;
+    settingsMenuIndex = 0;
+    logPrintf("[SETTINGS] Exit → screen %d\n", currentScreen);
+  }
+  if (spriteAvailable) forceDisplayUpdate = true;
+  else tft.fillScreen(COLOR_BG);
+}
+
+// Handle tap on screen (gear icon, future touch targets)
+void handleTap(int16_t x, int16_t y) {
+  static uint32_t lastTapTime = 0;
+  if (millis() - lastTapTime < 300) return;  // Debounce: ignore taps within 300ms
+  lastTapTime = millis();
+
+  // Gear icon hitbox: right side of header bar
+  if (x >= 440 && y <= 34 && currentScreen != SCREEN_SETTINGS) {
+    previousScreen = currentScreen;
+    currentScreen = SCREEN_SETTINGS;
+    settingsSubScreen = 0;
+    settingsMenuIndex = 0;
+    logPrintf("[TAP] Gear icon → Settings\n");
+    if (spriteAvailable) forceDisplayUpdate = true;
+    else tft.fillScreen(COLOR_BG);
+  }
+}
+
 // Button C short press handler
 void handleButtonCShortPress() {
   // Wake displays if sleeping
@@ -3752,6 +3855,12 @@ void handleButtonCShortPress() {
   }
 
   lastActivityTime = millis();
+
+  if (currentScreen == SCREEN_SETTINGS) {
+    // Settings screen: C short press = select menu item or action
+    handleSettingsCSelect();
+    return;
+  }
 
   if (currentScreen == SCREEN_GEOCACHE) {
     if (geocacheSubScreen == 0) {
@@ -3791,6 +3900,12 @@ void handleButtonCLongPress() {
   }
 
   lastActivityTime = millis();
+
+  if (currentScreen == SCREEN_SETTINGS) {
+    // Settings: long press = back navigation
+    handleSettingsCLongPress();
+    return;
+  }
 
   if (currentScreen == SCREEN_COMPASS) {
     // Start magnetometer calibration
@@ -4159,6 +4274,7 @@ void updateDisplay() {
       case SCREEN_IMU:      drawScreenIMU(c);       break;
       case SCREEN_DIAGS:    drawScreenDiags(c);     break;
       case SCREEN_GEOCACHE: drawScreenGeocache(c);  break;
+      case SCREEN_SETTINGS: drawScreenSettings(c);  break;
     }
 
     // Push only dirty zones to TFT (small partial SPI transfers = no visible flash)
@@ -4181,6 +4297,21 @@ void drawHeader(TFT_eSprite* c, const char* title) {
   c->setTextSize(2);
   c->setCursor(10, 7);
   c->print(title);
+
+  // Draw gear icon on cycling screens (not on Settings itself)
+  if (currentScreen != SCREEN_SETTINGS) {
+    int gx = 458, gy = 15;  // Center of gear icon
+    int r = 8;               // Outer radius
+    c->fillCircle(gx, gy, 5, COLOR_BG);       // Gear body
+    c->fillCircle(gx, gy, 2, COLOR_HEADER);   // Center hole
+    // Draw 6 teeth around the gear
+    for (int i = 0; i < 6; i++) {
+      float angle = i * PI / 3.0;
+      int tx = gx + (int)(r * cos(angle));
+      int ty = gy + (int)(r * sin(angle));
+      c->fillCircle(tx, ty, 2, COLOR_BG);
+    }
+  }
 }
 
 void drawNavBar(TFT_eSprite* c) {
@@ -5039,6 +5170,94 @@ void drawSearchZoneCircle(TFT_eSprite* c, int cx, int cy, float distanceM, float
 
 // Forward declarations for sub-screens
 void drawCacheNavScreen(TFT_eSprite* c);
+// ─── Settings Screen ───────────────────────────────────────────────────────
+
+void drawSettingsMenu(TFT_eSprite* c) {
+  char buf[64];
+
+  // Menu header zone
+  sprintf(buf, "SETTINGS_HDR");
+  if (zoneMark(0, 0, SCREEN_W, 30, buf)) {
+    drawHeader(c, "SETTINGS");
+  }
+
+  // Draw menu items
+  int startY = 45;
+  int itemH  = 40;
+  for (int i = 0; i < SETTINGS_MENU_COUNT; i++) {
+    int y = startY + i * itemH;
+    sprintf(buf, "SMENU_%d_%d", i, (i == settingsMenuIndex) ? 1 : 0);
+    if (zoneMark(10, y, SCREEN_W - 20, itemH - 4, buf)) {
+      if (i == settingsMenuIndex) {
+        // Highlighted item
+        c->fillRoundRect(10, y, SCREEN_W - 20, itemH - 4, 6, 0x2104);  // Dark blue-gray
+        c->setTextColor(COLOR_VALUE);
+      } else {
+        c->fillRoundRect(10, y, SCREEN_W - 20, itemH - 4, 6, 0x0000);  // Black
+        c->setTextColor(COLOR_TEXT);
+      }
+      c->setTextSize(2);
+      c->setCursor(30, y + 10);
+      c->print(settingsMenuItems[i]);
+    }
+  }
+
+  // Navigation hint at bottom
+  sprintf(buf, "SETTINGS_NAV");
+  if (zoneMark(0, SCREEN_H - 25, SCREEN_W, 25, buf)) {
+    c->fillRect(0, SCREEN_H - 25, SCREEN_W, 25, 0x18C3);
+    c->setTextColor(COLOR_DIM);
+    c->setTextSize(1);
+    c->setCursor(10, SCREEN_H - 18);
+    c->print("A/B: Navigate   C: Select   C-hold: Back");
+  }
+}
+
+void drawSettingsPlaceholder(TFT_eSprite* c, const char* title) {
+  char buf[64];
+  sprintf(buf, "SPLACE_%s", title);
+  if (zoneMark(0, 0, SCREEN_W, 30, buf)) {
+    drawHeader(c, title);
+  }
+  sprintf(buf, "SPLACE_BODY_%s", title);
+  if (zoneMark(20, 80, SCREEN_W - 40, 60, buf)) {
+    c->setTextColor(COLOR_DIM);
+    c->setTextSize(2);
+    c->setCursor(20, 80);
+    c->print("Coming in Phase 2");
+    c->setCursor(20, 105);
+    c->setTextSize(1);
+    c->print("Hold C to go back");
+  }
+}
+
+void drawScreenSettings(TFT_eSprite* c) {
+  zoneBegin();
+
+  // Track sub-screen changes — clear and push to erase old artifacts
+  static int lastSettingsSubScreen = -1;
+  if (settingsSubScreen != lastSettingsSubScreen) {
+    c->fillRect(0, 30, SCREEN_W, SCREEN_H - 30, COLOR_BG);
+    spr.pushSprite(0, 0);      // Full push to clear old content
+    zonePrevCount = 0;         // Force all zones dirty
+    lastSettingsSubScreen = settingsSubScreen;
+  }
+
+  switch (settingsSubScreen) {
+    case 1:
+      drawSettingsPlaceholder(c, "COMPASS CAL");
+      break;
+    case 2:
+      drawSettingsPlaceholder(c, "DIAGNOSTICS");
+      break;
+    default:
+      drawSettingsMenu(c);
+      break;
+  }
+}
+
+// ─── Geocache Screen ───────────────────────────────────────────────────────
+
 void drawCacheListScreen(TFT_eSprite* c);
 void drawCacheDetailsScreen(TFT_eSprite* c);
 
@@ -5701,6 +5920,11 @@ void updateOLED() {
       break;
     case SCREEN_GEOCACHE:
       drawOLEDScreenGeocache();
+      break;
+    case SCREEN_SETTINGS:
+      oled.setTextSize(1);
+      oled.setCursor(0, 0);
+      oled.print("SETTINGS");
       break;
   }
 
