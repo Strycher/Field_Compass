@@ -3936,7 +3936,19 @@ void handleSettingsButtons(bool buttonA, bool buttonB) {
       if (spriteAvailable) forceDisplayUpdate = true;
     }
   }
-  // Sub-screens can handle A/B in future phases
+
+  // Configuration sub-screen: A/B scroll TZ selector when open (#98)
+  if (settingsSubScreen == 1 && tzSelectorOpen) {
+    int visible = 220 / 36;  // ~6 items visible
+    if (buttonA && tzScrollOffset > 0) {
+      tzScrollOffset--;
+      if (spriteAvailable) forceDisplayUpdate = true;
+    }
+    if (buttonB && tzScrollOffset + visible < TZ_PRESET_COUNT) {
+      tzScrollOffset++;
+      if (spriteAvailable) forceDisplayUpdate = true;
+    }
+  }
 }
 
 // Handle C short press on Settings screen
@@ -3948,14 +3960,40 @@ void handleSettingsCSelect() {
     if (spriteAvailable) forceDisplayUpdate = true;
     else tft.fillScreen(COLOR_BG);
   }
-  // Sub-screen-specific C actions handled here in Phase 2
+
+  // Configuration: C-short = OK/save (or select TZ if overlay open) (#98)
+  if (settingsSubScreen == 1) {
+    if (tzSelectorOpen) {
+      // Confirm currently highlighted TZ
+      strncpy(posixTZ, tzPresets[tzSelectedIndex].posix, sizeof(posixTZ) - 1);
+      strncpy(tzDisplayName, tzPresets[tzSelectedIndex].name, sizeof(tzDisplayName) - 1);
+      applyTimezone();
+      tzSelectorOpen = false;
+    } else {
+      // OK — save and return to menu
+      saveSettings();
+      settingsSubScreen = 0;
+      logPrintln("[CONFIG] OK via button C");
+    }
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
 }
 
 // Handle C long press on Settings screen (back navigation)
 void handleSettingsCLongPress() {
   if (settingsSubScreen > 0) {
-    // Sub-screen → back to menu
-    settingsSubScreen = 0;
+    if (settingsSubScreen == 1) {
+      // Configuration: close TZ overlay first, then discard+back (#98)
+      if (tzSelectorOpen) {
+        tzSelectorOpen = false;
+      } else {
+        loadSettings();          // Discard unsaved config changes
+        settingsSubScreen = 0;
+      }
+    } else {
+      settingsSubScreen = 0;
+    }
     logPrintf("[SETTINGS] Back to menu\n");
   } else {
     // Menu → back to previous screen
@@ -3966,6 +4004,86 @@ void handleSettingsCLongPress() {
   }
   if (spriteAvailable) forceDisplayUpdate = true;
   else tft.fillScreen(COLOR_BG);
+}
+
+// Handle taps on the Configuration sub-screen (#98)
+void handleConfigTap(int16_t x, int16_t y) {
+  // If TZ selector overlay is open, handle it exclusively
+  if (tzSelectorOpen) {
+    // Overlay area: x=30..450, y=70..250 (list items region)
+    if (x >= 30 && x <= 450 && y >= 70 && y < 250) {
+      int itemH = 36;
+      int listY = 70;  // oy(40) + title(30)
+      int tappedIdx = (y - listY) / itemH + tzScrollOffset;
+      if (tappedIdx >= 0 && tappedIdx < TZ_PRESET_COUNT) {
+        tzSelectedIndex = tappedIdx;
+        strncpy(posixTZ, tzPresets[tappedIdx].posix, sizeof(posixTZ) - 1);
+        strncpy(tzDisplayName, tzPresets[tappedIdx].name, sizeof(tzDisplayName) - 1);
+        applyTimezone();
+        tzSelectorOpen = false;
+        logPrintf("[CONFIG] TZ selected: %s\n", tzDisplayName);
+      }
+    } else {
+      // Tap outside overlay = close it
+      tzSelectorOpen = false;
+    }
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
+
+  // Action bar: Back (x: 10-120, y: 278-312)
+  if (x >= 10 && x <= 120 && y >= 278 && y <= 312) {
+    loadSettings();          // Discard — reload from SD
+    settingsSubScreen = 0;
+    logPrintln("[CONFIG] Back (discarded)");
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
+
+  // Action bar: OK (x: 360-470, y: 278-312)
+  if (x >= 360 && x <= 470 && y >= 278 && y <= 312) {
+    saveSettings();
+    settingsSubScreen = 0;
+    logPrintln("[CONFIG] OK (saved)");
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
+
+  // Timezone dropdown row: y=45..75
+  if (y >= 45 && y <= 75 && x >= 150) {
+    tzSelectorOpen = true;
+    tzScrollOffset = max(0, tzSelectedIndex - 2);  // Center selection in view
+    logPrintln("[CONFIG] TZ selector opened");
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
+
+  // Time format toggle: y=88..118
+  if (y >= 88 && y <= 118) {
+    if (x >= 150 && x <= 280)      { use12Hour = true;  }
+    else if (x >= 290 && x <= 420) { use12Hour = false; }
+    logPrintf("[CONFIG] Time format: %s\n", use12Hour ? "12h" : "24h");
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
+
+  // Temperature toggle: y=132..162
+  if (y >= 132 && y <= 162) {
+    if (x >= 150 && x <= 280)      { useFahrenheit = true;  }
+    else if (x >= 290 && x <= 420) { useFahrenheit = false; }
+    logPrintf("[CONFIG] Temp: %s\n", useFahrenheit ? "F" : "C");
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
+
+  // Distance toggle: y=172..202
+  if (y >= 172 && y <= 202) {
+    if (x >= 150 && x <= 280)      { useMetricUnits = false; }  // Imperial = left
+    else if (x >= 290 && x <= 420) { useMetricUnits = true;  }  // Metric = right
+    logPrintf("[CONFIG] Distance: %s\n", useMetricUnits ? "metric" : "imperial");
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
 }
 
 // Handle tap on screen (gear icon, future touch targets)
@@ -3983,6 +4101,29 @@ void handleTap(int16_t x, int16_t y) {
     logPrintf("[TAP] Gear icon → Settings\n");
     if (spriteAvailable) forceDisplayUpdate = true;
     else tft.fillScreen(COLOR_BG);
+    return;
+  }
+
+  // Settings menu: tap on menu items (#98)
+  if (currentScreen == SCREEN_SETTINGS && settingsSubScreen == 0) {
+    int startY = 45, itemH = 40;
+    for (int i = 0; i < SETTINGS_MENU_COUNT; i++) {
+      int iy = startY + i * itemH;
+      if (x >= 10 && x <= SCREEN_W - 10 && y >= iy && y <= iy + itemH - 4) {
+        settingsMenuIndex = i;
+        settingsSubScreen = i + 1;
+        logPrintf("[TAP] Settings menu: %s\n", settingsMenuItems[i]);
+        if (spriteAvailable) forceDisplayUpdate = true;
+        return;
+      }
+    }
+    return;
+  }
+
+  // Configuration sub-screen taps (#98)
+  if (currentScreen == SCREEN_SETTINGS && settingsSubScreen == 1) {
+    handleConfigTap(x, y);
+    return;
   }
 }
 
