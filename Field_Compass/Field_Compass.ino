@@ -2830,7 +2830,10 @@ void handleWebEnv() {
     float tempF = tempC * 9.0 / 5.0 + 32.0;
     float humid = shtAvailable ? shtData.humidity : envData.humidity;
     const char* src = shtAvailable ? "SHT41" : "BME688";
-    sprintf(buf, "Temp:     %.1fF (%.1fC) [%s]\n", tempF, tempC, src);
+    if (useFahrenheit)
+      sprintf(buf, "Temp:     %.1fF (%.1fC) [%s]\n", tempF, tempC, src);
+    else
+      sprintf(buf, "Temp:     %.1fC (%.1fF) [%s]\n", tempC, tempF, src);
     html += buf;
     sprintf(buf, "Humidity: %.1f%% [%s]\n", humid, src);
     html += buf;
@@ -2996,7 +2999,10 @@ void handleWebDiags() {
   html += "\n=== Temperature Comparison ===\n";
   if (shtAvailable) {
     float shtF = shtData.temperature * 9.0 / 5.0 + 32.0;
-    sprintf(buf, "SHT41:   %.1fF (%.1fC)\n", shtF, shtData.temperature);
+    if (useFahrenheit)
+      sprintf(buf, "SHT41:   %.1fF (%.1fC)\n", shtF, shtData.temperature);
+    else
+      sprintf(buf, "SHT41:   %.1fC (%.1fF)\n", shtData.temperature, shtF);
     html += buf;
     sprintf(buf, "SHT41 H: %.1f%%\n", shtData.humidity);
     html += buf;
@@ -3005,7 +3011,10 @@ void handleWebDiags() {
   }
   if (bmeAvailable) {
     float bmeF = envData.temperature * 9.0 / 5.0 + 32.0;
-    sprintf(buf, "BME688:  %.1fF (%.1fC)\n", bmeF, envData.temperature);
+    if (useFahrenheit)
+      sprintf(buf, "BME688:  %.1fF (%.1fC)\n", bmeF, envData.temperature);
+    else
+      sprintf(buf, "BME688:  %.1fC (%.1fF)\n", envData.temperature, bmeF);
     html += buf;
     sprintf(buf, "BME688 H: %.1f%%\n", envData.humidity);
     html += buf;
@@ -3908,7 +3917,9 @@ void handleGeocacheButtons(bool buttonA, bool buttonB) {
 
 // Settings screen menu item labels
 static const char* settingsMenuItems[] = {
+  "Configuration",
   "Compass Cal",
+  "Operational",
   "Diagnostics"
 };
 
@@ -4765,8 +4776,11 @@ void drawScreenEnv(TFT_eSprite* c) {
     // Zone 1: Temp label
     if (zoneMark(labelX, y, 55, 10, "Temp:"))
       envLabel(labelX, y, "Temp:");
-    // Zone 2: Temp value
-    sprintf(buf, "%.1fF (%.1fC) %s", tempF, tempC, tempSrc);
+    // Zone 2: Temp value (#98 — respects useFahrenheit)
+    if (useFahrenheit)
+      sprintf(buf, "%.1f\xF7""F (%.1fC) %s", tempF, tempC, tempSrc);
+    else
+      sprintf(buf, "%.1f\xF7""C (%.1fF) %s", tempC, tempF, tempSrc);
     if (zoneMark(valueX, y, 250, 10, buf))
       envValue(valueX, y, buf);
     y += lineH;
@@ -5310,6 +5324,213 @@ void drawSearchZoneCircle(TFT_eSprite* c, int cx, int cy, float distanceM, float
 void drawCacheNavScreen(TFT_eSprite* c);
 // ─── Settings Screen ───────────────────────────────────────────────────────
 
+// ─── Reusable Settings UI Widgets (#98) ─────────────────────────────────────
+
+// Draw Back/OK action bar at bottom of screen
+void drawActionBar(TFT_eSprite* c, bool showBack, bool showOK) {
+  // Bar background: y=270 to y=320 (50px tall)
+  c->fillRect(0, 270, SCREEN_W, 50, 0x18C3);
+
+  c->setTextSize(2);
+  if (showBack) {
+    c->fillRoundRect(10, 278, 110, 34, 6, 0x4208);   // Dark gray button
+    c->setTextColor(COLOR_TEXT);
+    c->setCursor(22, 286);
+    c->print("<- Back");
+  }
+  if (showOK) {
+    c->fillRoundRect(360, 278, 110, 34, 6, 0x03E0);  // Dark green button
+    c->setTextColor(COLOR_TEXT);
+    c->setCursor(388, 286);
+    c->print("OK  >");
+  }
+}
+
+// Draw a two-option toggle row. Returns nothing; tap handling is separate.
+// y = top of row, value: false=optA selected, true=optB selected
+void drawToggle(TFT_eSprite* c, int y, const char* label, const char* optA, const char* optB, bool value) {
+  int labelW = 140;
+  int optW   = 130;
+  int optH   = 30;
+  int gap    = 10;
+
+  // Label
+  c->setTextSize(2);
+  c->setTextColor(COLOR_DIM);
+  c->setCursor(20, y + 7);
+  c->print(label);
+
+  // Option A (left) — selected when value==false
+  int ax = labelW + 10;
+  if (!value) {
+    c->fillRoundRect(ax, y, optW, optH, 6, 0x03E0);     // Green = selected
+    c->setTextColor(COLOR_TEXT);
+  } else {
+    c->fillRoundRect(ax, y, optW, optH, 6, 0x2104);     // Dark gray = unselected
+    c->setTextColor(COLOR_DIM);
+  }
+  c->setCursor(ax + 10, y + 7);
+  c->print(optA);
+
+  // Option B (right) — selected when value==true
+  int bx = ax + optW + gap;
+  if (value) {
+    c->fillRoundRect(bx, y, optW, optH, 6, 0x03E0);
+    c->setTextColor(COLOR_TEXT);
+  } else {
+    c->fillRoundRect(bx, y, optW, optH, 6, 0x2104);
+    c->setTextColor(COLOR_DIM);
+  }
+  c->setCursor(bx + 10, y + 7);
+  c->print(optB);
+}
+
+// Draw a dropdown trigger row (label + current value + down arrow indicator)
+void drawDropdown(TFT_eSprite* c, int y, const char* label, const char* currentValue) {
+  int labelW = 140;
+
+  // Label
+  c->setTextSize(2);
+  c->setTextColor(COLOR_DIM);
+  c->setCursor(20, y + 7);
+  c->print(label);
+
+  // Value box with dropdown indicator
+  int vx = labelW + 10;
+  int vw = SCREEN_W - vx - 20;
+  c->fillRoundRect(vx, y, vw, 30, 6, 0x2104);
+  c->setTextColor(COLOR_VALUE);
+  c->setCursor(vx + 10, y + 7);
+  c->print(currentValue);
+
+  // Down-arrow indicator
+  c->setTextColor(COLOR_DIM);
+  c->setCursor(vx + vw - 24, y + 7);
+  c->print("v");
+}
+
+// Draw a scrollable selection overlay for timezone picker
+void drawSelectorOverlay(TFT_eSprite* c, const TZPreset items[], int count, int selectedIdx, int scrollOffset) {
+  int ox = 30, oy = 40, ow = SCREEN_W - 60, oh = 220;
+  int itemH = 36;
+  int visible = oh / itemH;  // ~6 items visible
+
+  // Overlay background
+  c->fillRoundRect(ox, oy, ow, oh, 8, 0x0841);       // Very dark blue
+  c->drawRoundRect(ox, oy, ow, oh, 8, COLOR_DIM);     // Border
+
+  // Title
+  c->setTextSize(2);
+  c->setTextColor(COLOR_HEADER);
+  c->setCursor(ox + 10, oy + 6);
+  c->print("Select Time Zone");
+
+  // List items
+  int listY = oy + 30;
+  for (int i = 0; i < visible && (i + scrollOffset) < count; i++) {
+    int idx = i + scrollOffset;
+    int iy  = listY + i * itemH;
+
+    if (idx == selectedIdx) {
+      c->fillRoundRect(ox + 4, iy, ow - 8, itemH - 4, 4, 0x03E0);  // Green highlight
+      c->setTextColor(COLOR_TEXT);
+    } else {
+      c->fillRoundRect(ox + 4, iy, ow - 8, itemH - 4, 4, 0x0841);
+      c->setTextColor(COLOR_TEXT);
+    }
+    c->setTextSize(2);
+    c->setCursor(ox + 14, iy + 8);
+    char rowBuf[40];
+    sprintf(rowBuf, "%s (UTC%+d)", items[idx].name, items[idx].stdOffset);
+    c->print(rowBuf);
+  }
+
+  // Scroll indicators
+  c->setTextColor(COLOR_DIM);
+  c->setTextSize(1);
+  if (scrollOffset > 0) {
+    c->setCursor(ox + ow / 2 - 10, oy + 22);
+    c->print("^ more");
+  }
+  if (scrollOffset + visible < count) {
+    c->setCursor(ox + ow / 2 - 10, oy + oh - 12);
+    c->print("v more");
+  }
+}
+
+// ─── End Reusable Widgets ───────────────────────────────────────────────────
+
+// Draw the Configuration sub-screen (#98)
+void drawSettingsConfig(TFT_eSprite* c) {
+  char buf[64];
+
+  // Header
+  if (zoneMark(0, 0, SCREEN_W, 30, "SCONFIG_HDR"))
+    drawHeader(c, "CONFIGURATION");
+
+  // Timezone dropdown row — y=45
+  sprintf(buf, "SCONFIG_TZ_%d_%s", tzSelectedIndex, tzSelectorOpen ? "open" : "closed");
+  if (zoneMark(10, 40, SCREEN_W - 20, 36, buf))
+    drawDropdown(c, 45, "Time Zone", tzDisplayName);
+
+  // Time format toggle — y=88
+  sprintf(buf, "SCONFIG_12H_%d", use12Hour ? 1 : 0);
+  if (zoneMark(10, 83, SCREEN_W - 20, 36, buf))
+    drawToggle(c, 88, "Time", "12 Hour", "24 Hour", !use12Hour);
+
+  // Separator line
+  if (zoneMark(20, 122, SCREEN_W - 40, 2, "SCONFIG_SEP"))
+    c->drawFastHLine(20, 123, SCREEN_W - 40, COLOR_DIM);
+
+  // Temperature toggle — y=132
+  sprintf(buf, "SCONFIG_TEMP_%d", useFahrenheit ? 1 : 0);
+  if (zoneMark(10, 127, SCREEN_W - 20, 36, buf))
+    drawToggle(c, 132, "Temp", "\xF7""F", "\xF7""C", !useFahrenheit);
+
+  // Distance toggle — y=172
+  sprintf(buf, "SCONFIG_DIST_%d", useMetricUnits ? 1 : 0);
+  if (zoneMark(10, 167, SCREEN_W - 20, 36, buf))
+    drawToggle(c, 172, "Distance", "Imperial", "Metric", useMetricUnits);
+
+  // Live preview — y=220
+  {
+    struct tm timeinfo;
+    char timeBuf[16] = "--:--";
+    if (getLocalTime(&timeinfo))
+      formatTimeStr(timeBuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, false);
+
+    float tempC = shtAvailable ? shtData.temperature : envData.temperature;
+    float tempF = tempC * 9.0 / 5.0 + 32.0;
+    char tempBuf[16];
+    if (useFahrenheit)
+      sprintf(tempBuf, "%.1f\xF7""F", tempF);
+    else
+      sprintf(tempBuf, "%.1f\xF7""C", tempC);
+
+    const char* distBuf = useMetricUnits ? "1.0 km" : "0.6 mi";
+
+    sprintf(buf, "PREVIEW_%s_%s_%s", timeBuf, tempBuf, distBuf);
+    if (zoneMark(10, 215, SCREEN_W - 20, 40, buf)) {
+      c->fillRect(10, 215, SCREEN_W - 20, 40, COLOR_BG);
+      c->setTextSize(2);
+      c->setTextColor(COLOR_HEADER);
+      c->setCursor(20, 225);
+      c->printf("Preview:  %s  |  %s  |  %s", timeBuf, tempBuf, distBuf);
+    }
+  }
+
+  // Action bar
+  if (zoneMark(0, 270, SCREEN_W, 50, "SCONFIG_BAR"))
+    drawActionBar(c, true, true);
+
+  // TZ selector overlay (drawn LAST, on top of everything)
+  if (tzSelectorOpen) {
+    sprintf(buf, "TZSEL_%d_%d", tzSelectedIndex, tzScrollOffset);
+    if (zoneMark(30, 40, SCREEN_W - 60, 220, buf))
+      drawSelectorOverlay(c, tzPresets, TZ_PRESET_COUNT, tzSelectedIndex, tzScrollOffset);
+  }
+}
+
 void drawSettingsMenu(TFT_eSprite* c) {
   char buf[64];
 
@@ -5383,9 +5604,15 @@ void drawScreenSettings(TFT_eSprite* c) {
 
   switch (settingsSubScreen) {
     case 1:
-      drawSettingsPlaceholder(c, "COMPASS CAL");
+      drawSettingsConfig(c);     // Configuration (#98)
       break;
     case 2:
+      drawSettingsPlaceholder(c, "COMPASS CAL");
+      break;
+    case 3:
+      drawSettingsPlaceholder(c, "OPERATIONAL");
+      break;
+    case 4:
       drawSettingsPlaceholder(c, "DIAGNOSTICS");
       break;
     default:
@@ -5943,15 +6170,24 @@ void drawScreenDiags(TFT_eSprite* c) {
     diagRow(y, "Sensors:", buf, COLOR_VALUE);
   y += lineH;
 
-  // Zone 6: Temps
+  // Zone 6: Temps (#98 — respects useFahrenheit)
   if (shtAvailable && bmeAvailable) {
     float shtF = shtData.temperature * 9.0 / 5.0 + 32.0;
     float bmeF = envData.temperature * 9.0 / 5.0 + 32.0;
-    sprintf(buf, "SHT:%.1fF BME:%.1fF (%+.1f)", shtF, bmeF, shtF - bmeF);
+    if (useFahrenheit)
+      sprintf(buf, "SHT:%.1fF BME:%.1fF (%+.1f)", shtF, bmeF, shtF - bmeF);
+    else
+      sprintf(buf, "SHT:%.1fC BME:%.1fC (%+.1f)", shtData.temperature, envData.temperature, shtData.temperature - envData.temperature);
   } else if (shtAvailable) {
-    sprintf(buf, "SHT:%.1fF BME:N/A", shtData.temperature * 9.0 / 5.0 + 32.0);
+    if (useFahrenheit)
+      sprintf(buf, "SHT:%.1fF BME:N/A", shtData.temperature * 9.0 / 5.0 + 32.0);
+    else
+      sprintf(buf, "SHT:%.1fC BME:N/A", shtData.temperature);
   } else if (bmeAvailable) {
-    sprintf(buf, "SHT:N/A BME:%.1fF", envData.temperature * 9.0 / 5.0 + 32.0);
+    if (useFahrenheit)
+      sprintf(buf, "SHT:N/A BME:%.1fF", envData.temperature * 9.0 / 5.0 + 32.0);
+    else
+      sprintf(buf, "SHT:N/A BME:%.1fC", envData.temperature);
   } else {
     strcpy(buf, "No sensors");
   }
@@ -6178,7 +6414,10 @@ void drawOLEDScreenEnv() {
     float humid = shtAvailable ? shtData.humidity : envData.humidity;
 
     oled.setCursor(0, 10);
-    sprintf(buf, "%.1fF %.1f%% IAQ:%.0f", tempF, humid, envData.iaq);
+    if (useFahrenheit)
+      sprintf(buf, "%.1fF %.1f%% IAQ:%.0f", tempF, humid, envData.iaq);
+    else
+      sprintf(buf, "%.1fC %.1f%% IAQ:%.0f", tempC, humid, envData.iaq);
     oled.print(buf);
 
     oled.setCursor(0, 22);
