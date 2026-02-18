@@ -66,8 +66,7 @@ const char* WIFI_PASS_3 = "5132547071";
 
 // NTP configuration
 const char* NTP_SERVER = "pool.ntp.org";
-const long GMT_OFFSET_SEC = -18000;  // EST = UTC-5
-const int DAYLIGHT_OFFSET_SEC = 3600; // DST +1 hour
+// Timezone handled by POSIX TZ string — see posixTZ global (#98)
 
 // TFT Display pins (ST7796U 3.5" IPS, SPI — also configured in TFT_eSPI User_Setup.h)
 // TFT_CS=18, TFT_DC=17, TFT_RST=16 defined by TFT_eSPI User_Setup.h
@@ -237,7 +236,7 @@ bool     tapFiredOnContact = false;  // Guard: true if tap already fired on touc
 int  settingsSubScreen = 0;    // 0=menu, 1=compass cal, 2=diagnostics, ...
 int  previousScreen    = 0;    // Screen to return to when exiting settings
 int  settingsMenuIndex = 0;    // Currently highlighted menu item
-#define SETTINGS_MENU_COUNT 2  // Number of menu items (Phase 1: placeholder items)
+#define SETTINGS_MENU_COUNT 4  // Configuration, Compass Cal, Operational, Diagnostics (#98)
 
 // OLED Display
 Adafruit_SH1107 oled = Adafruit_SH1107(64, 128, &Wire);
@@ -451,6 +450,39 @@ bool buttonCLongPressHandled = false;
 
 // User settings (#70)
 bool useMetricUnits = false;  // false = imperial (ft/mi), true = metric (m/km)
+bool use12Hour     = true;                                // 12-hour format default (#98)
+bool useFahrenheit = true;                                // Fahrenheit default (#98)
+char posixTZ[48]   = "EST5EDT,M3.2.0,M11.1.0";           // POSIX TZ string (#98)
+char tzDisplayName[24] = "US Eastern";                    // Friendly TZ name (#98)
+int  tzSelectedIndex   = 0;                               // Index in tzPresets[] (#98)
+bool configScreenDirty = true;                            // Force redraw on entry (#98)
+bool tzSelectorOpen    = false;                           // Timezone overlay active (#98)
+int  tzScrollOffset    = 0;                               // Scroll position in TZ list (#98)
+
+// Timezone presets with POSIX TZ strings (#98)
+struct TZPreset {
+  const char* name;
+  const char* posix;
+  int8_t stdOffset;  // For display: "UTC-5"
+};
+
+static const TZPreset tzPresets[] = {
+  {"US Eastern",     "EST5EDT,M3.2.0,M11.1.0",        -5},
+  {"US Central",     "CST6CDT,M3.2.0,M11.1.0",        -6},
+  {"US Mountain",    "MST7MDT,M3.2.0,M11.1.0",        -7},
+  {"US Pacific",     "PST8PDT,M3.2.0,M11.1.0",        -8},
+  {"US Alaska",      "AKST9AKDT,M3.2.0,M11.1.0",      -9},
+  {"US Hawaii",      "HST10",                          -10},
+  {"US Arizona",     "MST7",                            -7},
+  {"UTC",            "UTC0",                              0},
+  {"UK / Ireland",   "GMT0BST,M3.5.0/1,M10.5.0",        0},
+  {"Central Europe", "CET-1CEST,M3.5.0,M10.5.0/3",      1},
+  {"Eastern Europe", "EET-2EEST,M3.5.0/3,M10.5.0/4",    2},
+  {"Japan / Korea",  "JST-9",                             9},
+  {"Australia East", "AEST-10AEDT,M10.1.0,M4.1.0/3",    10},
+  {"New Zealand",    "NZST-12NZDT,M9.5.0,M4.1.0/3",    12},
+};
+#define TZ_PRESET_COUNT 14
 
 // SHT41 data (#48) — primary source for temp/humidity
 struct {
@@ -843,6 +875,7 @@ void setup() {
   if (sdAvailable) {
     loadWeatherHistory();
     loadMagCal();
+    loadSettings();    // Load user prefs (#98)
   }
 
   // Initialize web server
@@ -2313,6 +2346,91 @@ void saveMagCal() {
   logPrintln(msg);
 }
 
+// ─── Settings Persistence (#98) ─────────────────────────────────────────────
+
+// Apply POSIX timezone to system (#98)
+void applyTimezone() {
+  setenv("TZ", posixTZ, 1);
+  tzset();
+  logPrintf("[SETTINGS] TZ applied: %s (%s)\n", tzDisplayName, posixTZ);
+}
+
+// Format current time respecting 12/24h preference (#98)
+// Returns chars written. buf must be >= 16 bytes.
+int formatTimeStr(char* buf, int hour, int minute, int second, bool includeSeconds) {
+  if (use12Hour) {
+    const char* ampm = (hour >= 12) ? "PM" : "AM";
+    int h12 = hour % 12;
+    if (h12 == 0) h12 = 12;
+    if (includeSeconds)
+      return sprintf(buf, "%d:%02d:%02d %s", h12, minute, second, ampm);
+    else
+      return sprintf(buf, "%d:%02d %s", h12, minute, ampm);
+  } else {
+    if (includeSeconds)
+      return sprintf(buf, "%02d:%02d:%02d", hour, minute, second);
+    else
+      return sprintf(buf, "%02d:%02d", hour, minute);
+  }
+}
+
+// Load user settings from SD (#98)
+void loadSettings() {
+  if (!sdHealth.available) return;
+  File f = SD.open("/config/settings.txt", FILE_READ);
+  if (!f) {
+    logPrintln("[SETTINGS] No settings file, using defaults");
+    applyTimezone();  // Apply default TZ
+    return;
+  }
+
+  char line[80];
+  while (f.available()) {
+    int idx = 0;
+    while (f.available() && idx < 79) {
+      char c = f.read();
+      if (c == '\n' || c == '\r') break;
+      line[idx++] = c;
+    }
+    line[idx] = '\0';
+    if (idx == 0) continue;
+
+    char* eq = strchr(line, '=');
+    if (!eq) continue;
+    *eq = '\0';
+    const char* key = line;
+    const char* val = eq + 1;
+
+    if (strcmp(key, "use12Hour") == 0)          use12Hour = atoi(val);
+    else if (strcmp(key, "useFahrenheit") == 0)  useFahrenheit = atoi(val);
+    else if (strcmp(key, "useMetricUnits") == 0) useMetricUnits = atoi(val);
+    else if (strcmp(key, "posixTZ") == 0)        strncpy(posixTZ, val, sizeof(posixTZ) - 1);
+    else if (strcmp(key, "tzName") == 0)         strncpy(tzDisplayName, val, sizeof(tzDisplayName) - 1);
+    else if (strcmp(key, "tzIndex") == 0)        tzSelectedIndex = atoi(val);
+  }
+  f.close();
+  applyTimezone();
+  logPrintf("[SETTINGS] Loaded: 12h=%d F=%d metric=%d tz=%s\n",
+            use12Hour, useFahrenheit, useMetricUnits, tzDisplayName);
+}
+
+// Save user settings to SD (#98)
+void saveSettings() {
+  if (!sdHealth.available) return;
+  if (!SD.exists("/config")) SD.mkdir("/config");
+  File f = SD.open("/config/settings.txt", FILE_WRITE);
+  if (!f) { logPrintln("[SETTINGS] Failed to save settings"); return; }
+
+  f.printf("use12Hour=%d\n", use12Hour ? 1 : 0);
+  f.printf("useFahrenheit=%d\n", useFahrenheit ? 1 : 0);
+  f.printf("useMetricUnits=%d\n", useMetricUnits ? 1 : 0);
+  f.printf("posixTZ=%s\n", posixTZ);
+  f.printf("tzName=%s\n", tzDisplayName);
+  f.printf("tzIndex=%d\n", tzSelectedIndex);
+  f.close();
+  logPrintln("[SETTINGS] Settings saved to SD");
+}
+
 // Load weather history from SD card on boot
 void loadWeatherHistory() {
   if (!sdHealth.available) return;
@@ -2511,7 +2629,8 @@ void initWiFi() {
 
     // Sync NTP time
     logPrint("Syncing NTP time... ");
-    configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
+    configTime(0, 0, NTP_SERVER);   // NTP provides UTC; POSIX TZ handles offset (#98)
+    applyTimezone();                 // Ensure TZ is set after configTime
 
     struct tm timeinfo;
     if (getLocalTime(&timeinfo, 5000)) {
@@ -2608,14 +2727,20 @@ void handleWebOps() {
   // Time
   char buf[64];
   if (gpsData.timeValid) {
-    int hour = gpsData.hour + (GMT_OFFSET_SEC / 3600);
-    if (hour < 0) hour += 24;
-    if (hour >= 24) hour -= 24;
-    sprintf(buf, "Time:    %02d:%02d:%02d GPS\n", hour, gpsData.minute, gpsData.second);
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+      char tbuf[16];
+      formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
+      sprintf(buf, "Time:    %s GPS\n", tbuf);
+    } else {
+      strcpy(buf, "Time:    --:--:-- GPS\n");
+    }
   } else if (ntpSynced) {
     struct tm timeinfo;
     if (getLocalTime(&timeinfo)) {
-      strftime(buf, sizeof(buf), "Time:    %H:%M:%S NTP\n", &timeinfo);
+      char tbuf[16];
+      formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
+      sprintf(buf, "Time:    %s NTP\n", tbuf);
     }
   } else {
     sprintf(buf, "Time:    --:--:-- N/A\n");
@@ -2674,10 +2799,14 @@ void handleWebGPS() {
   } else if (gpsData.receiving) {
     html += "Status: Acquiring fix...\n";
     if (gpsData.timeValid) {
-      int hour = gpsData.hour + (GMT_OFFSET_SEC / 3600);
-      if (hour < 0) hour += 24;
-      if (hour >= 24) hour -= 24;
-      sprintf(buf, "Time:   %02d:%02d:%02d\n", hour, gpsData.minute, gpsData.second);
+      struct tm timeinfo;
+      if (getLocalTime(&timeinfo)) {
+        char tbuf[16];
+        formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
+        sprintf(buf, "Time:   %s\n", tbuf);
+      } else {
+        strcpy(buf, "Time:   --:--:--\n");
+      }
       html += buf;
     }
   } else {
@@ -4044,8 +4173,7 @@ void parseNMEA(char* sentence) {
         gpsTime.tm_sec = gpsData.second;
 
         time_t t = mktime(&gpsTime);
-        // Apply timezone offset to get local time for system
-        t += GMT_OFFSET_SEC + DAYLIGHT_OFFSET_SEC;
+        // GPS provides UTC — set system time as UTC, localtime() handles TZ (#98)
         struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
         settimeofday(&tv, NULL);
 
@@ -4379,14 +4507,20 @@ void drawScreenOps(TFT_eSprite* c) {
   // Zone 2: Time value
   uint16_t timeColor = COLOR_VALUE;
   if (gpsData.timeValid) {
-    int hour = gpsData.hour + (GMT_OFFSET_SEC / 3600);
-    if (hour < 0) hour += 24;
-    if (hour >= 24) hour -= 24;
-    sprintf(buf, "%02d:%02d:%02d GPS", hour, gpsData.minute, gpsData.second);
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+      char tbuf[16];
+      formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
+      sprintf(buf, "%s GPS", tbuf);
+    } else {
+      strcpy(buf, "--:--:-- GPS");
+    }
   } else if (ntpSynced) {
     struct tm timeinfo;
     if (getLocalTime(&timeinfo)) {
-      strftime(buf, sizeof(buf), "%H:%M:%S NTP", &timeinfo);
+      char tbuf[16];
+      formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
+      sprintf(buf, "%s NTP", tbuf);
     } else {
       strcpy(buf, "--:--:-- N/A"); timeColor = COLOR_WARN;
     }
@@ -4551,12 +4685,16 @@ void drawScreenGPS(TFT_eSprite* c) {
       c->println("Need clear sky view");
     }
 
-    // Zone 4: GPS time (if available)
+    // Zone 4: GPS time (if available) — uses localtime() for TZ (#98)
     if (gpsData.timeValid) {
-      int hour = gpsData.hour + (GMT_OFFSET_SEC / 3600);
-      if (hour < 0) hour += 24;
-      if (hour >= 24) hour -= 24;
-      sprintf(buf, "Time: %02d:%02d:%02d", hour, gpsData.minute, gpsData.second);
+      struct tm timeinfo;
+      if (getLocalTime(&timeinfo)) {
+        char tbuf[16];
+        formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
+        sprintf(buf, "Time: %s", tbuf);
+      } else {
+        strcpy(buf, "Time: --:--:--");
+      }
     } else {
       strcpy(buf, "Time: --:--:--");
     }
@@ -5944,14 +6082,20 @@ void drawOLEDScreenOps() {
   // Time
   oled.setCursor(0, 12);
   if (gpsData.timeValid) {
-    int hour = gpsData.hour + (GMT_OFFSET_SEC / 3600);
-    if (hour < 0) hour += 24;
-    if (hour >= 24) hour -= 24;
-    sprintf(buf, "Time: %02d:%02d:%02d", hour, gpsData.minute, gpsData.second);
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+      char tbuf[16];
+      formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
+      sprintf(buf, "Time: %s", tbuf);
+    } else {
+      strcpy(buf, "Time: --:--:--");
+    }
   } else if (ntpSynced) {
     struct tm timeinfo;
     if (getLocalTime(&timeinfo)) {
-      strftime(buf, sizeof(buf), "Time: %H:%M:%S", &timeinfo);
+      char tbuf[16];
+      formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
+      sprintf(buf, "Time: %s", tbuf);
     }
   } else {
     sprintf(buf, "Time: --:--:--");
