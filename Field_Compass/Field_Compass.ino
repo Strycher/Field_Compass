@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.30"
+#define FW_VERSION "0.30.1"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -236,7 +236,7 @@ bool     tapFiredOnContact = false;  // Guard: true if tap already fired on touc
 int  settingsSubScreen = 0;    // 0=menu, 1=compass cal, 2=diagnostics, ...
 int  previousScreen    = 0;    // Screen to return to when exiting settings
 int  settingsMenuIndex = 0;    // Currently highlighted menu item
-#define SETTINGS_MENU_COUNT 4  // Configuration, Compass Cal, Operational, Diagnostics (#98)
+#define SETTINGS_MENU_COUNT 5  // Configuration, Display, Compass Cal, Diagnostics, About (#91/#92)
 
 // OLED Display
 Adafruit_SH1107 oled = Adafruit_SH1107(64, 128, &Wire);
@@ -459,6 +459,12 @@ bool configScreenDirty = true;                            // Force redraw on ent
 bool tzSelectorOpen    = false;                           // Timezone overlay active (#98)
 int  tzScrollOffset    = 0;                               // Scroll position in TZ list (#98)
 int  configFocusRow    = -1;                              // Button focus row: 0=TZ,1=Time,2=Temp,3=Dist (-1=none) (#98)
+
+// Display settings (#91)
+uint8_t  tftBrightness   = 255;                            // PWM 25-255, step 25
+uint32_t tftSleepMs      = 0;                              // 0 = never (default)
+uint32_t oledSleepMs     = 300000;                         // 5 minutes default
+int      displayFocusRow = -1;                             // 0=Bright, 1=TFT timeout, 2=OLED timeout, 3=Back, 4=OK
 
 // Timezone presets with POSIX TZ strings (#98)
 struct TZPreset {
@@ -877,6 +883,7 @@ void setup() {
     loadWeatherHistory();
     loadMagCal();
     loadSettings();    // Load user prefs (#98)
+    analogWrite(TFT_BL, tftBrightness);  // Apply saved brightness (#91)
   }
 
   // Initialize web server
@@ -2420,6 +2427,9 @@ void loadSettings() {
     else if (strcmp(key, "posixTZ") == 0)        strncpy(posixTZ, val, sizeof(posixTZ) - 1);
     else if (strcmp(key, "tzName") == 0)         strncpy(tzDisplayName, val, sizeof(tzDisplayName) - 1);
     else if (strcmp(key, "tzIndex") == 0)        tzSelectedIndex = atoi(val);
+    else if (strcmp(key, "tftBrightness") == 0)  tftBrightness = constrain(atoi(val), 25, 255);
+    else if (strcmp(key, "tftSleepMs") == 0)     tftSleepMs = strtoul(val, NULL, 10);
+    else if (strcmp(key, "oledSleepMs") == 0)    oledSleepMs = strtoul(val, NULL, 10);
   }
   f.close();
   applyTimezone();
@@ -2440,6 +2450,9 @@ void saveSettings() {
   f.printf("posixTZ=%s\n", posixTZ);
   f.printf("tzName=%s\n", tzDisplayName);
   f.printf("tzIndex=%d\n", tzSelectedIndex);
+  f.printf("tftBrightness=%d\n", tftBrightness);
+  f.printf("tftSleepMs=%lu\n", tftSleepMs);
+  f.printf("oledSleepMs=%lu\n", oledSleepMs);
   f.close();
   logPrintln("[SETTINGS] Settings saved to SD");
 }
@@ -3760,7 +3773,7 @@ void wakeTFT() {
   tftSleeping = false;
   tft.writecommand(0x11);  // MIPI DCS Sleep Out
   delay(120);  // ST7796U datasheet: 120ms delay after sleep out
-  analogWrite(TFT_BL, TFT_BL_PWM);   // Backlight on
+  analogWrite(TFT_BL, tftBrightness); // Backlight on (user brightness, #91)
   tft.fillScreen(COLOR_BG);  // Clear screen on wake
   #if DEBUG_SLEEP
   Serial.println("TFT woke up");
@@ -3796,13 +3809,13 @@ void wakeAllDisplays() {
 void checkDisplaySleep() {
   unsigned long elapsed = millis() - lastActivityTime;
 
-  // Check OLED sleep (0 = disabled)
-  if (OLED_SLEEP_TIMEOUT > 0 && !oledSleeping && oledAvailable && elapsed > OLED_SLEEP_TIMEOUT) {
+  // Check OLED sleep (0 = disabled) — uses runtime variable (#91)
+  if (oledSleepMs > 0 && !oledSleeping && oledAvailable && elapsed > oledSleepMs) {
     sleepOLED();
   }
 
-  // Check TFT sleep (0 = disabled, LCD has no burn-in risk)
-  if (TFT_SLEEP_TIMEOUT > 0 && !tftSleeping && elapsed > TFT_SLEEP_TIMEOUT) {
+  // Check TFT sleep (0 = disabled, LCD has no burn-in risk) — uses runtime variable (#91)
+  if (tftSleepMs > 0 && !tftSleeping && elapsed > tftSleepMs) {
     sleepTFT();
   }
 }
@@ -3931,10 +3944,20 @@ void handleGeocacheButtons(bool buttonA, bool buttonB) {
 // Settings screen menu item labels
 static const char* settingsMenuItems[] = {
   "Configuration",
+  "Display",
   "Compass Cal",
-  "Operational",
-  "Diagnostics"
+  "Diagnostics",
+  "About"
 };
+
+// Timeout presets for Display settings (#91)
+static const uint32_t tftTimeoutPresets[]  = {0, 60000, 120000, 300000, 600000, 900000, 1800000};
+static const char*    tftTimeoutLabels[]   = {"Never", "1 min", "2 min", "5 min", "10 min", "15 min", "30 min"};
+static const int      TFT_TIMEOUT_COUNT    = 7;
+
+static const uint32_t oledTimeoutPresets[] = {60000, 120000, 300000, 600000, 900000, 1800000};
+static const char*    oledTimeoutLabels[]  = {"1 min", "2 min", "5 min", "10 min", "15 min", "30 min"};
+static const int      OLED_TIMEOUT_COUNT   = 6;
 
 // Handle A/B buttons on Settings screen
 void handleSettingsButtons(bool buttonA, bool buttonB) {
@@ -3977,6 +4000,19 @@ void handleSettingsButtons(bool buttonA, bool buttonB) {
       }
     }
   }
+
+  // Display sub-screen: A/B = row focus navigation (#91)
+  if (settingsSubScreen == 2) {
+    if (displayFocusRow < 0) displayFocusRow = 0;
+    if (buttonA && displayFocusRow > 0) {
+      displayFocusRow--;
+      if (spriteAvailable) forceDisplayUpdate = true;
+    }
+    if (buttonB && displayFocusRow < 4) {
+      displayFocusRow++;
+      if (spriteAvailable) forceDisplayUpdate = true;
+    }
+  }
 }
 
 // Handle C short press on Settings screen
@@ -3994,7 +4030,8 @@ void handleSettingsCSelect() {
     }
     // Menu: select highlighted item
     settingsSubScreen = settingsMenuIndex + 1;  // 1-indexed sub-screens
-    configFocusRow = -1;  // Reset focus on entry (#98)
+    configFocusRow = -1;    // Reset focus on entry (#98)
+    displayFocusRow = -1;   // Reset display focus too (#91)
     logPrintf("[SETTINGS] Selected: %s\n", settingsMenuItems[settingsMenuIndex]);
     if (spriteAvailable) forceDisplayUpdate = true;
     else tft.fillScreen(COLOR_BG);
@@ -4053,10 +4090,71 @@ void handleSettingsCSelect() {
     return;
   }
 
-  // Placeholder sub-screens: C-short = Back (Back is auto-focused) (#98)
-  if (settingsSubScreen >= 2) {
+  // Display: C-short = activate focused row (#91)
+  if (settingsSubScreen == 2) {
+    if (displayFocusRow >= 0) {
+      switch (displayFocusRow) {
+        case 0: {  // Brightness: step 25→50→...→250→255→25 (wrap)
+          if (tftBrightness >= 255)      tftBrightness = 25;
+          else if (tftBrightness >= 250) tftBrightness = 255;
+          else                           tftBrightness += 25;
+          analogWrite(TFT_BL, tftBrightness);
+          logPrintf("[DISPLAY] Brightness: %d\n", tftBrightness);
+          break;
+        }
+        case 1: {  // TFT timeout: cycle to next preset
+          int idx = 0;
+          for (int i = 0; i < TFT_TIMEOUT_COUNT; i++)
+            if (tftTimeoutPresets[i] == tftSleepMs) { idx = i; break; }
+          tftSleepMs = tftTimeoutPresets[(idx + 1) % TFT_TIMEOUT_COUNT];
+          logPrintf("[DISPLAY] TFT timeout: %lu ms\n", tftSleepMs);
+          break;
+        }
+        case 2: {  // OLED timeout: cycle to next preset
+          int idx = 0;
+          for (int i = 0; i < OLED_TIMEOUT_COUNT; i++)
+            if (oledTimeoutPresets[i] == oledSleepMs) { idx = i; break; }
+          oledSleepMs = oledTimeoutPresets[(idx + 1) % OLED_TIMEOUT_COUNT];
+          logPrintf("[DISPLAY] OLED timeout: %lu ms\n", oledSleepMs);
+          break;
+        }
+        case 3:  // Back — discard and return
+          loadSettings();
+          analogWrite(TFT_BL, tftBrightness);  // Restore saved brightness
+          displayFocusRow = -1;
+          settingsSubScreen = 0;
+          logPrintln("[DISPLAY] Back via button focus");
+          break;
+        case 4:  // OK — save and return
+          saveSettings();
+          displayFocusRow = -1;
+          settingsSubScreen = 0;
+          logPrintln("[DISPLAY] OK via button focus");
+          break;
+      }
+    } else {
+      // No focus — default OK = save and return
+      saveSettings();
+      displayFocusRow = -1;
+      settingsSubScreen = 0;
+      logPrintln("[DISPLAY] OK via button C");
+    }
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
+
+  // Placeholder sub-screens (Compass Cal=3, Diagnostics=4): C-short = Back (#98)
+  if (settingsSubScreen == 3 || settingsSubScreen == 4) {
     settingsSubScreen = 0;
     logPrintln("[SETTINGS] Back (placeholder) via C");
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
+
+  // About: C-short = Back (read-only, no save) (#92)
+  if (settingsSubScreen == 5) {
+    settingsSubScreen = 0;
+    logPrintln("[SETTINGS] Back (About) via C");
     if (spriteAvailable) forceDisplayUpdate = true;
     return;
   }
@@ -4071,8 +4169,15 @@ void handleSettingsCLongPress() {
         tzSelectorOpen = false;
       } else {
         loadSettings();          // Discard unsaved config changes
+        configFocusRow = -1;
         settingsSubScreen = 0;
       }
+    } else if (settingsSubScreen == 2) {
+      // Display: discard and return (#91)
+      loadSettings();
+      analogWrite(TFT_BL, tftBrightness);  // Restore saved brightness
+      displayFocusRow = -1;
+      settingsSubScreen = 0;
     } else {
       settingsSubScreen = 0;
     }
@@ -4220,11 +4325,27 @@ void handleTap(int16_t x, int16_t y) {
     return;
   }
 
-  // Placeholder sub-screen taps: Back button only (#98 bugfix)
-  if (currentScreen == SCREEN_SETTINGS && settingsSubScreen >= 2) {
+  // Display sub-screen taps (#91)
+  if (currentScreen == SCREEN_SETTINGS && settingsSubScreen == 2) {
+    handleDisplayTap(x, y);
+    return;
+  }
+
+  // Placeholder sub-screen taps (Compass Cal=3, Diagnostics=4): Back button only (#98)
+  if (currentScreen == SCREEN_SETTINGS && (settingsSubScreen == 3 || settingsSubScreen == 4)) {
     if (x >= 10 && x <= 120 && y >= 278 && y <= 312) {
       settingsSubScreen = 0;
       logPrintln("[SETTINGS] Back (placeholder)");
+      if (spriteAvailable) forceDisplayUpdate = true;
+    }
+    return;
+  }
+
+  // About sub-screen taps: Back button only (#92)
+  if (currentScreen == SCREEN_SETTINGS && settingsSubScreen == 5) {
+    if (x >= 10 && x <= 120 && y >= 278 && y <= 312) {
+      settingsSubScreen = 0;
+      logPrintln("[SETTINGS] Back (About)");
       if (spriteAvailable) forceDisplayUpdate = true;
     }
     return;
@@ -5848,6 +5969,259 @@ void drawSettingsPlaceholder(TFT_eSprite* c, const char* title) {
   }
 }
 
+// ─── Display Settings Screen (#91) ─────────────────────────────────────────
+
+// Helper: find index in timeout preset array matching a value
+int findTimeoutIndex(const uint32_t presets[], int count, uint32_t value) {
+  for (int i = 0; i < count; i++)
+    if (presets[i] == value) return i;
+  return 0;  // Default to first if not found
+}
+
+void drawSettingsDisplay(TFT_eSprite* c) {
+  char buf[64];
+
+  // Header
+  if (zoneMark(0, 0, SCREEN_W, 30, "SDISPLAY_HDR"))
+    drawHeader(c, "DISPLAY");
+
+  // Row 0: Brightness — label + bar + numeric readout (y=50)
+  int barX = 160, barW = 220, barH = 24, barY = 53;
+  int fillW = map(constrain(tftBrightness, 25, 255), 25, 255, 0, barW);
+  sprintf(buf, "SDISP_BRIGHT_%d_f%d", tftBrightness, displayFocusRow);
+  if (zoneMark(10, 45, SCREEN_W - 20, 36, buf)) {
+    c->setTextSize(2);
+    c->setTextColor(COLOR_DIM);
+    c->setCursor(20, 55);
+    c->print("Brightness");
+    // Bar background
+    c->fillRoundRect(barX, barY, barW, barH, 4, 0x2104);
+    // Filled portion
+    if (fillW > 0)
+      c->fillRoundRect(barX, barY, fillW, barH, 4, 0x03E0);
+    // Numeric readout
+    c->setTextColor(COLOR_VALUE);
+    c->setCursor(barX + barW + 10, 55);
+    c->printf("%d", tftBrightness);
+    // Focus highlight
+    if (displayFocusRow == 0)
+      c->drawRoundRect(8, 47, SCREEN_W - 16, 34, 6, COLOR_HEADER);
+  }
+
+  // Separator
+  if (zoneMark(20, 85, SCREEN_W - 40, 2, "SDISP_SEP1"))
+    c->drawFastHLine(20, 86, SCREEN_W - 40, COLOR_DIM);
+
+  // Row 1: TFT Sleep timeout (y=100)
+  int tftIdx = findTimeoutIndex(tftTimeoutPresets, TFT_TIMEOUT_COUNT, tftSleepMs);
+  sprintf(buf, "SDISP_TFTSLEEP_%d_f%d", tftIdx, displayFocusRow);
+  if (zoneMark(10, 95, SCREEN_W - 20, 36, buf)) {
+    c->setTextSize(2);
+    c->setTextColor(COLOR_DIM);
+    c->setCursor(20, 105);
+    c->print("TFT Sleep");
+    // Value in rounded rect
+    int vx = 160, vw = 120;
+    c->fillRoundRect(vx, 98, vw, 30, 6, 0x2104);
+    c->setTextColor(COLOR_VALUE);
+    c->setCursor(vx + 10, 105);
+    c->print(tftTimeoutLabels[tftIdx]);
+    if (displayFocusRow == 1)
+      c->drawRoundRect(8, 97, SCREEN_W - 16, 34, 6, COLOR_HEADER);
+  }
+
+  // Row 2: OLED Sleep timeout (y=145)
+  int oledIdx = findTimeoutIndex(oledTimeoutPresets, OLED_TIMEOUT_COUNT, oledSleepMs);
+  sprintf(buf, "SDISP_OLEDSLEEP_%d_f%d", oledIdx, displayFocusRow);
+  if (zoneMark(10, 140, SCREEN_W - 20, 36, buf)) {
+    c->setTextSize(2);
+    c->setTextColor(COLOR_DIM);
+    c->setCursor(20, 150);
+    c->print("OLED Sleep");
+    int vx = 160, vw = 120;
+    c->fillRoundRect(vx, 143, vw, 30, 6, 0x2104);
+    c->setTextColor(COLOR_VALUE);
+    c->setCursor(vx + 10, 150);
+    c->print(oledTimeoutLabels[oledIdx]);
+    if (displayFocusRow == 2)
+      c->drawRoundRect(8, 142, SCREEN_W - 16, 34, 6, COLOR_HEADER);
+  }
+
+  // Action bar with focus highlight
+  sprintf(buf, "SDISP_BAR_f%d", displayFocusRow);
+  if (zoneMark(0, 270, SCREEN_W, 50, buf)) {
+    drawActionBar(c, true, true);  // Back + OK
+    if (displayFocusRow == 3) c->drawRoundRect(8, 276, 114, 38, 8, COLOR_HEADER);   // Back focus
+    if (displayFocusRow == 4) c->drawRoundRect(358, 276, 114, 38, 8, COLOR_HEADER); // OK focus
+  }
+}
+
+// Touch handler for Display settings screen (#91)
+void handleDisplayTap(int x, int y) {
+  // Brightness bar area (x: 160-380, y: 45-81)
+  // Steps: 25,50,75,100,125,150,175,200,225,250,255 — 11 stops across 220px
+  if (x >= 160 && x <= 380 && y >= 45 && y <= 81) {
+    int pos = constrain(x - 160, 0, 220);  // 0-220 pixel position
+    int step = (pos * 10) / 220;            // 0-10 (11 stops)
+    if (step >= 10) tftBrightness = 255;
+    else            tftBrightness = 25 + step * 25;  // 25,50,...250
+    analogWrite(TFT_BL, tftBrightness);
+    logPrintf("[DISPLAY] Brightness tap: %d\n", tftBrightness);
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
+
+  // TFT timeout area (x: 160-280, y: 95-131)
+  if (x >= 160 && x <= 280 && y >= 95 && y <= 131) {
+    int idx = findTimeoutIndex(tftTimeoutPresets, TFT_TIMEOUT_COUNT, tftSleepMs);
+    tftSleepMs = tftTimeoutPresets[(idx + 1) % TFT_TIMEOUT_COUNT];
+    logPrintf("[DISPLAY] TFT timeout tap: %lu ms\n", tftSleepMs);
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
+
+  // OLED timeout area (x: 160-280, y: 140-176)
+  if (x >= 160 && x <= 280 && y >= 140 && y <= 176) {
+    int idx = findTimeoutIndex(oledTimeoutPresets, OLED_TIMEOUT_COUNT, oledSleepMs);
+    oledSleepMs = oledTimeoutPresets[(idx + 1) % OLED_TIMEOUT_COUNT];
+    logPrintf("[DISPLAY] OLED timeout tap: %lu ms\n", oledSleepMs);
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
+
+  // Action bar: Back (x: 10-120, y: 278-312)
+  if (x >= 10 && x <= 120 && y >= 278 && y <= 312) {
+    loadSettings();
+    analogWrite(TFT_BL, tftBrightness);  // Restore saved brightness
+    displayFocusRow = -1;
+    settingsSubScreen = 0;
+    logPrintln("[DISPLAY] Back tap");
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
+
+  // Action bar: OK (x: 360-470, y: 278-312)
+  if (x >= 360 && x <= 470 && y >= 278 && y <= 312) {
+    saveSettings();
+    displayFocusRow = -1;
+    settingsSubScreen = 0;
+    logPrintln("[DISPLAY] OK tap");
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
+}
+
+// ─── About / System Info Screen (#92) ──────────────────────────────────────
+
+void drawSettingsAbout(TFT_eSprite* c) {
+  char buf[128];
+
+  // Header
+  if (zoneMark(0, 0, SCREEN_W, 30, "SABOUT_HDR"))
+    drawHeader(c, "ABOUT");
+
+  // Version (static — zone key doesn't change)
+  if (zoneMark(20, 45, SCREEN_W - 40, 26, "SABOUT_VER")) {
+    c->setTextSize(2);
+    c->setTextColor(COLOR_DIM);
+    c->setCursor(20, 50);
+    c->print("Version:");
+    c->setTextColor(COLOR_VALUE);
+    c->setCursor(160, 50);
+    c->print(FW_VERSION);
+  }
+
+  // Uptime — update every second for live display
+  unsigned long uptimeSec = millis() / 1000;
+  int days = uptimeSec / 86400;
+  int hrs  = (uptimeSec % 86400) / 3600;
+  int mins = (uptimeSec % 3600) / 60;
+  int secs = uptimeSec % 60;
+  sprintf(buf, "SABOUT_UP_%lu", uptimeSec);
+  if (zoneMark(20, 75, SCREEN_W - 40, 26, buf)) {
+    c->fillRect(20, 75, SCREEN_W - 40, 26, COLOR_BG);  // Clear before redraw
+    c->setTextSize(2);
+    c->setTextColor(COLOR_DIM);
+    c->setCursor(20, 80);
+    c->print("Uptime:");
+    c->setTextColor(COLOR_VALUE);
+    c->setCursor(160, 80);
+    if (days > 0) c->printf("%dd %02d:%02d:%02d", days, hrs, mins, secs);
+    else          c->printf("%02d:%02d:%02d", hrs, mins, secs);
+  }
+
+  // Heap
+  uint32_t freeHeap = ESP.getFreeHeap() / 1024;
+  uint32_t totalHeap = ESP.getHeapSize() / 1024;
+  sprintf(buf, "SABOUT_HEAP_%lu", freeHeap);
+  if (zoneMark(20, 105, SCREEN_W - 40, 26, buf)) {
+    c->fillRect(20, 105, SCREEN_W - 40, 26, COLOR_BG);
+    c->setTextSize(2);
+    c->setTextColor(COLOR_DIM);
+    c->setCursor(20, 110);
+    c->print("Heap:");
+    c->setTextColor(COLOR_VALUE);
+    c->setCursor(160, 110);
+    c->printf("%lu / %lu KB", freeHeap, totalHeap);
+  }
+
+  // PSRAM
+  uint32_t freePSRAM = ESP.getFreePsram() / 1024;
+  uint32_t totalPSRAM = ESP.getPsramSize() / 1024;
+  sprintf(buf, "SABOUT_PSRAM_%lu", freePSRAM);
+  if (zoneMark(20, 135, SCREEN_W - 40, 26, buf)) {
+    c->fillRect(20, 135, SCREEN_W - 40, 26, COLOR_BG);
+    c->setTextSize(2);
+    c->setTextColor(COLOR_DIM);
+    c->setCursor(20, 140);
+    c->print("PSRAM:");
+    c->setTextColor(COLOR_VALUE);
+    c->setCursor(160, 140);
+    c->printf("%lu / %lu KB", freePSRAM, totalPSRAM);
+  }
+
+  // Battery — use isBatteryConnected() to detect USB-only power
+  bool battConn = batteryAvailable && isBatteryConnected();
+  float battV = battConn ? battery.cellVoltage() : 0;
+  float battP = battConn ? battery.cellPercent() : 0;
+  sprintf(buf, "SABOUT_BATT_%d_%d_%d_%lu", battConn ? 1 : 0, (int)(battP * 10), (int)(battV * 100), millis() / 5000);
+  if (zoneMark(20, 175, SCREEN_W - 40, 26, buf)) {
+    c->fillRect(20, 175, SCREEN_W - 40, 26, COLOR_BG);
+    c->setTextSize(2);
+    c->setTextColor(COLOR_DIM);
+    c->setCursor(20, 180);
+    c->print("Battery:");
+    c->setTextColor(COLOR_VALUE);
+    c->setCursor(160, 180);
+    if (battConn)            c->printf("%.0f%% (%.2fV)", battP, battV);
+    else if (batteryAvailable) c->print("USB Only");
+    else                       c->print("N/A");
+  }
+
+  // WiFi — show SSID + IP
+  bool wifiConn = (WiFi.status() == WL_CONNECTED);
+  String wifiSSID = wifiConn ? WiFi.SSID() : "";
+  sprintf(buf, "SABOUT_WIFI_%d_%s", wifiConn ? 1 : 0,
+          wifiConn ? WiFi.localIP().toString().c_str() : "disc");
+  if (zoneMark(20, 205, SCREEN_W - 40, 26, buf)) {
+    c->fillRect(20, 205, SCREEN_W - 40, 26, COLOR_BG);
+    c->setTextSize(2);
+    c->setTextColor(COLOR_DIM);
+    c->setCursor(20, 210);
+    c->print("WiFi:");
+    c->setTextColor(COLOR_VALUE);
+    c->setCursor(160, 210);
+    if (wifiConn) c->printf("%s %s", wifiSSID.c_str(), WiFi.localIP().toString().c_str());
+    else          c->print("Disconnected");
+  }
+
+  // Action bar: Back only, auto-focused
+  if (zoneMark(0, 270, SCREEN_W, 50, "SABOUT_BAR")) {
+    drawActionBar(c, true, false);   // Back only, no OK
+    c->drawRoundRect(8, 276, 114, 38, 8, COLOR_HEADER);  // Cyan focus — auto-selected
+  }
+}
+
 void drawScreenSettings(TFT_eSprite* c) {
   zoneBegin();
 
@@ -5861,21 +6235,12 @@ void drawScreenSettings(TFT_eSprite* c) {
   }
 
   switch (settingsSubScreen) {
-    case 1:
-      drawSettingsConfig(c);     // Configuration (#98)
-      break;
-    case 2:
-      drawSettingsPlaceholder(c, "COMPASS CAL");
-      break;
-    case 3:
-      drawSettingsPlaceholder(c, "OPERATIONAL");
-      break;
-    case 4:
-      drawSettingsPlaceholder(c, "DIAGNOSTICS");
-      break;
-    default:
-      drawSettingsMenu(c);
-      break;
+    case 1:  drawSettingsConfig(c);                        break;  // Configuration (#98)
+    case 2:  drawSettingsDisplay(c);                       break;  // Display (#91)
+    case 3:  drawSettingsPlaceholder(c, "COMPASS CAL");    break;
+    case 4:  drawSettingsPlaceholder(c, "DIAGNOSTICS");    break;
+    case 5:  drawSettingsAbout(c);                         break;  // About (#92)
+    default: drawSettingsMenu(c);                          break;
   }
 }
 
