@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.29"
+#define FW_VERSION "0.30"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -458,6 +458,7 @@ int  tzSelectedIndex   = 0;                               // Index in tzPresets[
 bool configScreenDirty = true;                            // Force redraw on entry (#98)
 bool tzSelectorOpen    = false;                           // Timezone overlay active (#98)
 int  tzScrollOffset    = 0;                               // Scroll position in TZ list (#98)
+int  configFocusRow    = -1;                              // Button focus row: 0=TZ,1=Time,2=Temp,3=Dist (-1=none) (#98)
 
 // Timezone presets with POSIX TZ strings (#98)
 struct TZPreset {
@@ -1633,7 +1634,7 @@ void initRTC() {
   timeinfo.tm_min = now.minute();
   timeinfo.tm_sec = now.second();
 
-  time_t t = mktime(&timeinfo);
+  time_t t = mktimeUTC(&timeinfo);  // RTC stores UTC — use UTC-aware mktime (#98 bugfix)
   struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
   settimeofday(&tv, NULL);
 
@@ -2353,6 +2354,18 @@ void applyTimezone() {
   setenv("TZ", posixTZ, 1);
   tzset();
   logPrintf("[SETTINGS] TZ applied: %s (%s)\n", tzDisplayName, posixTZ);
+}
+
+// Convert struct tm (interpreted as UTC) to time_t, ignoring active POSIX TZ (#98 bugfix)
+// mktime() always treats its argument as local time; this temporarily sets UTC
+// so GPS/RTC UTC values are stored correctly as time_t.
+time_t mktimeUTC(struct tm* tm) {
+  setenv("TZ", "UTC0", 1);
+  tzset();
+  time_t t = mktime(tm);
+  setenv("TZ", posixTZ, 1);  // Restore user's TZ
+  tzset();
+  return t;
 }
 
 // Format current time respecting 12/24h preference (#98)
@@ -3931,22 +3944,37 @@ void handleSettingsButtons(bool buttonA, bool buttonB) {
       settingsMenuIndex--;
       if (spriteAvailable) forceDisplayUpdate = true;
     }
-    if (buttonB && settingsMenuIndex < SETTINGS_MENU_COUNT - 1) {
+    if (buttonB && settingsMenuIndex < SETTINGS_MENU_COUNT) {  // Includes Back button row (#98)
       settingsMenuIndex++;
       if (spriteAvailable) forceDisplayUpdate = true;
     }
   }
 
-  // Configuration sub-screen: A/B scroll TZ selector when open (#98)
-  if (settingsSubScreen == 1 && tzSelectorOpen) {
-    int visible = 220 / 36;  // ~6 items visible
-    if (buttonA && tzScrollOffset > 0) {
-      tzScrollOffset--;
-      if (spriteAvailable) forceDisplayUpdate = true;
-    }
-    if (buttonB && tzScrollOffset + visible < TZ_PRESET_COUNT) {
-      tzScrollOffset++;
-      if (spriteAvailable) forceDisplayUpdate = true;
+  // Configuration sub-screen: A/B navigation (#98)
+  if (settingsSubScreen == 1) {
+    if (tzSelectorOpen) {
+      // TZ overlay open: A/B scroll the timezone list
+      int visible = 220 / 36;  // ~6 items visible
+      if (buttonA && tzScrollOffset > 0) {
+        tzScrollOffset--;
+        if (spriteAvailable) forceDisplayUpdate = true;
+      }
+      if (buttonB && tzScrollOffset + visible < TZ_PRESET_COUNT) {
+        tzScrollOffset++;
+        if (spriteAvailable) forceDisplayUpdate = true;
+      }
+    } else {
+      // TZ overlay closed: A/B cycle focus through config rows + action bar (#98)
+      // 0=TZ, 1=Time, 2=Temp, 3=Dist, 4=Back, 5=OK
+      if (configFocusRow < 0) configFocusRow = 0;  // Initialize focus on first press
+      if (buttonA && configFocusRow > 0) {
+        configFocusRow--;
+        if (spriteAvailable) forceDisplayUpdate = true;
+      }
+      if (buttonB && configFocusRow < 5) {
+        configFocusRow++;
+        if (spriteAvailable) forceDisplayUpdate = true;
+      }
     }
   }
 }
@@ -3954,14 +3982,26 @@ void handleSettingsButtons(bool buttonA, bool buttonB) {
 // Handle C short press on Settings screen
 void handleSettingsCSelect() {
   if (settingsSubScreen == 0) {
+    // Back button focused — exit settings (#98)
+    if (settingsMenuIndex == SETTINGS_MENU_COUNT) {
+      currentScreen = previousScreen;
+      settingsSubScreen = 0;
+      settingsMenuIndex = 0;
+      logPrintf("[SETTINGS] Back via button C → screen %d\n", currentScreen);
+      if (spriteAvailable) forceDisplayUpdate = true;
+      else tft.fillScreen(COLOR_BG);
+      return;
+    }
     // Menu: select highlighted item
     settingsSubScreen = settingsMenuIndex + 1;  // 1-indexed sub-screens
+    configFocusRow = -1;  // Reset focus on entry (#98)
     logPrintf("[SETTINGS] Selected: %s\n", settingsMenuItems[settingsMenuIndex]);
     if (spriteAvailable) forceDisplayUpdate = true;
     else tft.fillScreen(COLOR_BG);
+    return;  // Prevent fall-through to sub-screen handlers (#98 bugfix)
   }
 
-  // Configuration: C-short = OK/save (or select TZ if overlay open) (#98)
+  // Configuration: C-short = toggle focused row, or OK/save if no focus (#98)
   if (settingsSubScreen == 1) {
     if (tzSelectorOpen) {
       // Confirm currently highlighted TZ
@@ -3969,12 +4009,54 @@ void handleSettingsCSelect() {
       strncpy(tzDisplayName, tzPresets[tzSelectedIndex].name, sizeof(tzDisplayName) - 1);
       applyTimezone();
       tzSelectorOpen = false;
+    } else if (configFocusRow >= 0) {
+      // Toggle the focused config field
+      switch (configFocusRow) {
+        case 0:  // Timezone: open selector
+          tzSelectorOpen = true;
+          tzScrollOffset = max(0, tzSelectedIndex - 2);
+          logPrintln("[CONFIG] TZ selector opened via button");
+          break;
+        case 1:  // Time format
+          use12Hour = !use12Hour;
+          logPrintf("[CONFIG] Time format: %s\n", use12Hour ? "12h" : "24h");
+          break;
+        case 2:  // Temperature
+          useFahrenheit = !useFahrenheit;
+          logPrintf("[CONFIG] Temp: %s\n", useFahrenheit ? "F" : "C");
+          break;
+        case 3:  // Distance
+          useMetricUnits = !useMetricUnits;
+          logPrintf("[CONFIG] Distance: %s\n", useMetricUnits ? "metric" : "imperial");
+          break;
+        case 4:  // Back button — discard and return
+          loadSettings();
+          configFocusRow = -1;
+          settingsSubScreen = 0;
+          logPrintln("[CONFIG] Back via button focus");
+          break;
+        case 5:  // OK button — save and return
+          saveSettings();
+          configFocusRow = -1;
+          settingsSubScreen = 0;
+          logPrintln("[CONFIG] OK via button focus");
+          break;
+      }
     } else {
-      // OK — save and return to menu
+      // No focus active — OK = save and return to menu
       saveSettings();
+      configFocusRow = -1;
       settingsSubScreen = 0;
       logPrintln("[CONFIG] OK via button C");
     }
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
+
+  // Placeholder sub-screens: C-short = Back (Back is auto-focused) (#98)
+  if (settingsSubScreen >= 2) {
+    settingsSubScreen = 0;
+    logPrintln("[SETTINGS] Back (placeholder) via C");
     if (spriteAvailable) forceDisplayUpdate = true;
     return;
   }
@@ -4034,6 +4116,7 @@ void handleConfigTap(int16_t x, int16_t y) {
   // Action bar: Back (x: 10-120, y: 278-312)
   if (x >= 10 && x <= 120 && y >= 278 && y <= 312) {
     loadSettings();          // Discard — reload from SD
+    configFocusRow = -1;
     settingsSubScreen = 0;
     logPrintln("[CONFIG] Back (discarded)");
     if (spriteAvailable) forceDisplayUpdate = true;
@@ -4043,6 +4126,7 @@ void handleConfigTap(int16_t x, int16_t y) {
   // Action bar: OK (x: 360-470, y: 278-312)
   if (x >= 360 && x <= 470 && y >= 278 && y <= 312) {
     saveSettings();
+    configFocusRow = -1;
     settingsSubScreen = 0;
     logPrintln("[CONFIG] OK (saved)");
     if (spriteAvailable) forceDisplayUpdate = true;
@@ -4106,6 +4190,16 @@ void handleTap(int16_t x, int16_t y) {
 
   // Settings menu: tap on menu items (#98)
   if (currentScreen == SCREEN_SETTINGS && settingsSubScreen == 0) {
+    // Back button (x: 10-120, y: 278-312) — exit settings (#98 bugfix)
+    if (x >= 10 && x <= 120 && y >= 278 && y <= 312) {
+      currentScreen = previousScreen;
+      settingsSubScreen = 0;
+      settingsMenuIndex = 0;
+      logPrintf("[SETTINGS] Back → screen %d\n", currentScreen);
+      if (spriteAvailable) forceDisplayUpdate = true;
+      else tft.fillScreen(COLOR_BG);
+      return;
+    }
     int startY = 45, itemH = 40;
     for (int i = 0; i < SETTINGS_MENU_COUNT; i++) {
       int iy = startY + i * itemH;
@@ -4123,6 +4217,16 @@ void handleTap(int16_t x, int16_t y) {
   // Configuration sub-screen taps (#98)
   if (currentScreen == SCREEN_SETTINGS && settingsSubScreen == 1) {
     handleConfigTap(x, y);
+    return;
+  }
+
+  // Placeholder sub-screen taps: Back button only (#98 bugfix)
+  if (currentScreen == SCREEN_SETTINGS && settingsSubScreen >= 2) {
+    if (x >= 10 && x <= 120 && y >= 278 && y <= 312) {
+      settingsSubScreen = 0;
+      logPrintln("[SETTINGS] Back (placeholder)");
+      if (spriteAvailable) forceDisplayUpdate = true;
+    }
     return;
   }
 }
@@ -4324,8 +4428,7 @@ void parseNMEA(char* sentence) {
         gpsTime.tm_min = gpsData.minute;
         gpsTime.tm_sec = gpsData.second;
 
-        time_t t = mktime(&gpsTime);
-        // GPS provides UTC — set system time as UTC, localtime() handles TZ (#98)
+        time_t t = mktimeUTC(&gpsTime);  // GPS provides UTC — use UTC-aware mktime (#98 bugfix)
         struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
         settimeofday(&tv, NULL);
 
@@ -4660,7 +4763,7 @@ void drawScreenOps(TFT_eSprite* c) {
   uint16_t timeColor = COLOR_VALUE;
   if (gpsData.timeValid) {
     struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
+    if (getLocalTime(&timeinfo, 10)) {  // 10ms timeout — never block rendering (#98 bugfix)
       char tbuf[16];
       formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
       sprintf(buf, "%s GPS", tbuf);
@@ -4669,7 +4772,7 @@ void drawScreenOps(TFT_eSprite* c) {
     }
   } else if (ntpSynced) {
     struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
+    if (getLocalTime(&timeinfo, 10)) {  // 10ms timeout (#98 bugfix)
       char tbuf[16];
       formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
       sprintf(buf, "%s NTP", tbuf);
@@ -4840,7 +4943,7 @@ void drawScreenGPS(TFT_eSprite* c) {
     // Zone 4: GPS time (if available) — uses localtime() for TZ (#98)
     if (gpsData.timeValid) {
       struct tm timeinfo;
-      if (getLocalTime(&timeinfo)) {
+      if (getLocalTime(&timeinfo, 10)) {  // 10ms timeout — never block rendering (#98 bugfix)
         char tbuf[16];
         formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
         sprintf(buf, "Time: %s", tbuf);
@@ -5610,34 +5713,42 @@ void drawSettingsConfig(TFT_eSprite* c) {
     drawHeader(c, "CONFIGURATION");
 
   // Timezone dropdown row — y=45
-  sprintf(buf, "SCONFIG_TZ_%d_%s", tzSelectedIndex, tzSelectorOpen ? "open" : "closed");
-  if (zoneMark(10, 40, SCREEN_W - 20, 36, buf))
+  sprintf(buf, "SCONFIG_TZ_%d_%s_f%d", tzSelectedIndex, tzSelectorOpen ? "o" : "c", configFocusRow);
+  if (zoneMark(10, 40, SCREEN_W - 20, 36, buf)) {
     drawDropdown(c, 45, "Time Zone", tzDisplayName);
+    if (configFocusRow == 0) c->drawRoundRect(8, 42, SCREEN_W - 16, 34, 6, COLOR_HEADER);
+  }
 
   // Time format toggle — y=88
-  sprintf(buf, "SCONFIG_12H_%d", use12Hour ? 1 : 0);
-  if (zoneMark(10, 83, SCREEN_W - 20, 36, buf))
+  sprintf(buf, "SCONFIG_12H_%d_f%d", use12Hour ? 1 : 0, configFocusRow);
+  if (zoneMark(10, 83, SCREEN_W - 20, 36, buf)) {
     drawToggle(c, 88, "Time", "12 Hour", "24 Hour", !use12Hour);
+    if (configFocusRow == 1) c->drawRoundRect(8, 85, SCREEN_W - 16, 34, 6, COLOR_HEADER);
+  }
 
   // Separator line
   if (zoneMark(20, 122, SCREEN_W - 40, 2, "SCONFIG_SEP"))
     c->drawFastHLine(20, 123, SCREEN_W - 40, COLOR_DIM);
 
   // Temperature toggle — y=132
-  sprintf(buf, "SCONFIG_TEMP_%d", useFahrenheit ? 1 : 0);
-  if (zoneMark(10, 127, SCREEN_W - 20, 36, buf))
+  sprintf(buf, "SCONFIG_TEMP_%d_f%d", useFahrenheit ? 1 : 0, configFocusRow);
+  if (zoneMark(10, 127, SCREEN_W - 20, 36, buf)) {
     drawToggle(c, 132, "Temp", "\xF7""F", "\xF7""C", !useFahrenheit);
+    if (configFocusRow == 2) c->drawRoundRect(8, 129, SCREEN_W - 16, 34, 6, COLOR_HEADER);
+  }
 
   // Distance toggle — y=172
-  sprintf(buf, "SCONFIG_DIST_%d", useMetricUnits ? 1 : 0);
-  if (zoneMark(10, 167, SCREEN_W - 20, 36, buf))
+  sprintf(buf, "SCONFIG_DIST_%d_f%d", useMetricUnits ? 1 : 0, configFocusRow);
+  if (zoneMark(10, 167, SCREEN_W - 20, 36, buf)) {
     drawToggle(c, 172, "Distance", "Imperial", "Metric", useMetricUnits);
+    if (configFocusRow == 3) c->drawRoundRect(8, 169, SCREEN_W - 16, 34, 6, COLOR_HEADER);
+  }
 
   // Live preview — y=220
   {
     struct tm timeinfo;
     char timeBuf[16] = "--:--";
-    if (getLocalTime(&timeinfo))
+    if (getLocalTime(&timeinfo, 10))  // 10ms timeout — never block rendering (#98 bugfix)
       formatTimeStr(timeBuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, false);
 
     float tempC = shtAvailable ? shtData.temperature : envData.temperature;
@@ -5660,9 +5771,13 @@ void drawSettingsConfig(TFT_eSprite* c) {
     }
   }
 
-  // Action bar
-  if (zoneMark(0, 270, SCREEN_W, 50, "SCONFIG_BAR"))
+  // Action bar with focus highlight (#98)
+  sprintf(buf, "SCONFIG_BAR_f%d", configFocusRow);
+  if (zoneMark(0, 270, SCREEN_W, 50, buf)) {
     drawActionBar(c, true, true);
+    if (configFocusRow == 4) c->drawRoundRect(8, 276, 114, 38, 8, COLOR_HEADER);   // Back focus
+    if (configFocusRow == 5) c->drawRoundRect(358, 276, 114, 38, 8, COLOR_HEADER); // OK focus
+  }
 
   // TZ selector overlay (drawn LAST, on top of everything)
   if (tzSelectorOpen) {
@@ -5702,14 +5817,12 @@ void drawSettingsMenu(TFT_eSprite* c) {
     }
   }
 
-  // Navigation hint at bottom
-  sprintf(buf, "SETTINGS_NAV");
-  if (zoneMark(0, SCREEN_H - 25, SCREEN_W, 25, buf)) {
-    c->fillRect(0, SCREEN_H - 25, SCREEN_W, 25, 0x18C3);
-    c->setTextColor(COLOR_DIM);
-    c->setTextSize(1);
-    c->setCursor(10, SCREEN_H - 18);
-    c->print("A/B: Navigate   C: Select   C-hold: Back");
+  // Action bar with Back button + focus highlight (#98)
+  sprintf(buf, "SETTINGS_BAR_%d", settingsMenuIndex);
+  if (zoneMark(0, 270, SCREEN_W, 50, buf)) {
+    drawActionBar(c, true, false);   // Back only, no OK
+    if (settingsMenuIndex == SETTINGS_MENU_COUNT)
+      c->drawRoundRect(8, 276, 114, 38, 8, COLOR_HEADER);  // Cyan focus on Back
   }
 }
 
@@ -5725,9 +5838,13 @@ void drawSettingsPlaceholder(TFT_eSprite* c, const char* title) {
     c->setTextSize(2);
     c->setCursor(20, 80);
     c->print("Coming in Phase 2");
-    c->setCursor(20, 105);
-    c->setTextSize(1);
-    c->print("Hold C to go back");
+  }
+
+  // Action bar with Back button + auto-focus highlight (#98)
+  sprintf(buf, "SPLACE_BAR_%s", title);
+  if (zoneMark(0, 270, SCREEN_W, 50, buf)) {
+    drawActionBar(c, true, false);   // Back only, no OK
+    c->drawRoundRect(8, 276, 114, 38, 8, COLOR_HEADER);  // Cyan focus — Back is auto-selected
   }
 }
 
@@ -6460,7 +6577,7 @@ void drawOLEDScreenOps() {
   oled.setCursor(0, 12);
   if (gpsData.timeValid) {
     struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
+    if (getLocalTime(&timeinfo, 10)) {  // 10ms timeout — never block rendering (#98 bugfix)
       char tbuf[16];
       formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
       sprintf(buf, "Time: %s", tbuf);
@@ -6469,7 +6586,7 @@ void drawOLEDScreenOps() {
     }
   } else if (ntpSynced) {
     struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
+    if (getLocalTime(&timeinfo, 10)) {  // 10ms timeout (#98 bugfix)
       char tbuf[16];
       formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
       sprintf(buf, "Time: %s", tbuf);
