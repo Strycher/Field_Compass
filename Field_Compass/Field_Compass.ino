@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.31.7"
+#define FW_VERSION "0.31.8"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -3018,7 +3018,7 @@ void handleWebDiags() {
     html += buf;
   } else {
     html += "Status:   Not Calibrated\n";
-    html += "          (Hold C on compass screen)\n";
+    html += "          (Settings > Compass Cal)\n";
   }
 
   // Temp comparison SHT41 vs BME688 (#48)
@@ -4491,18 +4491,9 @@ void handleButtonCLongPress() {
     return;
   }
 
-  if (currentScreen == SCREEN_COMPASS) {
-    // Start magnetometer calibration
-    if (!magCalibrating && magAvailable) {
-      magCalibrating = true;
-      magCalStartTime = millis();
-      magCalMinX = magCalMinY = magCalMinZ = 99999;
-      magCalMaxX = magCalMaxY = magCalMaxZ = -99999;
-      if (spriteAvailable) forceDisplayUpdate = true;
-      else tft.fillScreen(COLOR_BG);
-      logPrintln("[MAG] Calibration started — rotate device 360 degrees");
-    }
-  } else if (currentScreen == SCREEN_GEOCACHE) {
+  // Compass calibration removed from C-long-press — now in Settings > Compass Cal (#89)
+
+  if (currentScreen == SCREEN_GEOCACHE) {
     if (geocacheSubScreen == 1) {
       // List screen: long press goes to details
       geocacheSubScreen = 2;
@@ -5310,100 +5301,7 @@ void drawScreenEnv(TFT_eSprite* c) {
 void drawScreenCompass(TFT_eSprite* c) {
   char buf[64];
 
-  // === Calibration mode overlay — bypass zone system, direct full push ===
-  static bool wasCalibrating = false;
-  if (magCalibrating) {
-    wasCalibrating = true;  // Track so we can clean up when cal ends
-    zoneBegin();  // Reset zones so zonePushDirty() is a no-op after return
-    unsigned long elapsed = millis() - magCalStartTime;
-    int remaining = (MAG_CAL_DURATION_MS - elapsed) / 1000;
-
-    if (elapsed >= MAG_CAL_DURATION_MS) {
-      // Calibration complete — compute offsets
-      magOffsetX = (magCalMaxX + magCalMinX) / 2.0;
-      magOffsetY = (magCalMaxY + magCalMinY) / 2.0;
-      magOffsetZ = (magCalMaxZ + magCalMinZ) / 2.0;
-      magCalibrated = true;
-      magCalibrating = false;
-      saveMagCal();
-
-      // Show results on a clean background
-      spr.fillSprite(COLOR_BG);
-      drawHeader(c, "CAL COMPLETE");
-      c->setTextColor(COLOR_VALUE);
-      c->setTextSize(2);
-      c->setCursor(20, 60);
-      c->print("Offsets saved:");
-      c->setTextSize(1);
-      c->setCursor(20, 90);
-      sprintf(buf, "X: %.2f", magOffsetX);
-      c->print(buf);
-      c->setCursor(20, 105);
-      sprintf(buf, "Y: %.2f", magOffsetY);
-      c->print(buf);
-      c->setCursor(20, 120);
-      sprintf(buf, "Z: %.2f", magOffsetZ);
-      c->print(buf);
-
-      char msg[80];
-      sprintf(msg, "[MAG] Cal complete: X=%.2f Y=%.2f Z=%.2f", magOffsetX, magOffsetY, magOffsetZ);
-      logPrintln(msg);
-
-      // Force push + delay so user sees results before next frame clears
-      if (spriteAvailable) { spr.pushSprite(0, 0); }
-      delay(3000);
-      return;
-    }
-
-    // Clear sprite each frame for clean calibration UI
-    spr.fillSprite(COLOR_BG);
-    drawHeader(c, "CALIBRATING");
-
-    c->setTextColor(COLOR_WARN);
-    c->setTextSize(2);
-    c->setCursor(20, 50);
-    c->print("Rotate device");
-    c->setCursor(20, 72);
-    c->print("slowly 360");
-    // Degree symbol
-    c->drawCircle(c->getCursorX() + 4, 74, 3, COLOR_WARN);
-
-    // Countdown
-    c->setTextColor(COLOR_TEXT);
-    c->setTextSize(3);
-    c->setCursor(130, 105);
-    sprintf(buf, "%d", remaining > 0 ? remaining : 0);
-    c->print(buf);
-
-    // Live min/max
-    c->setTextSize(1);
-    c->setTextColor(COLOR_DIM);
-
-    c->setCursor(20, 145);
-    sprintf(buf, "X: %.1f to %.1f", magCalMinX < 99998 ? magCalMinX : 0, magCalMaxX > -99998 ? magCalMaxX : 0);
-    c->print(buf);
-
-    c->setCursor(20, 160);
-    sprintf(buf, "Y: %.1f to %.1f", magCalMinY < 99998 ? magCalMinY : 0, magCalMaxY > -99998 ? magCalMaxY : 0);
-    c->print(buf);
-
-    c->setCursor(20, 175);
-    sprintf(buf, "Z: %.1f to %.1f", magCalMinZ < 99998 ? magCalMinZ : 0, magCalMaxZ > -99998 ? magCalMaxZ : 0);
-    c->print(buf);
-
-    // Direct full push for calibration UI (bypasses zone system)
-    if (spriteAvailable) { spr.pushSprite(0, 0); }
-    return;
-  }
-
-  // Normal compass mode — use zone system
-  // Detect return from calibration: clear TFT to erase cal screen artifacts
-  if (wasCalibrating) {
-    spr.fillSprite(COLOR_BG);
-    spr.pushSprite(0, 0);  // Full push to clear cal artifacts from TFT
-    zonePrevCount = 0;      // Force all zones dirty
-    wasCalibrating = false;
-  }
+  // Calibration overlay removed — now in Settings > Compass Cal (#89)
 
   zoneBegin();
 
