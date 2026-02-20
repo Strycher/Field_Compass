@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.31.5"
+#define FW_VERSION "0.31.6"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -6133,6 +6133,110 @@ void handleDisplayTap(int x, int y) {
 
 void drawSettingsCompassCal(TFT_eSprite* c) {
   char buf[ZONE_KEY_LEN];
+
+  // === Calibration active state — bypass zones, full sprite push each frame ===
+  static bool wasCalibrating = false;
+  if (magCalibrating) {
+    wasCalibrating = true;
+    zoneBegin();  // Reset zones so zonePushDirty() is a no-op after return
+    unsigned long elapsed = millis() - magCalStartTime;
+    int remaining = (MAG_CAL_DURATION_MS - elapsed) / 1000;
+
+    if (elapsed >= MAG_CAL_DURATION_MS) {
+      // Calibration complete — compute hard-iron offsets
+      magOffsetX = (magCalMaxX + magCalMinX) / 2.0;
+      magOffsetY = (magCalMaxY + magCalMinY) / 2.0;
+      magOffsetZ = (magCalMaxZ + magCalMinZ) / 2.0;
+      magCalibrated = true;
+      magCalibrating = false;
+      saveMagCal();
+
+      // Show "CAL COMPLETE" screen with offsets for 3 seconds
+      spr.fillSprite(COLOR_BG);
+      drawHeader(c, "CAL COMPLETE");
+      c->setTextColor(COLOR_VALUE);
+      c->setTextSize(2);
+      c->setCursor(20, 60);
+      c->print("Offsets saved:");
+      c->setTextSize(2);
+      c->setCursor(20, 100);
+      sprintf(buf, "X: %.2f", magOffsetX);
+      c->print(buf);
+      c->setCursor(20, 130);
+      sprintf(buf, "Y: %.2f", magOffsetY);
+      c->print(buf);
+      c->setCursor(20, 160);
+      sprintf(buf, "Z: %.2f", magOffsetZ);
+      c->print(buf);
+
+      char msg[80];
+      sprintf(msg, "[MAG] Cal complete: X=%.2f Y=%.2f Z=%.2f", magOffsetX, magOffsetY, magOffsetZ);
+      logPrintln(msg);
+
+      if (spriteAvailable) { spr.pushSprite(0, 0); }
+      delay(3000);
+      return;  // Returns to idle screen on next frame
+    }
+
+    // Active calibration UI with progress ring
+    spr.fillSprite(COLOR_BG);
+    drawHeader(c, "CALIBRATING");
+
+    // Progress ring — center (240, 130), outer=70, inner=58
+    int progressDeg = (int)((elapsed * 360UL) / MAG_CAL_DURATION_MS);
+
+    // Background ring (full circle, dark gray)
+    c->drawArc(240, 130, 70, 58, 0, 360, 0x2104, COLOR_BG, true);
+
+    // Progress arc — starts at 12 o'clock (180° in TFT_eSPI), sweeps clockwise
+    if (progressDeg > 0) {
+      int arcStart = 180;
+      int arcEnd = (180 + progressDeg) % 360;
+      c->drawArc(240, 130, 70, 58, arcStart, arcEnd, 0x03E0, COLOR_BG, true);
+    }
+
+    // Countdown number centered inside the ring
+    c->setTextColor(COLOR_TEXT);
+    c->setTextSize(4);
+    sprintf(buf, "%d", remaining > 0 ? remaining : 0);
+    int tw = strlen(buf) * 24;  // size 4 ≈ 24px per char
+    c->setCursor(240 - tw / 2, 118);
+    c->print(buf);
+
+    // "Rotate device slowly 360°" instruction below ring
+    c->setTextColor(COLOR_WARN);
+    c->setTextSize(2);
+    c->setCursor(80, 215);
+    c->print("Rotate device slowly 360");
+    c->drawCircle(c->getCursorX() + 4, 217, 3, COLOR_WARN);  // Degree symbol
+
+    // Live min/max values
+    c->setTextSize(1);
+    c->setTextColor(COLOR_DIM);
+    c->setCursor(20, 245);
+    sprintf(buf, "X: %.1f to %.1f", magCalMinX < 99998 ? magCalMinX : 0, magCalMaxX > -99998 ? magCalMaxX : 0);
+    c->print(buf);
+    c->setCursor(20, 260);
+    sprintf(buf, "Y: %.1f to %.1f", magCalMinY < 99998 ? magCalMinY : 0, magCalMaxY > -99998 ? magCalMaxY : 0);
+    c->print(buf);
+    c->setCursor(20, 275);
+    sprintf(buf, "Z: %.1f to %.1f", magCalMinZ < 99998 ? magCalMinZ : 0, magCalMaxZ > -99998 ? magCalMaxZ : 0);
+    c->print(buf);
+
+    // Direct full push (bypasses zone system)
+    if (spriteAvailable) { spr.pushSprite(0, 0); }
+    return;
+  }
+
+  // Cleanup on return from calibration — force full redraw of idle screen
+  if (wasCalibrating) {
+    spr.fillSprite(COLOR_BG);
+    spr.pushSprite(0, 0);
+    zonePrevCount = 0;
+    wasCalibrating = false;
+  }
+
+  // === Idle state — zone-based rendering ===
 
   // Auto-focus: default to row 0 (Start Calibration) on first draw
   if (compassCalFocusRow < 0) compassCalFocusRow = 0;
