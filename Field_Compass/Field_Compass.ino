@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.31.2"
+#define FW_VERSION "0.31.3"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -118,15 +118,14 @@ const char* NTP_SERVER = "pool.ntp.org";
 #define DEBUG_TFT   1  // TFT display state logging (P1 blank bug debug)
 
 // Screen settings
-#define NUM_SCREENS 7
+#define NUM_SCREENS 6
 #define SCREEN_COMPASS 0
 #define SCREEN_GEOCACHE 1  // Geocaching navigation (#70)
 #define SCREEN_ENV 2
 #define SCREEN_GPS 3
 #define SCREEN_IMU 4
 #define SCREEN_OPS 5
-#define SCREEN_DIAGS 6
-#define SCREEN_SETTINGS 7  // Modal overlay — outside NUM_SCREENS, not in swipe/button cycling
+#define SCREEN_SETTINGS 6  // Modal overlay — outside NUM_SCREENS, not in swipe/button cycling
 
 // Screen dimensions (landscape mode after rotation)
 #define SCREEN_W 480
@@ -4778,7 +4777,6 @@ void updateDisplay() {
       case SCREEN_GPS:      drawScreenGPS(c);       break;
       case SCREEN_ENV:      drawScreenEnv(c);       break;
       case SCREEN_IMU:      drawScreenIMU(c);       break;
-      case SCREEN_DIAGS:    drawScreenDiags(c);     break;
       case SCREEN_GEOCACHE: drawScreenGeocache(c);  break;
       case SCREEN_SETTINGS: drawScreenSettings(c);  break;
     }
@@ -4827,7 +4825,7 @@ void drawNavBar(TFT_eSprite* c) {
   c->setTextColor(COLOR_TEXT);
   c->setTextSize(2);
 
-  // Screen indicators - adjusted spacing for 5 screens
+  // Screen indicators - adjusted spacing for 6 screens
   int startX = 60;
   int spacing = 36;
   for (int i = 0; i < NUM_SCREENS; i++) {
@@ -6933,172 +6931,7 @@ void drawCacheDetailsScreen(TFT_eSprite* c) {
   }
 }
 
-void drawScreenDiags(TFT_eSprite* c) {
-  zoneBegin();
-  char buf[ZONE_KEY_LEN];
-
-  int y = 38;
-  int labelX = 10;
-  int vX = 60;  // Value start (label+value on same row)
-  int lineH = 24;
-
-  // Helper: draw a diag row (label in COLOR_HEADER + value in given color)
-  auto diagRow = [&](int y, const char* label, const char* value, uint16_t valColor) {
-    c->setTextSize(1);
-    c->setTextColor(COLOR_HEADER);
-    c->setCursor(labelX, y);
-    c->print(label);
-    c->setTextColor(valColor);
-    c->setCursor(vX, y);
-    c->fillRect(vX, y, 260, 10, COLOR_BG);
-    c->print(value);
-  };
-
-  // Zone 0: Header
-  if (zoneMark(0, 0, SCREEN_W, 30, "DIAGNOSTICS"))
-    drawHeader(c, "DIAGNOSTICS");
-
-  // Zone 1: BSEC
-  sprintf(buf, "Load:%s Save:%s Acc:%s",
-          bsecStateLoaded ? "Y" : "N", bsecStateSaved ? "Y" : "N",
-          getIaqAccuracyText(envData.iaqAccuracy));
-  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
-    diagRow(y, "BSEC:", buf, bsecStateLoaded ? COLOR_VALUE : COLOR_DIM);
-  y += lineH;
-
-  // Zone 2: Weather
-  sprintf(buf, "Mem:%d Files:%d Tot:%d",
-          weatherHistoryCount, weatherLogFileCount, weatherLogEntryCount);
-  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
-    diagRow(y, "Weather:", buf, COLOR_VALUE);
-  y += lineH;
-
-  // Zone 3: Heap
-  sprintf(buf, "%luK / %luK",
-          (unsigned long)ESP.getFreeHeap() / 1024,
-          (unsigned long)ESP.getHeapSize() / 1024);
-  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
-    diagRow(y, "Heap:", buf, COLOR_VALUE);
-  y += lineH;
-
-  // Zone 4: PSRAM
-  if (psramFound()) {
-    sprintf(buf, "%luK / %luK  Spr:%s",
-            (unsigned long)ESP.getFreePsram() / 1024,
-            (unsigned long)ESP.getPsramSize() / 1024,
-            spriteAvailable ? "Y" : "N");
-  } else {
-    strcpy(buf, "Not available");
-  }
-  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
-    diagRow(y, "PSRAM:", buf, psramFound() ? COLOR_VALUE : COLOR_DIM);
-  y += lineH;
-
-  // Zone 5: Sensors
-  sprintf(buf, "BME:%s SHT:%s IMU:%s Bat:%s FRAM:%s CTP:%s",
-          bmeAvailable ? "Y" : "N", shtAvailable ? "Y" : "N",
-          imuAvailable ? "Y" : "N", batteryAvailable ? "Y" : "N",
-          framAvailable ? "Y" : "N", touchAvailable ? "Y" : "N");
-  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
-    diagRow(y, "Sensors:", buf, COLOR_VALUE);
-  y += lineH;
-
-  // Zone 6: Temps (#98 — respects useFahrenheit)
-  if (shtAvailable && bmeAvailable) {
-    float shtF = shtData.temperature * 9.0 / 5.0 + 32.0;
-    float bmeF = envData.temperature * 9.0 / 5.0 + 32.0;
-    if (useFahrenheit)
-      sprintf(buf, "SHT:%.1fF BME:%.1fF (%+.1f)", shtF, bmeF, shtF - bmeF);
-    else
-      sprintf(buf, "SHT:%.1fC BME:%.1fC (%+.1f)", shtData.temperature, envData.temperature, shtData.temperature - envData.temperature);
-  } else if (shtAvailable) {
-    if (useFahrenheit)
-      sprintf(buf, "SHT:%.1fF BME:N/A", shtData.temperature * 9.0 / 5.0 + 32.0);
-    else
-      sprintf(buf, "SHT:%.1fC BME:N/A", shtData.temperature);
-  } else if (bmeAvailable) {
-    if (useFahrenheit)
-      sprintf(buf, "SHT:N/A BME:%.1fF", envData.temperature * 9.0 / 5.0 + 32.0);
-    else
-      sprintf(buf, "SHT:N/A BME:%.1fC", envData.temperature);
-  } else {
-    strcpy(buf, "No sensors");
-  }
-  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
-    diagRow(y, "Temps:", buf, COLOR_VALUE);
-  y += lineH;
-
-  // Zone 7: GPS
-  uint16_t gpsColor = COLOR_VALUE;
-  if (gpsHadFirstFix) {
-    sprintf(buf, "Fix in %lus", gpsFirstFixTime / 1000);
-  } else if (gpsHadFirstReceive) {
-    unsigned long elapsed = millis() / 1000;
-    sprintf(buf, "Acquiring (%lum %lus)", elapsed / 60, elapsed % 60);
-    gpsColor = COLOR_WARN;
-  } else {
-    strcpy(buf, "No data"); gpsColor = COLOR_DIM;
-  }
-  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
-    diagRow(y, "GPS:", buf, gpsColor);
-  y += lineH;
-
-  // Zone 8: MagCal
-  if (magCalibrated) {
-    sprintf(buf, "%.1f, %.1f, %.1f", magOffsetX, magOffsetY, magOffsetZ);
-  } else {
-    strcpy(buf, "None (hold C on compass)");
-  }
-  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
-    diagRow(y, "MagCal:", buf, magCalibrated ? COLOR_VALUE : COLOR_DIM);
-  y += lineH;
-
-  // Zone 9: Storage
-  uint16_t sdColor = COLOR_VALUE;
-  if (sdHealth.available) {
-    unsigned long ageMin = (millis() - sdHealth.lastSuccess) / 60000;
-    if (sdHealth.errorCount == 0) {
-      sprintf(buf, "SD:OK %lum OLED:%s", ageMin, oledAvailable ? "Y" : "N");
-    } else {
-      sprintf(buf, "SD:WARN E:%d R:%d OLED:%s",
-              sdHealth.errorCount, sdHealth.reInitCount, oledAvailable ? "Y" : "N");
-      sdColor = COLOR_WARN;
-    }
-  } else {
-    sprintf(buf, "SD:FAIL E:%d R:%d OLED:%s",
-            sdHealth.errorCount, sdHealth.reInitCount, oledAvailable ? "Y" : "N");
-    sdColor = COLOR_ERROR;
-  }
-  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
-    diagRow(y, "Storage:", buf, sdColor);
-  y += lineH;
-
-  // Zone 10: Network
-  if (wifiConnected) {
-    snprintf(buf, sizeof(buf), "%s", WiFi.localIP().toString().c_str());
-  } else {
-    strcpy(buf, "Disconnected");
-  }
-  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
-    diagRow(y, "Network:", buf, wifiConnected ? COLOR_VALUE : COLOR_ERROR);
-  y += lineH;
-
-  // Zone 11: Web URL (static when wifi connected)
-  const char* webKey = wifiConnected ? "Web: fieldcompass.local" : "web_none";
-  if (zoneMark(labelX, y, SCREEN_W - 20, 10, webKey)) {
-    if (wifiConnected) {
-      c->setTextColor(COLOR_DIM);
-      c->setTextSize(1);
-      c->setCursor(labelX, y);
-      c->print("Web: http://fieldcompass.local/");
-    }
-  }
-
-  // Zone 12: NavBar
-  sprintf(buf, "nav_%d", currentScreen);
-  if (zoneMark(0, SCREEN_H - 25, SCREEN_W, 25, buf))
-    drawNavBar(c);
-}
+// drawScreenDiags() removed — content migrated to drawSettingsDiags() (#90)
 
 // ============== OLED Display Functions ==============
 
@@ -7121,9 +6954,6 @@ void updateOLED() {
       break;
     case SCREEN_IMU:
       drawOLEDScreenIMU();
-      break;
-    case SCREEN_DIAGS:
-      drawOLEDScreenDiags();
       break;
     case SCREEN_GEOCACHE:
       drawOLEDScreenGeocache();
@@ -7394,41 +7224,13 @@ void drawOLEDScreenGeocache() {
   oled.print(buf);
 }
 
-void drawOLEDScreenDiags() {
-  char buf[32];
-
-  oled.setTextSize(1);
-  oled.setCursor(0, 0);
-  oled.print("DIAGNOSTICS");
-
-  oled.setCursor(0, 10);
-  sprintf(buf, "BSEC: L:%c S:%c %s",
-          bsecStateLoaded ? 'Y' : 'N',
-          bsecStateSaved ? 'Y' : 'N',
-          getIaqAccuracyText(envData.iaqAccuracy));
-  oled.print(buf);
-
-  oled.setCursor(0, 20);
-  sprintf(buf, "Wx: %d/%d", weatherHistoryCount, weatherLogEntryCount);
-  oled.print(buf);
-
-  oled.setCursor(0, 30);
-  sprintf(buf, "Heap: %luK", (unsigned long)ESP.getFreeHeap() / 1024);
-  oled.print(buf);
-
-  oled.setCursor(0, 40);
-  if (wifiConnected) {
-    oled.print(WiFi.localIP().toString());
-  } else {
-    oled.print("WiFi: --");
-  }
-}
+// drawOLEDScreenDiags() removed — diagnostics now in Settings (#90)
 
 void drawOLEDNavBar() {
   // Draw screen number indicator at bottom right
   oled.setCursor(100, 56);
   oled.setTextSize(1);
   char buf[8];
-  sprintf(buf, "[%d/5]", currentScreen + 1);
+  sprintf(buf, "[%d/%d]", currentScreen + 1, NUM_SCREENS);
   oled.print(buf);
 }
