@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.31.1"
+#define FW_VERSION "0.31.2"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -6224,6 +6224,214 @@ void drawSettingsAbout(TFT_eSprite* c) {
   }
 }
 
+// ─── Diagnostics Sub-Screen (#90) ────────────────────────────────────────
+
+void drawSettingsDiags(TFT_eSprite* c) {
+  char buf[ZONE_KEY_LEN];
+
+  int y = 38;
+  int labelX = 10;
+  int vX = 60;
+  int lineH = 24;
+
+  auto diagRow = [&](int y, const char* label, const char* value, uint16_t valColor) {
+    c->setTextSize(1);
+    c->setTextColor(COLOR_HEADER);
+    c->setCursor(labelX, y);
+    c->print(label);
+    c->setTextColor(valColor);
+    c->setCursor(vX, y);
+    c->fillRect(vX, y, 260, 10, COLOR_BG);
+    c->print(value);
+  };
+
+  // Header
+  if (zoneMark(0, 0, SCREEN_W, 30, "SDIAGS_HDR"))
+    drawHeader(c, "DIAGNOSTICS");
+
+  // BSEC
+  sprintf(buf, "SDIAGS_BSEC_%s_%s_%s",
+          bsecStateLoaded ? "Y" : "N", bsecStateSaved ? "Y" : "N",
+          getIaqAccuracyText(envData.iaqAccuracy));
+  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf)) {
+    char val[64];
+    sprintf(val, "Load:%s Save:%s Acc:%s",
+            bsecStateLoaded ? "Y" : "N", bsecStateSaved ? "Y" : "N",
+            getIaqAccuracyText(envData.iaqAccuracy));
+    diagRow(y, "BSEC:", val, bsecStateLoaded ? COLOR_VALUE : COLOR_DIM);
+  }
+  y += lineH;
+
+  // Weather
+  sprintf(buf, "SDIAGS_WX_%d_%d_%d",
+          weatherHistoryCount, weatherLogFileCount, weatherLogEntryCount);
+  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf)) {
+    char val[64];
+    sprintf(val, "Mem:%d Files:%d Tot:%d",
+            weatherHistoryCount, weatherLogFileCount, weatherLogEntryCount);
+    diagRow(y, "Weather:", val, COLOR_VALUE);
+  }
+  y += lineH;
+
+  // Heap
+  unsigned long freeH = ESP.getFreeHeap() / 1024;
+  unsigned long totalH = ESP.getHeapSize() / 1024;
+  sprintf(buf, "SDIAGS_HEAP_%lu", freeH);
+  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf)) {
+    char val[32];
+    sprintf(val, "%luK / %luK", freeH, totalH);
+    diagRow(y, "Heap:", val, COLOR_VALUE);
+  }
+  y += lineH;
+
+  // PSRAM
+  if (psramFound()) {
+    unsigned long freeP = ESP.getFreePsram() / 1024;
+    unsigned long totalP = ESP.getPsramSize() / 1024;
+    sprintf(buf, "SDIAGS_PSRAM_%lu", freeP);
+    if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf)) {
+      char val[48];
+      sprintf(val, "%luK / %luK  Spr:%s", freeP, totalP, spriteAvailable ? "Y" : "N");
+      diagRow(y, "PSRAM:", val, COLOR_VALUE);
+    }
+  } else {
+    if (zoneMark(labelX, y, SCREEN_W - 20, 10, "SDIAGS_PSRAM_NA"))
+      diagRow(y, "PSRAM:", "Not available", COLOR_DIM);
+  }
+  y += lineH;
+
+  // Sensors
+  sprintf(buf, "SDIAGS_SENS_%d%d%d%d%d%d",
+          bmeAvailable, shtAvailable, imuAvailable,
+          batteryAvailable, framAvailable, touchAvailable);
+  if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf)) {
+    char val[64];
+    sprintf(val, "BME:%s SHT:%s IMU:%s Bat:%s FRAM:%s CTP:%s",
+            bmeAvailable ? "Y" : "N", shtAvailable ? "Y" : "N",
+            imuAvailable ? "Y" : "N", batteryAvailable ? "Y" : "N",
+            framAvailable ? "Y" : "N", touchAvailable ? "Y" : "N");
+    diagRow(y, "Sensors:", val, COLOR_VALUE);
+  }
+  y += lineH;
+
+  // Temps
+  {
+    char val[64];
+    if (shtAvailable && bmeAvailable) {
+      float shtF = shtData.temperature * 9.0 / 5.0 + 32.0;
+      float bmeF = envData.temperature * 9.0 / 5.0 + 32.0;
+      if (useFahrenheit)
+        sprintf(val, "SHT:%.1fF BME:%.1fF (%+.1f)", shtF, bmeF, shtF - bmeF);
+      else
+        sprintf(val, "SHT:%.1fC BME:%.1fC (%+.1f)", shtData.temperature, envData.temperature, shtData.temperature - envData.temperature);
+    } else if (shtAvailable) {
+      if (useFahrenheit)
+        sprintf(val, "SHT:%.1fF BME:N/A", shtData.temperature * 9.0 / 5.0 + 32.0);
+      else
+        sprintf(val, "SHT:%.1fC BME:N/A", shtData.temperature);
+    } else if (bmeAvailable) {
+      if (useFahrenheit)
+        sprintf(val, "SHT:N/A BME:%.1fF", envData.temperature * 9.0 / 5.0 + 32.0);
+      else
+        sprintf(val, "SHT:N/A BME:%.1fC", envData.temperature);
+    } else {
+      strcpy(val, "No sensors");
+    }
+    sprintf(buf, "SDIAGS_TEMP_%s", val);
+    if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
+      diagRow(y, "Temps:", val, COLOR_VALUE);
+  }
+  y += lineH;
+
+  // GPS
+  {
+    uint16_t gpsColor = COLOR_VALUE;
+    char val[48];
+    if (gpsHadFirstFix) {
+      sprintf(val, "Fix in %lus", gpsFirstFixTime / 1000);
+    } else if (gpsHadFirstReceive) {
+      unsigned long elapsed = millis() / 1000;
+      sprintf(val, "Acquiring (%lum %lus)", elapsed / 60, elapsed % 60);
+      gpsColor = COLOR_WARN;
+    } else {
+      strcpy(val, "No data"); gpsColor = COLOR_DIM;
+    }
+    sprintf(buf, "SDIAGS_GPS_%s", val);
+    if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
+      diagRow(y, "GPS:", val, gpsColor);
+  }
+  y += lineH;
+
+  // MagCal
+  {
+    char val[48];
+    if (magCalibrated) {
+      sprintf(val, "%.1f, %.1f, %.1f", magOffsetX, magOffsetY, magOffsetZ);
+    } else {
+      strcpy(val, "None (Settings > Compass Cal)");
+    }
+    sprintf(buf, "SDIAGS_MAG_%d", magCalibrated);
+    if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
+      diagRow(y, "MagCal:", val, magCalibrated ? COLOR_VALUE : COLOR_DIM);
+  }
+  y += lineH;
+
+  // Storage
+  {
+    uint16_t sdColor = COLOR_VALUE;
+    char val[64];
+    if (sdHealth.available) {
+      unsigned long ageMin = (millis() - sdHealth.lastSuccess) / 60000;
+      if (sdHealth.errorCount == 0) {
+        sprintf(val, "SD:OK %lum OLED:%s", ageMin, oledAvailable ? "Y" : "N");
+      } else {
+        sprintf(val, "SD:WARN E:%d R:%d OLED:%s",
+                sdHealth.errorCount, sdHealth.reInitCount, oledAvailable ? "Y" : "N");
+        sdColor = COLOR_WARN;
+      }
+    } else {
+      sprintf(val, "SD:FAIL E:%d R:%d OLED:%s",
+              sdHealth.errorCount, sdHealth.reInitCount, oledAvailable ? "Y" : "N");
+      sdColor = COLOR_ERROR;
+    }
+    sprintf(buf, "SDIAGS_SD_%s", val);
+    if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
+      diagRow(y, "Storage:", val, sdColor);
+  }
+  y += lineH;
+
+  // Network
+  {
+    char val[32];
+    if (wifiConnected) {
+      snprintf(val, sizeof(val), "%s", WiFi.localIP().toString().c_str());
+    } else {
+      strcpy(val, "Disconnected");
+    }
+    sprintf(buf, "SDIAGS_NET_%d_%s", wifiConnected, val);
+    if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
+      diagRow(y, "Network:", val, wifiConnected ? COLOR_VALUE : COLOR_ERROR);
+  }
+  y += lineH;
+
+  // Web URL
+  const char* webKey = wifiConnected ? "SDIAGS_WEB_Y" : "SDIAGS_WEB_N";
+  if (zoneMark(labelX, y, SCREEN_W - 20, 10, webKey)) {
+    if (wifiConnected) {
+      c->setTextColor(COLOR_DIM);
+      c->setTextSize(1);
+      c->setCursor(labelX, y);
+      c->print("Web: http://fieldcompass.local/");
+    }
+  }
+
+  // Action bar: Back only (read-only screen)
+  if (zoneMark(0, 270, SCREEN_W, 50, "SDIAGS_BAR")) {
+    drawActionBar(c, true, false);
+    c->drawRoundRect(8, 276, 114, 38, 8, COLOR_HEADER);  // Auto-focus on Back
+  }
+}
+
 void drawScreenSettings(TFT_eSprite* c) {
   zoneBegin();
 
@@ -6240,7 +6448,7 @@ void drawScreenSettings(TFT_eSprite* c) {
     case 1:  drawSettingsConfig(c);                        break;  // Configuration (#98)
     case 2:  drawSettingsDisplay(c);                       break;  // Display (#91)
     case 3:  drawSettingsPlaceholder(c, "COMPASS CAL");    break;
-    case 4:  drawSettingsPlaceholder(c, "DIAGNOSTICS");    break;
+    case 4:  drawSettingsDiags(c);                          break;  // Diagnostics (#90)
     case 5:  drawSettingsAbout(c);                         break;  // About (#92)
     default: drawSettingsMenu(c);                          break;
   }
