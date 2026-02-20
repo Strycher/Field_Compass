@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.31.3"
+#define FW_VERSION "0.31.4"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -4144,10 +4144,18 @@ void handleSettingsCSelect() {
     return;
   }
 
-  // Placeholder sub-screens (Compass Cal=3, Diagnostics=4): C-short = Back (#98)
-  if (settingsSubScreen == 3 || settingsSubScreen == 4) {
+  // Compass Cal (3): placeholder — will be replaced in Task 7 (#89)
+  if (settingsSubScreen == 3) {
     settingsSubScreen = 0;
     logPrintln("[SETTINGS] Back (placeholder) via C");
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
+
+  // Diagnostics (4): C-short = Back (read-only, no save) (#90)
+  if (settingsSubScreen == 4) {
+    settingsSubScreen = 0;
+    logPrintln("[SETTINGS] Back (Diags) via C");
     if (spriteAvailable) forceDisplayUpdate = true;
     return;
   }
@@ -4332,11 +4340,21 @@ void handleTap(int16_t x, int16_t y) {
     return;
   }
 
-  // Placeholder sub-screen taps (Compass Cal=3, Diagnostics=4): Back button only (#98)
-  if (currentScreen == SCREEN_SETTINGS && (settingsSubScreen == 3 || settingsSubScreen == 4)) {
+  // Compass Cal taps (3): placeholder — will be replaced in Task 7 (#89)
+  if (currentScreen == SCREEN_SETTINGS && settingsSubScreen == 3) {
     if (x >= 10 && x <= 120 && y >= 278 && y <= 312) {
       settingsSubScreen = 0;
       logPrintln("[SETTINGS] Back (placeholder)");
+      if (spriteAvailable) forceDisplayUpdate = true;
+    }
+    return;
+  }
+
+  // Diagnostics taps (4): Back button only (#90)
+  if (currentScreen == SCREEN_SETTINGS && settingsSubScreen == 4) {
+    if (x >= 10 && x <= 120 && y >= 278 && y <= 312) {
+      settingsSubScreen = 0;
+      logPrintln("[SETTINGS] Back (Diags)");
       if (spriteAvailable) forceDisplayUpdate = true;
     }
     return;
