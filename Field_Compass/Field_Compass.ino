@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.32.0"
+#define FW_VERSION "0.32.1"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -118,14 +118,13 @@ const char* NTP_SERVER = "pool.ntp.org";
 #define DEBUG_TFT   1  // TFT display state logging (P1 blank bug debug)
 
 // Screen settings
-#define NUM_SCREENS 6
+#define NUM_SCREENS 5
 #define SCREEN_COMPASS 0
 #define SCREEN_GEOCACHE 1  // Geocaching navigation (#70)
 #define SCREEN_ENV 2
 #define SCREEN_GPS 3
 #define SCREEN_IMU 4
-#define SCREEN_OPS 5
-#define SCREEN_SETTINGS 6  // Modal overlay — outside NUM_SCREENS, not in swipe/button cycling
+#define SCREEN_SETTINGS 5  // Modal overlay — outside NUM_SCREENS, not in swipe/button cycling
 
 // Screen dimensions (landscape mode after rotation)
 #define SCREEN_W 480
@@ -4840,7 +4839,6 @@ void updateDisplay() {
     // Each drawScreenXxx calls zoneBegin(), registers zones with zoneMark(),
     // and only draws content for dirty zones. drawNavBar is called inside each screen.
     switch (currentScreen) {
-      case SCREEN_OPS:      drawScreenOps(c);      break;
       case SCREEN_COMPASS:  drawScreenCompass(c);   break;
       case SCREEN_GPS:      drawScreenGPS(c);       break;
       case SCREEN_ENV:      drawScreenEnv(c);       break;
@@ -4893,7 +4891,7 @@ void drawNavBar(TFT_eSprite* c) {
   c->setTextColor(COLOR_TEXT);
   c->setTextSize(2);
 
-  // Screen indicators - adjusted spacing for 6 screens
+  // Screen indicators - adjusted spacing for 5 screens
   int startX = 60;
   int spacing = 36;
   for (int i = 0; i < NUM_SCREENS; i++) {
@@ -4931,108 +4929,7 @@ void drawValue(TFT_eSprite* c, int x, int y, const char* value, uint16_t color =
   c->print(value);
 }
 
-void drawScreenOps(TFT_eSprite* c) {
-  zoneBegin();
-
-  char buf[ZONE_KEY_LEN];
-  int y = 50;
-  int labelX = 20;
-  int valueX = 120;
-  int lineH = 35;
-
-  // Zone 0: Header
-  if (zoneMark(0, 0, SCREEN_W, 30, "OPERATIONAL"))
-    drawHeader(c, "OPERATIONAL");
-
-  // Zone 1: Time label (static)
-  if (zoneMark(labelX, y, 90, 18, "Time:"))
-    drawLabel(c, labelX, y, "Time:");
-
-  // Zone 2: Time value
-  uint16_t timeColor = COLOR_VALUE;
-  if (gpsData.timeValid) {
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo, 10)) {  // 10ms timeout — never block rendering (#98 bugfix)
-      char tbuf[16];
-      formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
-      sprintf(buf, "%s GPS", tbuf);
-    } else {
-      strcpy(buf, "--:--:-- GPS");
-    }
-  } else if (ntpSynced) {
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo, 10)) {  // 10ms timeout (#98 bugfix)
-      char tbuf[16];
-      formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
-      sprintf(buf, "%s NTP", tbuf);
-    } else {
-      strcpy(buf, "--:--:-- N/A"); timeColor = COLOR_WARN;
-    }
-  } else {
-    strcpy(buf, "--:--:-- N/A"); timeColor = COLOR_WARN;
-  }
-  if (zoneMark(valueX, y, 200, 18, buf))
-    drawValue(c, valueX, y, buf, timeColor);
-  y += lineH;
-
-  // Zone 3: Uptime label (static)
-  if (zoneMark(labelX, y, 90, 18, "Uptime:"))
-    drawLabel(c, labelX, y, "Uptime:");
-
-  // Zone 4: Uptime value
-  unsigned long totalSec = millis() / 1000;
-  int days = totalSec / 86400;
-  int hours = (totalSec % 86400) / 3600;
-  int mins = (totalSec % 3600) / 60;
-  int secs = totalSec % 60;
-  if (days > 0) {
-    sprintf(buf, "%dd %02d:%02d:%02d", days, hours, mins, secs);
-  } else {
-    sprintf(buf, "%02d:%02d:%02d", hours, mins, secs);
-  }
-  if (zoneMark(valueX, y, 200, 18, buf))
-    drawValue(c, valueX, y, buf);
-  y += lineH;
-
-  // Zone 5: WiFi label (static)
-  if (zoneMark(labelX, y, 90, 18, "WiFi:"))
-    drawLabel(c, labelX, y, "WiFi:");
-
-  // Zone 6: WiFi value
-  uint16_t wifiColor = COLOR_VALUE;
-  if (wifiConnected) {
-    snprintf(buf, sizeof(buf), "%s", WiFi.SSID().c_str());
-  } else {
-    strcpy(buf, "Disconnected"); wifiColor = COLOR_ERROR;
-  }
-  if (zoneMark(valueX, y, 200, 18, buf))
-    drawValue(c, valueX, y, buf, wifiColor);
-  y += lineH;
-
-  // Zone 7: Battery label (static)
-  if (zoneMark(labelX, y, 90, 18, "Battery:"))
-    drawLabel(c, labelX, y, "Battery:");
-
-  // Zone 8: Battery value
-  uint16_t battColor = COLOR_VALUE;
-  if (batteryAvailable && isBatteryConnected()) {
-    float pct = battery.cellPercent();
-    float volt = battery.cellVoltage();
-    sprintf(buf, "%.0f%% (%.2fV)", pct, volt);
-    if (pct <= 20) battColor = COLOR_ERROR;
-  } else if (batteryAvailable) {
-    strcpy(buf, "USB Only"); battColor = COLOR_DIM;
-  } else {
-    strcpy(buf, "N/A"); battColor = COLOR_DIM;
-  }
-  if (zoneMark(valueX, y, 200, 18, buf))
-    drawValue(c, valueX, y, buf, battColor);
-
-  // Zone 9: NavBar
-  sprintf(buf, "nav_%d", currentScreen);
-  if (zoneMark(0, SCREEN_H - 25, SCREEN_W, 25, buf))
-    drawNavBar(c);
-}
+// drawScreenOps() removed — content now in Settings > About (#102)
 
 void drawScreenGPS(TFT_eSprite* c) {
   zoneBegin();
@@ -7094,9 +6991,6 @@ void updateOLED() {
 
   // Show different content based on current screen (mirroring TFT)
   switch (currentScreen) {
-    case SCREEN_OPS:
-      drawOLEDScreenOps();
-      break;
     case SCREEN_COMPASS:
       drawOLEDScreenCompass();
       break;
@@ -7125,64 +7019,7 @@ void updateOLED() {
   oled.display();
 }
 
-void drawOLEDScreenOps() {
-  char buf[32];
-
-  oled.setTextSize(1);
-  oled.setCursor(0, 0);
-  oled.print("OPERATIONAL");
-
-  // Time
-  oled.setCursor(0, 12);
-  if (gpsData.timeValid) {
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo, 10)) {  // 10ms timeout — never block rendering (#98 bugfix)
-      char tbuf[16];
-      formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
-      sprintf(buf, "Time: %s", tbuf);
-    } else {
-      strcpy(buf, "Time: --:--:--");
-    }
-  } else if (ntpSynced) {
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo, 10)) {  // 10ms timeout (#98 bugfix)
-      char tbuf[16];
-      formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
-      sprintf(buf, "Time: %s", tbuf);
-    }
-  } else {
-    sprintf(buf, "Time: --:--:--");
-  }
-  oled.print(buf);
-
-  // Uptime
-  unsigned long totalSec = millis() / 1000;
-  int hours = (totalSec % 86400) / 3600;
-  int mins = (totalSec % 3600) / 60;
-  int secs = totalSec % 60;
-  oled.setCursor(0, 24);
-  sprintf(buf, "Up: %02d:%02d:%02d", hours, mins, secs);
-  oled.print(buf);
-
-  // WiFi
-  oled.setCursor(0, 36);
-  if (wifiConnected) {
-    oled.print("WiFi: OK");
-  } else {
-    oled.print("WiFi: --");
-  }
-
-  // Battery
-  oled.setCursor(0, 48);
-  if (batteryAvailable && isBatteryConnected()) {
-    sprintf(buf, "Batt: %.0f%%", battery.cellPercent());
-  } else if (batteryAvailable) {
-    sprintf(buf, "Batt: USB");
-  } else {
-    sprintf(buf, "Batt: --");
-  }
-  oled.print(buf);
-}
+// drawOLEDScreenOps() removed — content now in Settings > About (#102)
 
 void drawOLEDScreenGPS() {
   char buf[32];
