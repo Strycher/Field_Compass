@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.31.0"
+#define FW_VERSION "0.31.1"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -465,6 +465,7 @@ uint8_t  tftBrightness   = 255;                            // PWM 25-255, step 2
 uint32_t tftSleepMs      = 0;                              // 0 = never (default)
 uint32_t oledSleepMs     = 300000;                         // 5 minutes default
 int      displayFocusRow = -1;                             // 0=Bright, 1=TFT timeout, 2=OLED timeout, 3=Back, 4=OK
+int      compassCalFocusRow = -1;                          // 0=Start Cal, 1=Back (#89)
 
 // Timezone presets with POSIX TZ strings (#98)
 struct TZPreset {
@@ -4032,6 +4033,7 @@ void handleSettingsCSelect() {
     settingsSubScreen = settingsMenuIndex + 1;  // 1-indexed sub-screens
     configFocusRow = -1;    // Reset focus on entry (#98)
     displayFocusRow = -1;   // Reset display focus too (#91)
+    compassCalFocusRow = -1; // Reset compass cal focus (#89)
     logPrintf("[SETTINGS] Selected: %s\n", settingsMenuItems[settingsMenuIndex]);
     if (spriteAvailable) forceDisplayUpdate = true;
     else tft.fillScreen(COLOR_BG);
