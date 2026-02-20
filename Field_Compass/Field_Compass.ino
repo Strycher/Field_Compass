@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.31.6"
+#define FW_VERSION "0.31.7"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -4013,6 +4013,19 @@ void handleSettingsButtons(bool buttonA, bool buttonB) {
       if (spriteAvailable) forceDisplayUpdate = true;
     }
   }
+
+  // Compass Cal sub-screen: A/B = focus between Start (0) and Back (1) (#89)
+  if (settingsSubScreen == 3) {
+    if (compassCalFocusRow < 0) compassCalFocusRow = 0;
+    if (buttonA && compassCalFocusRow > 0) {
+      compassCalFocusRow--;
+      if (spriteAvailable) forceDisplayUpdate = true;
+    }
+    if (buttonB && compassCalFocusRow < 1) {
+      compassCalFocusRow++;
+      if (spriteAvailable) forceDisplayUpdate = true;
+    }
+  }
 }
 
 // Handle C short press on Settings screen
@@ -4144,10 +4157,28 @@ void handleSettingsCSelect() {
     return;
   }
 
-  // Compass Cal (3): placeholder — will be replaced in Task 7 (#89)
+  // Compass Cal (3): C-short activates focused row (#89)
   if (settingsSubScreen == 3) {
-    settingsSubScreen = 0;
-    logPrintln("[SETTINGS] Back (placeholder) via C");
+    if (magCalibrating) return;  // Don't interrupt active calibration
+    if (compassCalFocusRow == 0) {
+      // Start Calibration
+      if (magAvailable && !magCalibrating) {
+        magCalibrating = true;
+        magCalStartTime = millis();
+        magCalMinX = magCalMinY = magCalMinZ = 99999;
+        magCalMaxX = magCalMaxY = magCalMaxZ = -99999;
+        logPrintln("[MAG] Calibration started from Settings");
+      }
+    } else if (compassCalFocusRow == 1) {
+      // Back
+      compassCalFocusRow = -1;
+      settingsSubScreen = 0;
+      logPrintln("[SETTINGS] Back (Compass Cal) via C");
+    } else {
+      // No focus — default Back
+      compassCalFocusRow = -1;
+      settingsSubScreen = 0;
+    }
     if (spriteAvailable) forceDisplayUpdate = true;
     return;
   }
@@ -4186,6 +4217,14 @@ void handleSettingsCLongPress() {
       loadSettings();
       analogWrite(TFT_BL, tftBrightness);  // Restore saved brightness
       displayFocusRow = -1;
+      settingsSubScreen = 0;
+    } else if (settingsSubScreen == 3) {
+      // Compass Cal: cancel active calibration if running, return (#89)
+      if (magCalibrating) {
+        magCalibrating = false;
+        logPrintln("[MAG] Calibration cancelled");
+      }
+      compassCalFocusRow = -1;
       settingsSubScreen = 0;
     } else {
       settingsSubScreen = 0;
@@ -4284,6 +4323,30 @@ void handleConfigTap(int16_t x, int16_t y) {
   }
 }
 
+// Handle taps on Compass Cal sub-screen (#89)
+void handleCompassCalTap(int16_t x, int16_t y) {
+  if (magCalibrating) return;  // No taps during active calibration
+
+  // Start Calibration button (x: 130-350, y: 128-162)
+  if (x >= 130 && x <= 350 && y >= 128 && y <= 162 && magAvailable) {
+    magCalibrating = true;
+    magCalStartTime = millis();
+    magCalMinX = magCalMinY = magCalMinZ = 99999;
+    magCalMaxX = magCalMaxY = magCalMaxZ = -99999;
+    logPrintln("[MAG] Calibration started via touch");
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
+
+  // Back button (x: 10-120, y: 278-312)
+  if (x >= 10 && x <= 120 && y >= 278 && y <= 312) {
+    compassCalFocusRow = -1;
+    settingsSubScreen = 0;
+    logPrintln("[SETTINGS] Back (Compass Cal) via tap");
+    if (spriteAvailable) forceDisplayUpdate = true;
+  }
+}
+
 // Handle tap on screen (gear icon, future touch targets)
 void handleTap(int16_t x, int16_t y) {
   static uint32_t lastTapTime = 0;
@@ -4340,13 +4403,9 @@ void handleTap(int16_t x, int16_t y) {
     return;
   }
 
-  // Compass Cal taps (3): placeholder — will be replaced in Task 7 (#89)
+  // Compass Cal taps (3) (#89)
   if (currentScreen == SCREEN_SETTINGS && settingsSubScreen == 3) {
-    if (x >= 10 && x <= 120 && y >= 278 && y <= 312) {
-      settingsSubScreen = 0;
-      logPrintln("[SETTINGS] Back (placeholder)");
-      if (spriteAvailable) forceDisplayUpdate = true;
-    }
+    handleCompassCalTap(x, y);
     return;
   }
 
