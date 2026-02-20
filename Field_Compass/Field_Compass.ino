@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.31.8"
+#define FW_VERSION "0.31.9"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -6564,19 +6564,7 @@ void drawSettingsDiags(TFT_eSprite* c) {
   }
   y += lineH;
 
-  // Network
-  {
-    char val[32];
-    if (wifiConnected) {
-      snprintf(val, sizeof(val), "%s", WiFi.localIP().toString().c_str());
-    } else {
-      strcpy(val, "Disconnected");
-    }
-    sprintf(buf, "SDIAGS_NET_%d_%s", wifiConnected, val);
-    if (zoneMark(labelX, y, SCREEN_W - 20, 10, buf))
-      diagRow(y, "Network:", val, wifiConnected ? COLOR_VALUE : COLOR_ERROR);
-  }
-  y += lineH;
+  // Network removed — redundant with About screen; see scrolling enhancement issue
 
   // Web URL
   const char* webKey = wifiConnected ? "SDIAGS_WEB_Y" : "SDIAGS_WEB_N";
