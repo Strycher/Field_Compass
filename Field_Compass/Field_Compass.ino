@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.31.4"
+#define FW_VERSION "0.31.5"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -6129,6 +6129,93 @@ void handleDisplayTap(int x, int y) {
   }
 }
 
+// ─── Compass Calibration Sub-Screen (#89) ───────────────────────────────────
+
+void drawSettingsCompassCal(TFT_eSprite* c) {
+  char buf[ZONE_KEY_LEN];
+
+  // Auto-focus: default to row 0 (Start Calibration) on first draw
+  if (compassCalFocusRow < 0) compassCalFocusRow = 0;
+
+  // Header
+  if (zoneMark(0, 0, SCREEN_W, 30, "SCAL_HDR"))
+    drawHeader(c, "COMPASS CAL");
+
+  // Status line: "Calibrated" (green) or "Not calibrated" (dim)
+  sprintf(buf, "SCAL_STATUS_%d", magCalibrated ? 1 : 0);
+  if (zoneMark(20, 45, SCREEN_W - 40, 20, buf)) {
+    c->fillRect(20, 45, SCREEN_W - 40, 20, COLOR_BG);
+    c->setTextSize(2);
+    c->setTextColor(COLOR_DIM);
+    c->setCursor(20, 48);
+    c->print("Status: ");
+    if (magCalibrated) {
+      c->setTextColor(COLOR_VALUE);
+      c->print("Calibrated");
+    } else {
+      c->print("Not calibrated");
+    }
+  }
+
+  // Offsets line: show values or "—"
+  sprintf(buf, "SCAL_OFF_%d_%.1f_%.1f_%.1f", magCalibrated ? 1 : 0, magOffsetX, magOffsetY, magOffsetZ);
+  if (zoneMark(20, 75, SCREEN_W - 40, 30, buf)) {
+    c->fillRect(20, 75, SCREEN_W - 40, 30, COLOR_BG);
+    c->setTextSize(2);
+    c->setTextColor(COLOR_DIM);
+    c->setCursor(20, 78);
+    c->print("Offsets: ");
+    if (magCalibrated) {
+      c->setTextColor(COLOR_VALUE);
+      c->setTextSize(1);
+      c->setCursor(20, 98);
+      char offBuf[64];
+      sprintf(offBuf, "X: %.2f   Y: %.2f   Z: %.2f", magOffsetX, magOffsetY, magOffsetZ);
+      c->print(offBuf);
+    } else {
+      c->setTextColor(COLOR_DIM);
+      c->print("---");
+    }
+  }
+
+  // Start Calibration button (y=130, centered)
+  sprintf(buf, "SCAL_START_%d_%d_%d", compassCalFocusRow, magAvailable ? 1 : 0, magCalibrating ? 1 : 0);
+  if (zoneMark(120, 125, 240, 40, buf)) {
+    c->fillRect(120, 125, 240, 40, COLOR_BG);  // Clear area
+    if (magAvailable && !magCalibrating) {
+      // Active button
+      uint16_t btnColor = (compassCalFocusRow == 0) ? 0x03E0 : 0x4208;  // Green if focused, dark gray otherwise
+      c->fillRoundRect(130, 128, 220, 34, 6, btnColor);
+      c->setTextColor(COLOR_TEXT);
+      c->setTextSize(2);
+      c->setCursor(142, 136);
+      c->print("Start Calibration");
+      if (compassCalFocusRow == 0)
+        c->drawRoundRect(128, 126, 224, 38, 8, COLOR_HEADER);  // Cyan focus ring
+    } else {
+      // Disabled button (IMU not available)
+      c->fillRoundRect(130, 128, 220, 34, 6, 0x2104);  // Very dark gray
+      c->setTextColor(COLOR_DIM);
+      c->setTextSize(2);
+      c->setCursor(142, 136);
+      c->print("Start Calibration");
+      // Show reason
+      c->setTextSize(1);
+      c->setTextColor(COLOR_ERROR);
+      c->setCursor(170, 170);
+      c->print("IMU not detected");
+    }
+  }
+
+  // Action bar: Back button (y=270)
+  sprintf(buf, "SCAL_BAR_%d", compassCalFocusRow);
+  if (zoneMark(0, 270, SCREEN_W, 50, buf)) {
+    drawActionBar(c, true, false);   // Back only, no OK
+    if (compassCalFocusRow == 1)
+      c->drawRoundRect(8, 276, 114, 38, 8, COLOR_HEADER);  // Cyan focus ring on Back
+  }
+}
+
 // ─── About / System Info Screen (#92) ──────────────────────────────────────
 
 void drawSettingsAbout(TFT_eSprite* c) {
@@ -6463,7 +6550,7 @@ void drawScreenSettings(TFT_eSprite* c) {
   switch (settingsSubScreen) {
     case 1:  drawSettingsConfig(c);                        break;  // Configuration (#98)
     case 2:  drawSettingsDisplay(c);                       break;  // Display (#91)
-    case 3:  drawSettingsPlaceholder(c, "COMPASS CAL");    break;
+    case 3:  drawSettingsCompassCal(c);                     break;  // Compass Cal (#89)
     case 4:  drawSettingsDiags(c);                          break;  // Diagnostics (#90)
     case 5:  drawSettingsAbout(c);                         break;  // About (#92)
     default: drawSettingsMenu(c);                          break;
