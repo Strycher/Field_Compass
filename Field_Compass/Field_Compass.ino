@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.33.1"
+#define FW_VERSION "0.33.2"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -5252,78 +5252,240 @@ void drawScreenCompass(TFT_eSprite* c) {
   if (zoneMark(0, 0, SCREEN_W, 30, "COMPASS"))
     drawHeader(c, "COMPASS");
 
+  // Separator line between left panel and rose
+  c->drawLine(178, 34, 178, 290, 0x2104);
+
+  // GPS mode transition clearing — force full left-panel redraw on state change
+  static int lastCompassGpsMode = -1;
+  int compassGpsMode = gpsData.valid ? 0 : (gpsData.receiving ? 1 : 2);
+  if (compassGpsMode != lastCompassGpsMode) {
+    c->fillRect(0, 30, 178, 265, COLOR_BG);
+    spr.pushSprite(0, 0);
+    zonePrevCount = 0;
+    lastCompassGpsMode = compassGpsMode;
+  }
+
   // === Left Panel: Text Data ===
   if (imuAvailable && magAvailable) {
-    // Zone 1: Heading (integer degrees + degree symbol)
+    // Zone 1: Heading (textSize 4) — large degrees display
     sprintf(buf, "%.0f", imuData.heading);
-    if (zoneMark(10, 40, 130, 30, buf)) {
-      c->fillRect(10, 40, 130, 30, COLOR_BG);
+    if (zoneMark(8, 34, 170, 36, buf)) {
+      c->fillRect(8, 34, 170, 36, COLOR_BG);
       c->setTextColor(COLOR_TEXT);
-      c->setTextSize(3);
-      c->setCursor(10, 42);
+      c->setTextSize(4);
+      c->setCursor(8, 36);
       c->print(buf);
       int degX = c->getCursorX() + 2;
-      c->drawCircle(degX + 3, 44, 3, COLOR_TEXT);
+      c->drawCircle(degX + 4, 38, 4, COLOR_TEXT);
     }
 
-    // Zone 2: Cardinal direction
+    // Zone 2: Cardinal direction (textSize 2)
     const char* cardinal = getCardinal(imuData.heading);
-    if (zoneMark(10, 75, 130, 20, cardinal)) {
-      c->fillRect(10, 75, 130, 20, COLOR_BG);
+    if (zoneMark(8, 72, 170, 20, cardinal)) {
+      c->fillRect(8, 72, 170, 20, COLOR_BG);
       c->setTextColor(COLOR_VALUE);
       c->setTextSize(2);
-      c->setCursor(10, 78);
+      c->setCursor(8, 74);
       c->print(cardinal);
     }
   } else {
-    if (zoneMark(10, 40, 130, 55, "No IMU")) {
-      c->fillRect(10, 40, 130, 55, COLOR_BG);
+    // No IMU — single merged zone replaces heading + cardinal
+    if (zoneMark(8, 34, 170, 56, "No IMU")) {
+      c->fillRect(8, 34, 170, 56, COLOR_BG);
       c->setTextColor(COLOR_ERROR);
       c->setTextSize(2);
-      c->setCursor(10, 55);
+      c->setCursor(8, 52);
       c->print("No IMU");
     }
   }
 
-  // Zone 3: Speed label (static)
-  if (zoneMark(10, 108, 50, 10, "Speed:")) {
-    c->setTextColor(COLOR_DIM);
-    c->setTextSize(1);
-    c->setCursor(10, 108);
-    c->print("Speed:");
+  // Zone 3: GPS Coordinates (textSize 1, 2 lines)
+  {
+    int gpsMode = gpsData.valid ? 0 : (gpsData.receiving ? 1 : 2);
+    if (gpsMode == 0) {
+      sprintf(buf, "G%d_%.4f_%.4f", gpsMode, gpsData.latitude, gpsData.longitude);
+    } else {
+      sprintf(buf, "G%d_s%d", gpsMode, gpsData.satellites);
+    }
+    if (zoneMark(8, 100, 170, 28, buf)) {
+      c->fillRect(8, 100, 170, 28, COLOR_BG);
+      c->setTextSize(1);
+      if (gpsData.valid) {
+        // Line 1: Lat
+        c->setTextColor(COLOR_DIM);
+        c->setCursor(8, 100);
+        c->print("Lat ");
+        c->setTextColor(COLOR_VALUE);
+        c->printf("%.4f%c", fabs(gpsData.latitude), gpsData.latitude >= 0 ? 'N' : 'S');
+        // Line 2: Lon
+        c->setTextColor(COLOR_DIM);
+        c->setCursor(8, 114);
+        c->print("Lon ");
+        c->setTextColor(COLOR_VALUE);
+        c->printf("%.4f%c", fabs(gpsData.longitude), gpsData.longitude >= 0 ? 'E' : 'W');
+      } else if (gpsData.receiving) {
+        c->setTextColor(COLOR_WARN);
+        c->setCursor(8, 100);
+        c->print("GPS Acquiring...");
+        c->setCursor(8, 114);
+        c->printf("Sats: %d", gpsData.satellites);
+      } else {
+        c->setTextColor(COLOR_ERROR);
+        c->setCursor(8, 104);
+        c->print("No GPS");
+      }
+    }
   }
 
-  // Zone 4: Speed value
-  if (gpsData.valid) {
-    float mph = gpsData.speedKnots * 1.15078;
-    sprintf(buf, "%.1f mph", mph);
-  } else {
-    strcpy(buf, "-- mph");
-  }
-  if (zoneMark(10, 120, 130, 20, buf)) {
-    c->fillRect(10, 120, 130, 20, COLOR_BG);
-    c->setTextSize(2);
-    c->setCursor(10, 120);
-    c->setTextColor(gpsData.valid ? COLOR_VALUE : COLOR_DIM);
-    c->print(buf);
+  // Zone 4: Temperature (textSize 1)
+  {
+    bool hasTempSensor = shtAvailable || bmeAvailable;
+    if (hasTempSensor) {
+      float tempC = shtAvailable ? shtData.temperature : envData.temperature;
+      float tempDisplay = useFahrenheit ? tempC * 9.0 / 5.0 + 32.0 : tempC;
+      sprintf(buf, "T%.1f%c", tempDisplay, useFahrenheit ? 'F' : 'C');
+    } else {
+      strcpy(buf, "T--");
+    }
+    if (zoneMark(8, 140, 170, 14, buf)) {
+      c->fillRect(8, 140, 170, 14, COLOR_BG);
+      c->setTextSize(1);
+      c->setCursor(8, 140);
+      c->setTextColor(COLOR_DIM);
+      c->print("Temp ");
+      if (hasTempSensor) {
+        float tempC = shtAvailable ? shtData.temperature : envData.temperature;
+        float tempDisplay = useFahrenheit ? tempC * 9.0 / 5.0 + 32.0 : tempC;
+        c->setTextColor(COLOR_VALUE);
+        c->printf("%.1f", tempDisplay);
+        // Degree symbol using small circle
+        int degX = c->getCursorX() + 1;
+        int degY = c->getCursorY();
+        c->drawCircle(degX + 1, degY + 1, 1, COLOR_VALUE);
+        c->setCursor(degX + 5, degY);
+        c->printf("%c", useFahrenheit ? 'F' : 'C');
+      } else {
+        c->setTextColor(COLOR_DIM);
+        c->print("--");
+      }
+    }
   }
 
-  // Zone 5: GPS status
-  if (gpsData.valid) {
-    sprintf(buf, "GPS OK  Sat:%d", gpsData.satellites);
-  } else if (gpsData.receiving) {
-    strcpy(buf, "GPS Acquiring...");
-  } else {
-    strcpy(buf, "No GPS");
+  // Zone 5: Forecast + trend (textSize 1)
+  {
+    sprintf(buf, "F_%s_%s", getTrendArrow(), weatherTrend.forecast);
+    if (zoneMark(8, 158, 170, 14, buf)) {
+      c->fillRect(8, 158, 170, 14, COLOR_BG);
+      c->setTextSize(1);
+      c->setCursor(8, 158);
+      c->setTextColor(COLOR_DIM);
+      c->print("Fcst ");
+      // Determine forecast color
+      uint16_t fcstColor = COLOR_VALUE;  // Default green
+      const char* fc = weatherTrend.forecast;
+      if (strstr(fc, "Storm")) fcstColor = COLOR_ERROR;
+      else if (strstr(fc, "Rain") || strstr(fc, "Snow") ||
+               strstr(fc, "Unsettled") || strstr(fc, "Precip")) fcstColor = COLOR_WARN;
+      else if (strcmp(fc, "Init") == 0 || strcmp(fc, "Learning") == 0 ||
+               strcmp(fc, "Traveled") == 0) fcstColor = COLOR_DIM;
+      c->setTextColor(fcstColor);
+      c->printf("%s %s", getTrendArrow(), fc);
+    }
   }
-  if (zoneMark(10, 150, 130, 12, buf)) {
-    c->fillRect(10, 150, 130, 12, COLOR_BG);
-    c->setTextSize(1);
-    c->setCursor(10, 152);
-    if (gpsData.valid) c->setTextColor(COLOR_VALUE);
-    else if (gpsData.receiving) c->setTextColor(COLOR_WARN);
-    else c->setTextColor(COLOR_ERROR);
-    c->print(buf);
+
+  // Zone 6: Speed (textSize 1)
+  {
+    if (gpsData.valid) {
+      float speed = gpsData.speedKnots * (useMetricUnits ? 1.852 : 1.15078);
+      sprintf(buf, "S%.1f%c", speed, useMetricUnits ? 'k' : 'm');
+    } else {
+      strcpy(buf, "S--");
+    }
+    if (zoneMark(8, 176, 170, 14, buf)) {
+      c->fillRect(8, 176, 170, 14, COLOR_BG);
+      c->setTextSize(1);
+      c->setCursor(8, 176);
+      c->setTextColor(COLOR_DIM);
+      c->print("Spd ");
+      if (gpsData.valid) {
+        float speed = gpsData.speedKnots * (useMetricUnits ? 1.852 : 1.15078);
+        c->setTextColor(COLOR_VALUE);
+        c->printf("%.1f %s", speed, useMetricUnits ? "km/h" : "mph");
+      } else {
+        c->setTextColor(COLOR_DIM);
+        c->printf("-- %s", useMetricUnits ? "km/h" : "mph");
+      }
+    }
+  }
+
+  // Zone 7: GPS Status (textSize 1)
+  {
+    if (gpsData.valid) {
+      sprintf(buf, "GS_OK_%d_%.1f", gpsData.satellites, gpsData.hdop);
+    } else if (gpsData.receiving) {
+      sprintf(buf, "GS_ACQ_%d", gpsData.satellites);
+    } else {
+      strcpy(buf, "GS_NONE");
+    }
+    if (zoneMark(8, 200, 170, 14, buf)) {
+      c->fillRect(8, 200, 170, 14, COLOR_BG);
+      c->setTextSize(1);
+      c->setCursor(8, 200);
+      if (gpsData.valid) {
+        c->setTextColor(COLOR_VALUE);
+        c->printf("GPS OK Sat:%d HDOP:%.1f", gpsData.satellites, gpsData.hdop);
+      } else if (gpsData.receiving) {
+        c->setTextColor(COLOR_WARN);
+        c->printf("GPS Acquiring Sat:%d", gpsData.satellites);
+      } else {
+        c->setTextColor(COLOR_ERROR);
+        c->print("No GPS");
+      }
+    }
+  }
+
+  // Zone 8: Altitude (textSize 1)
+  {
+    if (gpsData.valid) {
+      float alt = useMetricUnits ? gpsData.altitude : gpsData.altitude * 3.28084;
+      sprintf(buf, "A%.0f%c", alt, useMetricUnits ? 'm' : 'f');
+    } else {
+      strcpy(buf, "A--");
+    }
+    if (zoneMark(8, 218, 170, 14, buf)) {
+      c->fillRect(8, 218, 170, 14, COLOR_BG);
+      c->setTextSize(1);
+      c->setCursor(8, 218);
+      c->setTextColor(COLOR_DIM);
+      c->print("Alt ");
+      if (gpsData.valid) {
+        float alt = useMetricUnits ? gpsData.altitude : gpsData.altitude * 3.28084;
+        c->setTextColor(COLOR_VALUE);
+        c->printf("%.0f %s", alt, useMetricUnits ? "m" : "ft");
+      } else {
+        c->setTextColor(COLOR_DIM);
+        c->print("--");
+      }
+    }
+  }
+
+  // Zone 9: Time (textSize 2)
+  {
+    char timeBuf[16];
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo, 0)) {
+      formatTimeStr(timeBuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, false);
+    } else {
+      strcpy(timeBuf, "--:--");
+    }
+    if (zoneMark(8, 268, 170, 22, timeBuf)) {
+      c->fillRect(8, 268, 170, 22, COLOR_BG);
+      c->setTextSize(2);
+      c->setCursor(8, 270);
+      bool hasTime = (timeBuf[0] != '-');
+      c->setTextColor(hasTime ? COLOR_TEXT : COLOR_DIM);
+      c->print(timeBuf);
+    }
   }
 
   // === Right Panel: Compass Rose ===
