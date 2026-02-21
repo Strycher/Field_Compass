@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.33.2"
+#define FW_VERSION "0.33.3"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -5589,21 +5589,27 @@ const char* getCardinal(float heading) {
 // Draw rotating 8-point compass rose
 // cx, cy = center, radius = outer ring size, heading = device heading (degrees)
 void drawCompassRose(TFT_eSprite* c, int cx, int cy, int radius, float heading) {
-  // Clear rose area before redrawing rotated lines
-  int margin = 18;
-  c->fillRect(cx - radius - margin, cy - radius - margin,
-               2 * (radius + margin), 2 * (radius + margin), COLOR_BG);
+  // Clear rose area — proportional margin, clamped to content area
+  int margin = radius / 5;  // 24 at r=120
+  int clearY = max(30, cy - radius - margin);
+  int clearBottom = min(294, cy + radius + margin);
+  c->fillRect(cx - radius - margin, clearY,
+              2 * (radius + margin), clearBottom - clearY, COLOR_BG);
 
-  // Outer circle
-  c->drawCircle(cx, cy, radius, COLOR_DIM);
+  // Anti-aliased outer circle
+  c->drawSmoothCircle(cx, cy, radius, COLOR_DIM, COLOR_BG);
 
   // Rotation: rose turns opposite to heading so N points north
   float rotDeg = -heading;
 
+  // Proportional tick lengths
+  int cardTickLen = radius / 10;    // 12px at r=120
+  int interTickLen = radius / 20;   // 6px at r=120
+
   // Degree ticks every 30 degrees (12 ticks)
   for (int i = 0; i < 12; i++) {
     float tickAngle = radians(i * 30 + rotDeg - 90);  // -90 for screen coords
-    int tickLen = (i % 3 == 0) ? 8 : 4;  // Longer at cardinals
+    int tickLen = (i % 3 == 0) ? cardTickLen : interTickLen;
     int outerX = cx + cos(tickAngle) * radius;
     int outerY = cy + sin(tickAngle) * radius;
     int innerX = cx + cos(tickAngle) * (radius - tickLen);
@@ -5614,7 +5620,7 @@ void drawCompassRose(TFT_eSprite* c, int cx, int cy, int radius, float heading) 
     int deg = i * 30;
     char lbl[4];
     sprintf(lbl, "%d", deg);
-    int labelRadius = radius + 2;  // Just outside the circle
+    int labelRadius = radius + 4;  // Slightly outside the circle
     int lblX = cx + cos(tickAngle) * labelRadius;
     int lblY = cy + sin(tickAngle) * labelRadius;
     int charW = strlen(lbl) * 6;  // textSize 1: 6px per char
@@ -5623,6 +5629,12 @@ void drawCompassRose(TFT_eSprite* c, int cx, int cy, int radius, float heading) 
     c->setCursor(lblX - charW / 2, lblY - 4);  // Center on point
     c->print(lbl);
   }
+
+  // Proportional needle dimensions derived from radius
+  int cardLen  = radius * 93 / 100;  // Cardinal length (93% of r)
+  int interLen = radius * 60 / 100;  // Intercardinal length (60% of r)
+  int cardHW   = radius * 8 / 100;   // Cardinal half-width (8% of r)
+  int interHW  = radius * 5 / 100;   // Intercardinal half-width (5% of r)
 
   // 8 diamond needles: cardinals (longer, wider) + intercardinals (shorter, thinner)
   struct Needle {
@@ -5633,14 +5645,14 @@ void drawCompassRose(TFT_eSprite* c, int cx, int cy, int radius, float heading) 
   };
 
   Needle needles[] = {
-    {  0,  70, 6, COLOR_HEADER},  // N — cyan
-    { 45,  45, 4, COLOR_DIM},     // NE — gray
-    { 90,  70, 6, COLOR_TEXT},    // E — white
-    {135,  45, 4, COLOR_DIM},     // SE — gray
-    {180,  70, 6, COLOR_ERROR},   // S — red
-    {225,  45, 4, COLOR_DIM},     // SW — gray
-    {270,  70, 6, COLOR_TEXT},    // W — white
-    {315,  45, 4, COLOR_DIM},     // NW — gray
+    {  0,  cardLen,  cardHW,  COLOR_HEADER},  // N — cyan
+    { 45,  interLen, interHW, COLOR_DIM},     // NE — gray
+    { 90,  cardLen,  cardHW,  COLOR_TEXT},     // E — white
+    {135,  interLen, interHW, COLOR_DIM},      // SE — gray
+    {180,  cardLen,  cardHW,  COLOR_ERROR},    // S — red
+    {225,  interLen, interHW, COLOR_DIM},      // SW — gray
+    {270,  cardLen,  cardHW,  COLOR_TEXT},     // W — white
+    {315,  interLen, interHW, COLOR_DIM},      // NW — gray
   };
 
   for (int i = 0; i < 8; i++) {
@@ -5670,13 +5682,17 @@ void drawCompassRose(TFT_eSprite* c, int cx, int cy, int radius, float heading) 
     c->fillTriangle(tailX, tailY, sideX1, sideY1, sideX2, sideY2, tailColor);
   }
 
-  // Center dot
-  c->fillCircle(cx, cy, 4, COLOR_TEXT);
-  c->drawCircle(cx, cy, 4, COLOR_DIM);
+  // Proportional center hub
+  int hubR = max(4, radius / 20);  // 6px at r=120
+  c->fillCircle(cx, cy, hubR, COLOR_TEXT);
+  c->drawCircle(cx, cy, hubR, COLOR_DIM);
 
-  // Fixed lubber line at top (does NOT rotate) — orange triangle
-  int lubberY = cy - radius - 3;
-  c->fillTriangle(cx, lubberY, cx - 5, lubberY - 8, cx + 5, lubberY - 8, COLOR_WARN);
+  // Fixed lubber line at top (does NOT rotate) — proportional orange triangle
+  int lubberY = cy - radius - 4;
+  int lubberHW = max(5, radius / 15);   // 8px at r=120
+  int lubberH  = max(8, radius / 10);   // 12px at r=120
+  c->fillTriangle(cx, lubberY, cx - lubberHW, lubberY - lubberH,
+                  cx + lubberHW, lubberY - lubberH, COLOR_WARN);
 }
 
 // ============== Geocache Helper Functions (#70) ==============
