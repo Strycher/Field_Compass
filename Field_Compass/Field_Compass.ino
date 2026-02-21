@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.34.3"
+#define FW_VERSION "0.34.4"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -4975,9 +4975,214 @@ void drawValue(TFT_eSprite* c, int x, int y, const char* value, uint16_t color =
 
 // drawScreenOps() removed — content now in Settings > About (#102)
 
-// Telemetry screen stub — delegates to GPS for now (#97)
+// Combined Telemetry screen — GPS data + IMU data (#97)
 void drawScreenTelemetry(TFT_eSprite* c) {
-  drawScreenGPS(c);
+  zoneBegin();
+  char buf[ZONE_KEY_LEN];
+
+  // Column geometry
+  int leftLabelX = 20;
+  int leftValueX = 100;
+  int rightLabelX = 250;
+  int rightValueX = 340;
+  int lineH = 30;
+
+  // Zone 0: Header
+  if (zoneMark(0, 0, SCREEN_W, 30, "TELEMETRY"))
+    drawHeader(c, "TELEMETRY");
+
+  // ============ GPS Section (y=36..170) ============
+
+  // GPS mode transition clearing — force redraw on state change
+  int gpsMode = gpsData.valid ? 0 : (gpsData.receiving ? 1 : 2);
+  static int lastTelemetryGpsMode = -1;
+  if (gpsMode != lastTelemetryGpsMode) {
+    c->fillRect(0, 30, SCREEN_W, 142, COLOR_BG);  // Clear GPS section
+    spr.pushSprite(0, 0);
+    zonePrevCount = 0;
+    lastTelemetryGpsMode = gpsMode;
+  }
+
+  // Section label
+  if (zoneMark(0, 36, SCREEN_W, 14, "GPS_HDR")) {
+    c->setTextColor(COLOR_HEADER);
+    c->setTextSize(1);
+    int labelW = 11 * 6;  // "=== GPS ===" = 11 chars
+    c->setCursor((SCREEN_W - labelW) / 2, 38);
+    c->print("=== GPS ===");
+  }
+
+  if (gpsData.valid) {
+    int y = 56;
+
+    // Row 1: Lat / Lon
+    if (zoneMark(leftLabelX, y, 70, 18, "Lat:"))
+      drawLabel(c, leftLabelX, y, "Lat:");
+    sprintf(buf, "%.6f %c", fabs(gpsData.latitude), gpsData.latitude >= 0 ? 'N' : 'S');
+    if (zoneMark(leftValueX, y, 140, 18, buf))
+      drawValue(c, leftValueX, y, buf, COLOR_VALUE, 140);
+
+    if (zoneMark(rightLabelX, y, 80, 18, "Lon:"))
+      drawLabel(c, rightLabelX, y, "Lon:");
+    sprintf(buf, "%.6f %c", fabs(gpsData.longitude), gpsData.longitude >= 0 ? 'E' : 'W');
+    if (zoneMark(rightValueX, y, 140, 18, buf))
+      drawValue(c, rightValueX, y, buf, COLOR_VALUE, 140);
+    y += lineH;
+
+    // Row 2: Alt / Spd
+    if (zoneMark(leftLabelX, y, 70, 18, "Alt:"))
+      drawLabel(c, leftLabelX, y, "Alt:");
+    {
+      float alt = useMetricUnits ? gpsData.altitude : gpsData.altitude * 3.28084;
+      sprintf(buf, "%.1f %s", alt, useMetricUnits ? "m" : "ft");
+    }
+    if (zoneMark(leftValueX, y, 140, 18, buf))
+      drawValue(c, leftValueX, y, buf, COLOR_VALUE, 140);
+
+    if (zoneMark(rightLabelX, y, 80, 18, "Spd:"))
+      drawLabel(c, rightLabelX, y, "Spd:");
+    {
+      float speed = gpsData.speedKnots * (useMetricUnits ? 1.852 : 1.15078);
+      sprintf(buf, "%.1f %s", speed, useMetricUnits ? "km/h" : "mph");
+    }
+    if (zoneMark(rightValueX, y, 140, 18, buf))
+      drawValue(c, rightValueX, y, buf, COLOR_VALUE, 140);
+    y += lineH;
+
+    // Row 3: Sat / HDOP
+    if (zoneMark(leftLabelX, y, 70, 18, "Sat:"))
+      drawLabel(c, leftLabelX, y, "Sat:");
+    sprintf(buf, "%d", gpsData.satellites);
+    if (zoneMark(leftValueX, y, 140, 18, buf))
+      drawValue(c, leftValueX, y, buf, COLOR_VALUE, 140);
+
+    if (zoneMark(rightLabelX, y, 80, 18, "HDOP:"))
+      drawLabel(c, rightLabelX, y, "HDOP:");
+    sprintf(buf, "%.1f", gpsData.hdop);
+    if (zoneMark(rightValueX, y, 140, 18, buf))
+      drawValue(c, rightValueX, y, buf, COLOR_VALUE, 140);
+    y += lineH;
+
+    // Row 4: Status (full width)
+    if (zoneMark(leftLabelX, y, 110, 18, "Status:"))
+      drawLabel(c, leftLabelX, y, "Status:");
+    if (gpsHadFirstFix) {
+      sprintf(buf, "Fix OK (TTFF %lus)", gpsFirstFixTime / 1000);
+    } else {
+      strcpy(buf, "Fix OK");
+    }
+    if (zoneMark(leftValueX, y, 300, 18, buf))
+      drawValue(c, leftValueX, y, buf, COLOR_VALUE, 300);
+
+  } else if (gpsData.receiving) {
+    // Acquiring state
+    if (zoneMark(60, 60, 300, 20, "Acquiring fix...")) {
+      c->fillRect(60, 60, 300, 20, COLOR_BG);
+      c->setTextColor(COLOR_WARN);
+      c->setTextSize(2);
+      c->setCursor(60, 60);
+      c->print("Acquiring fix...");
+    }
+
+    unsigned long elapsed = millis() / 1000;
+    sprintf(buf, "Elapsed: %lum %lus", elapsed / 60, elapsed % 60);
+    if (zoneMark(60, 86, 300, 20, buf)) {
+      c->fillRect(60, 86, 300, 20, COLOR_BG);
+      c->setTextColor(COLOR_DIM);
+      c->setTextSize(2);
+      c->setCursor(60, 86);
+      c->print(buf);
+    }
+
+    if (zoneMark(60, 112, 300, 20, "Need clear sky view")) {
+      c->setTextColor(COLOR_DIM);
+      c->setTextSize(2);
+      c->setCursor(60, 112);
+      c->print("Need clear sky view");
+    }
+
+    sprintf(buf, "Sats: %d", gpsData.satellites);
+    if (zoneMark(60, 138, 300, 20, buf)) {
+      c->fillRect(60, 138, 300, 20, COLOR_BG);
+      c->setTextColor(COLOR_VALUE);
+      c->setTextSize(2);
+      c->setCursor(60, 138);
+      c->print(buf);
+    }
+
+  } else {
+    // No GPS
+    if (zoneMark(80, 80, 300, 20, "No GPS data")) {
+      c->setTextColor(COLOR_ERROR);
+      c->setTextSize(2);
+      c->setCursor(80, 80);
+      c->print("No GPS data");
+    }
+    if (zoneMark(60, 116, 300, 20, "Check connection")) {
+      c->setTextColor(COLOR_DIM);
+      c->setTextSize(2);
+      c->setCursor(60, 116);
+      c->print("Check connection");
+    }
+  }
+
+  // ============ Divider ============
+  c->drawLine(0, 172, SCREEN_W, 172, COLOR_DIM);
+
+  // ============ IMU Section (y=176..264) ============
+
+  // Section label
+  if (zoneMark(0, 176, SCREEN_W, 14, "IMU_HDR")) {
+    c->setTextColor(COLOR_HEADER);
+    c->setTextSize(1);
+    int labelW = 11 * 6;  // "=== IMU ===" = 11 chars
+    c->setCursor((SCREEN_W - labelW) / 2, 178);
+    c->print("=== IMU ===");
+  }
+
+  if (imuAvailable && magAvailable) {
+    int y = 196;
+
+    // Row 5: Heading+Cardinal / Roll
+    if (zoneMark(leftLabelX, y, 70, 18, "Hdg:"))
+      drawLabel(c, leftLabelX, y, "Hdg:");
+    sprintf(buf, "%.0f %s", imuData.heading, getCardinal(imuData.heading));
+    if (zoneMark(leftValueX, y, 140, 18, buf))
+      drawValue(c, leftValueX, y, buf, COLOR_VALUE, 140);
+
+    if (zoneMark(rightLabelX, y, 80, 18, "Roll:"))
+      drawLabel(c, rightLabelX, y, "Roll:");
+    sprintf(buf, "%.0f deg", imuData.roll);
+    if (zoneMark(rightValueX, y, 140, 18, buf))
+      drawValue(c, rightValueX, y, buf, COLOR_VALUE, 140);
+    y += lineH;
+
+    // Row 6: Pitch / Accel
+    if (zoneMark(leftLabelX, y, 70, 18, "Pitch:"))
+      drawLabel(c, leftLabelX, y, "Pitch:");
+    sprintf(buf, "%.0f deg", imuData.pitch);
+    if (zoneMark(leftValueX, y, 140, 18, buf))
+      drawValue(c, leftValueX, y, buf, COLOR_VALUE, 140);
+
+    if (zoneMark(rightLabelX, y, 80, 18, "Accel:"))
+      drawLabel(c, rightLabelX, y, "Accel:");
+    sprintf(buf, "%.2f m/s2", imuData.accelMag);
+    if (zoneMark(rightValueX, y, 140, 18, buf))
+      drawValue(c, rightValueX, y, buf, COLOR_VALUE, 140);
+
+  } else {
+    if (zoneMark(60, 210, 300, 20, "IMU not available")) {
+      c->setTextColor(COLOR_ERROR);
+      c->setTextSize(2);
+      c->setCursor(60, 210);
+      c->print("IMU not available");
+    }
+  }
+
+  // NavBar
+  sprintf(buf, "nav_%d", currentScreen);
+  if (zoneMark(0, SCREEN_H - 25, SCREEN_W, 25, buf))
+    drawNavBar(c);
 }
 
 void drawScreenGPS(TFT_eSprite* c) {
