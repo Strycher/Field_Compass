@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.34.4"
+#define FW_VERSION "0.34.5"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -5185,145 +5185,6 @@ void drawScreenTelemetry(TFT_eSprite* c) {
     drawNavBar(c);
 }
 
-void drawScreenGPS(TFT_eSprite* c) {
-  zoneBegin();
-  char buf[ZONE_KEY_LEN];
-
-  int y = 50;
-  int labelX = 20;
-  int valueX = 120;
-  int lineH = 35;
-
-  // Zone 0: Header
-  if (zoneMark(0, 0, SCREEN_W, 30, "GPS"))
-    drawHeader(c, "GPS");
-
-  // Detect layout mode: 0=fix, 1=acquiring, 2=no data
-  // Include mode in zone keys so layout changes force full redraw
-  int gpsMode = gpsData.valid ? 0 : (gpsData.receiving ? 1 : 2);
-
-  // Clear content area on layout mode change — push to erase old layout artifacts
-  static int lastGpsMode = -1;
-  if (gpsMode != lastGpsMode) {
-    c->fillRect(0, 30, SCREEN_W, SCREEN_H - 55, COLOR_BG);
-    spr.pushSprite(0, 0);  // Full push to clear old layout from TFT
-    zonePrevCount = 0;      // Force all zones dirty
-    lastGpsMode = gpsMode;
-  }
-
-  if (gpsData.valid) {
-    // Zone 1: Lat label
-    if (zoneMark(labelX, y, 90, 18, "Lat:"))
-      drawLabel(c, labelX, y, "Lat:");
-    // Zone 2: Lat value
-    sprintf(buf, "%.6f %c", fabs(gpsData.latitude), gpsData.latitude >= 0 ? 'N' : 'S');
-    if (zoneMark(valueX, y, 200, 18, buf))
-      drawValue(c, valueX, y, buf);
-    y += lineH;
-
-    // Zone 3: Lon label
-    if (zoneMark(labelX, y, 90, 18, "Lon:"))
-      drawLabel(c, labelX, y, "Lon:");
-    // Zone 4: Lon value
-    sprintf(buf, "%.6f %c", fabs(gpsData.longitude), gpsData.longitude >= 0 ? 'E' : 'W');
-    if (zoneMark(valueX, y, 200, 18, buf))
-      drawValue(c, valueX, y, buf);
-    y += lineH;
-
-    // Zone 5: Alt label
-    if (zoneMark(labelX, y, 90, 18, "Alt:"))
-      drawLabel(c, labelX, y, "Alt:");
-    // Zone 6: Alt value
-    sprintf(buf, "%.1f m", gpsData.altitude);
-    if (zoneMark(valueX, y, 200, 18, buf))
-      drawValue(c, valueX, y, buf);
-    y += lineH;
-
-    // Zone 7: Status label
-    if (zoneMark(labelX, y, 90, 18, "Status:"))
-      drawLabel(c, labelX, y, "Status:");
-    // Zone 8: Status value
-    if (gpsHadFirstFix) {
-      sprintf(buf, "Fix OK (TTFF %lus)", gpsFirstFixTime / 1000);
-    } else {
-      strcpy(buf, "Fix OK");
-    }
-    if (zoneMark(valueX, y, 200, 18, buf))
-      drawValue(c, valueX, y, buf, COLOR_VALUE);
-
-  } else if (gpsData.receiving) {
-    // Zone 1: Acquiring message
-    if (zoneMark(60, 80, 300, 20, "Acquiring fix...")) {
-      c->fillRect(60, 80, 300, 20, COLOR_BG);
-      c->setTextColor(COLOR_WARN);
-      c->setTextSize(2);
-      c->setCursor(60, 80);
-      c->println("Acquiring fix...");
-    }
-
-    // Zone 2: Elapsed time
-    unsigned long elapsed = millis() / 1000;
-    sprintf(buf, "Elapsed: %lum %lus", elapsed / 60, elapsed % 60);
-    if (zoneMark(60, 110, 300, 20, buf)) {
-      c->fillRect(60, 110, 300, 20, COLOR_BG);
-      c->setCursor(60, 110);
-      c->setTextColor(COLOR_DIM);
-      c->setTextSize(2);
-      c->println(buf);
-    }
-
-    // Zone 3: Sky view hint (static)
-    if (zoneMark(60, 140, 300, 20, "Need clear sky view")) {
-      c->setTextColor(COLOR_DIM);
-      c->setTextSize(2);
-      c->setCursor(60, 140);
-      c->println("Need clear sky view");
-    }
-
-    // Zone 4: GPS time (if available) — uses localtime() for TZ (#98)
-    if (gpsData.timeValid) {
-      struct tm timeinfo;
-      if (getLocalTime(&timeinfo, 10)) {  // 10ms timeout — never block rendering (#98 bugfix)
-        char tbuf[16];
-        formatTimeStr(tbuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, true);
-        sprintf(buf, "Time: %s", tbuf);
-      } else {
-        strcpy(buf, "Time: --:--:--");
-      }
-    } else {
-      strcpy(buf, "Time: --:--:--");
-    }
-    if (zoneMark(60, 170, 300, 20, buf)) {
-      c->fillRect(60, 170, 300, 20, COLOR_BG);
-      c->setCursor(60, 170);
-      c->setTextColor(COLOR_VALUE);
-      c->setTextSize(2);
-      c->print(buf);
-    }
-
-  } else {
-    // Zone 1: No GPS message
-    if (zoneMark(80, 100, 300, 20, "No GPS data")) {
-      c->setTextColor(COLOR_ERROR);
-      c->setTextSize(2);
-      c->setCursor(80, 100);
-      c->println("No GPS data");
-    }
-    // Zone 2: Check connection (static)
-    if (zoneMark(60, 140, 300, 20, "Check connection")) {
-      c->setTextColor(COLOR_DIM);
-      c->setTextSize(2);
-      c->setCursor(60, 140);
-      c->println("Check connection");
-    }
-  }
-
-  // NavBar
-  sprintf(buf, "nav_%d", currentScreen);
-  if (zoneMark(0, SCREEN_H - 25, SCREEN_W, 25, buf))
-    drawNavBar(c);
-}
-
 void drawScreenEnv(TFT_eSprite* c) {
   zoneBegin();
   char buf[ZONE_KEY_LEN];
@@ -5707,70 +5568,6 @@ void drawScreenCompass(TFT_eSprite* c) {
   }
 
   // Zone 7: NavBar
-  sprintf(buf, "nav_%d", currentScreen);
-  if (zoneMark(0, SCREEN_H - 25, SCREEN_W, 25, buf))
-    drawNavBar(c);
-}
-
-void drawScreenIMU(TFT_eSprite* c) {
-  zoneBegin();
-  char buf[ZONE_KEY_LEN];
-
-  int y = 50;
-  int labelX = 20;
-  int valueX = 140;
-  int lineH = 35;
-
-  // Zone 0: Header
-  if (zoneMark(0, 0, SCREEN_W, 30, "IMU / COMPASS"))
-    drawHeader(c, "IMU / COMPASS");
-
-  if (imuAvailable && magAvailable) {
-    // Zone 1: Heading label
-    if (zoneMark(labelX, y, 110, 18, "Heading:"))
-      drawLabel(c, labelX, y, "Heading:");
-    // Zone 2: Heading value
-    sprintf(buf, "%.0f %s", imuData.heading, getCardinal(imuData.heading));
-    if (zoneMark(valueX, y, 200, 18, buf))
-      drawValue(c, valueX, y, buf);
-    y += lineH;
-
-    // Zone 3: Roll label
-    if (zoneMark(labelX, y, 110, 18, "Roll:"))
-      drawLabel(c, labelX, y, "Roll:");
-    // Zone 4: Roll value
-    sprintf(buf, "%.0f deg", imuData.roll);
-    if (zoneMark(valueX, y, 200, 18, buf))
-      drawValue(c, valueX, y, buf);
-    y += lineH;
-
-    // Zone 5: Pitch label
-    if (zoneMark(labelX, y, 110, 18, "Pitch:"))
-      drawLabel(c, labelX, y, "Pitch:");
-    // Zone 6: Pitch value
-    sprintf(buf, "%.0f deg", imuData.pitch);
-    if (zoneMark(valueX, y, 200, 18, buf))
-      drawValue(c, valueX, y, buf);
-    y += lineH;
-
-    // Zone 7: Accel label
-    if (zoneMark(labelX, y, 110, 18, "Accel:"))
-      drawLabel(c, labelX, y, "Accel:");
-    // Zone 8: Accel value
-    sprintf(buf, "%.2f m/s2", imuData.accelMag);
-    if (zoneMark(valueX, y, 200, 18, buf))
-      drawValue(c, valueX, y, buf);
-
-  } else {
-    if (zoneMark(60, 100, 300, 20, "IMU not available")) {
-      c->setTextColor(COLOR_ERROR);
-      c->setTextSize(2);
-      c->setCursor(60, 100);
-      c->println("IMU not available");
-    }
-  }
-
-  // Zone 9: NavBar
   sprintf(buf, "nav_%d", currentScreen);
   if (zoneMark(0, SCREEN_H - 25, SCREEN_W, 25, buf))
     drawNavBar(c);
@@ -7443,41 +7240,52 @@ void updateOLED() {
 
 // drawOLEDScreenOps() removed — content now in Settings > About (#102)
 
-// OLED Telemetry stub — delegates to GPS for now (#97)
+// OLED Telemetry — combined GPS + IMU (#97)
 void drawOLEDScreenTelemetry() {
-  drawOLEDScreenGPS();
-}
-
-void drawOLEDScreenGPS() {
   char buf[32];
 
   oled.setTextSize(1);
   oled.setCursor(0, 0);
-  oled.print("GPS");
+  oled.print("TELEMETRY");
 
+  // GPS section (rows 1-3)
   if (gpsData.valid) {
-    oled.setCursor(0, 12);
-    sprintf(buf, "Lat: %.5f", gpsData.latitude);
+    oled.setCursor(0, 10);
+    sprintf(buf, "%.5f %c", fabs(gpsData.latitude), gpsData.latitude >= 0 ? 'N' : 'S');
     oled.print(buf);
 
-    oled.setCursor(0, 24);
-    sprintf(buf, "Lon: %.5f", gpsData.longitude);
-    oled.print(buf);
-
-    oled.setCursor(0, 36);
-    sprintf(buf, "Alt: %.1fm", gpsData.altitude);
-    oled.print(buf);
-
-    oled.setCursor(0, 48);
-    oled.print("Status: Fix OK");
-  } else if (gpsData.receiving) {
     oled.setCursor(0, 20);
+    sprintf(buf, "%.5f %c", fabs(gpsData.longitude), gpsData.longitude >= 0 ? 'E' : 'W');
+    oled.print(buf);
+
+    float altVal = useMetricUnits ? gpsData.altitude : gpsData.altitude * 3.28084;
+    char altUnit = useMetricUnits ? 'm' : 'f';
+    oled.setCursor(0, 30);
+    sprintf(buf, "%.0f%c S:%d H:%.1f", altVal, altUnit, gpsData.satellites, gpsData.hdop);
+    oled.print(buf);
+  } else if (gpsData.receiving) {
+    oled.setCursor(0, 15);
     oled.print("Acquiring fix...");
-    oled.setCursor(0, 36);
-    oled.print("Need sky view");
+    oled.setCursor(0, 25);
+    sprintf(buf, "Sat: %d", gpsData.satellites);
+    oled.print(buf);
   } else {
-    oled.setCursor(0, 28);
+    oled.setCursor(0, 18);
     oled.print("No GPS data");
+  }
+
+  // IMU section (rows 4-5)
+  if (imuAvailable && magAvailable) {
+    oled.setCursor(0, 42);
+    sprintf(buf, "%.0f%s R:%.0f P:%.0f", imuData.heading, getCardinal(imuData.heading), imuData.roll, imuData.pitch);
+    oled.print(buf);
+
+    oled.setCursor(0, 52);
+    sprintf(buf, "Accel:%.2f m/s2", imuData.accelMag);
+    oled.print(buf);
+  } else {
+    oled.setCursor(0, 46);
+    oled.print("No IMU");
   }
 }
 
@@ -7542,35 +7350,6 @@ void drawOLEDScreenCompass() {
   } else {
     oled.setCursor(0, 16);
     oled.print("No IMU");
-  }
-}
-
-void drawOLEDScreenIMU() {
-  char buf[32];
-
-  oled.setTextSize(1);
-  oled.setCursor(0, 0);
-  oled.print("IMU/COMPASS");
-
-  if (imuAvailable && magAvailable) {
-    oled.setCursor(0, 12);
-    sprintf(buf, "Hdg: %.0f %s", imuData.heading, getCardinal(imuData.heading));
-    oled.print(buf);
-
-    oled.setCursor(0, 24);
-    sprintf(buf, "Roll: %.0f", imuData.roll);
-    oled.print(buf);
-
-    oled.setCursor(0, 36);
-    sprintf(buf, "Pitch: %.0f", imuData.pitch);
-    oled.print(buf);
-
-    oled.setCursor(0, 48);
-    sprintf(buf, "Accel: %.2f", imuData.accelMag);
-    oled.print(buf);
-  } else {
-    oled.setCursor(0, 28);
-    oled.print("IMU not found");
   }
 }
 
