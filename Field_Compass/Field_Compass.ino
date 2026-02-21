@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.35.0"
+#define FW_VERSION "0.35.1"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -242,7 +242,7 @@ bool     tapFiredOnContact = false;  // Guard: true if tap already fired on touc
 int  settingsSubScreen = 0;    // 0=menu, 1=compass cal, 2=diagnostics, ...
 int  previousScreen    = 0;    // Screen to return to when exiting settings
 int  settingsMenuIndex = 0;    // Currently highlighted menu item
-#define SETTINGS_MENU_COUNT 5  // Configuration, Display, Compass Cal, Diagnostics, About (#91/#92)
+#define SETTINGS_MENU_COUNT 6  // Configuration, Display, Compass Cal, Diagnostics, About, Factory Reset (#104)
 
 // OLED Display
 Adafruit_SH1107 oled = Adafruit_SH1107(64, 128, &Wire);
@@ -2505,6 +2505,31 @@ void saveSettings() {
   logPrintln("[SETTINGS] Settings saved to SD");
 }
 
+// Factory reset — delete settings file and restore compiled defaults (#104)
+void factoryReset() {
+  // Delete stored settings
+  if (sdHealth.available && SD.exists("/config/settings.txt")) {
+    SD.remove("/config/settings.txt");
+  }
+
+  // Restore compiled defaults
+  useFahrenheit    = true;
+  use12Hour        = true;
+  useMetricUnits   = false;
+  strncpy(posixTZ, "EST5EDT,M3.2.0,M11.1.0", sizeof(posixTZ) - 1);
+  strncpy(tzDisplayName, "US Eastern", sizeof(tzDisplayName) - 1);
+  tzSelectedIndex  = 0;
+  tftBrightness    = 255;
+  tftSleepMs       = 0;
+  oledSleepMs      = 300000;
+
+  // Apply
+  applyTimezone();
+  analogWrite(TFT_BL, tftBrightness);
+
+  logPrintln("[SETTINGS] Factory reset — all settings restored to defaults");
+}
+
 // Load weather history from SD card on boot
 void loadWeatherHistory() {
   if (!sdHealth.available) return;
@@ -3992,7 +4017,8 @@ static const char* settingsMenuItems[] = {
   "Display",
   "Compass Cal",
   "Diagnostics",
-  "About"
+  "About",
+  "Factory Reset"       // #104
 };
 
 // Timeout presets for Display settings (#91)
@@ -6002,6 +6028,53 @@ void drawSettingsConfig(TFT_eSprite* c) {
   }
 }
 
+// Factory Reset confirmation screen (#104)
+void drawSettingsFactoryReset(TFT_eSprite* c) {
+  char buf[64];
+
+  // Header
+  if (zoneMark(0, 0, SCREEN_W, 30, "FRESET_HDR"))
+    drawHeader(c, "FACTORY RESET");
+
+  // Warning message
+  if (zoneMark(20, 80, SCREEN_W - 40, 50, "FRESET_WARN")) {
+    c->setTextColor(COLOR_WARN);
+    c->setTextSize(2);
+    c->setCursor(20, 80);
+    c->print("Reset all settings to");
+    c->setCursor(20, 104);
+    c->print("factory defaults?");
+  }
+
+  // Info: calibration preserved
+  if (zoneMark(20, 145, SCREEN_W - 40, 50, "FRESET_INFO")) {
+    c->setTextColor(COLOR_DIM);
+    c->setTextSize(2);
+    c->setCursor(20, 145);
+    c->print("Compass calibration will");
+    c->setCursor(20, 169);
+    c->print("be preserved.");
+  }
+
+  // Action bar: Back / Reset
+  if (zoneMark(0, 270, SCREEN_W, 50, "FRESET_BAR")) {
+    c->fillRect(0, 270, SCREEN_W, 50, 0x18C3);
+    c->setTextSize(2);
+
+    // Back button (left)
+    c->fillRoundRect(10, 278, 110, 34, 6, 0x4208);
+    c->setTextColor(COLOR_TEXT);
+    c->setCursor(22, 286);
+    c->print("<- Back");
+
+    // Reset button (right) — red to indicate destructive action
+    c->fillRoundRect(360, 278, 110, 34, 6, 0x8000);  // Dark red
+    c->setTextColor(COLOR_TEXT);
+    c->setCursor(378, 286);
+    c->print("RESET");
+  }
+}
+
 void drawSettingsMenu(TFT_eSprite* c) {
   char buf[64];
 
@@ -6721,6 +6794,7 @@ void drawScreenSettings(TFT_eSprite* c) {
     case 3:  drawSettingsCompassCal(c);                     break;  // Compass Cal (#89)
     case 4:  drawSettingsDiags(c);                          break;  // Diagnostics (#90)
     case 5:  drawSettingsAbout(c);                         break;  // About (#92)
+    case 6:  drawSettingsFactoryReset(c);                  break;  // Factory Reset (#104)
     default: drawSettingsMenu(c);                          break;
   }
 }
