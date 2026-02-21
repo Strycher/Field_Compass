@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.34.2"
+#define FW_VERSION "0.34.3"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -127,13 +127,12 @@ const char* NTP_SERVER = "pool.ntp.org";
 #define LOG_LEVEL LOG_LEVEL_INFO  // Default: ERROR + WARN + INFO
 
 // Screen settings
-#define NUM_SCREENS 5
-#define SCREEN_COMPASS 0
-#define SCREEN_GEOCACHE 1  // Geocaching navigation (#70)
-#define SCREEN_ENV 2
-#define SCREEN_GPS 3
-#define SCREEN_IMU 4
-#define SCREEN_SETTINGS 5  // Modal overlay — outside NUM_SCREENS, not in swipe/button cycling
+#define NUM_SCREENS 4
+#define SCREEN_COMPASS   0
+#define SCREEN_GEOCACHE  1  // Geocaching navigation (#70)
+#define SCREEN_ENV       2
+#define SCREEN_TELEMETRY 3  // Combined GPS + IMU (#97)
+#define SCREEN_SETTINGS  4  // Modal overlay — outside NUM_SCREENS, not in swipe/button cycling
 
 // Screen dimensions (landscape mode after rotation)
 #define SCREEN_W 480
@@ -4885,12 +4884,11 @@ void updateDisplay() {
     // Each drawScreenXxx calls zoneBegin(), registers zones with zoneMark(),
     // and only draws content for dirty zones. drawNavBar is called inside each screen.
     switch (currentScreen) {
-      case SCREEN_COMPASS:  drawScreenCompass(c);   break;
-      case SCREEN_GPS:      drawScreenGPS(c);       break;
-      case SCREEN_ENV:      drawScreenEnv(c);       break;
-      case SCREEN_IMU:      drawScreenIMU(c);       break;
-      case SCREEN_GEOCACHE: drawScreenGeocache(c);  break;
-      case SCREEN_SETTINGS: drawScreenSettings(c);  break;
+      case SCREEN_COMPASS:   drawScreenCompass(c);   break;
+      case SCREEN_GEOCACHE:  drawScreenGeocache(c);  break;
+      case SCREEN_ENV:       drawScreenEnv(c);       break;
+      case SCREEN_TELEMETRY: drawScreenTelemetry(c); break;
+      case SCREEN_SETTINGS:  drawScreenSettings(c);  break;
     }
 
     // Push only dirty zones to TFT (small partial SPI transfers = no visible flash)
@@ -4937,9 +4935,9 @@ void drawNavBar(TFT_eSprite* c) {
   c->setTextColor(COLOR_TEXT);
   c->setTextSize(2);
 
-  // Screen indicators - adjusted spacing for 5 screens
-  int startX = 60;
-  int spacing = 36;
+  // Screen indicators - adjusted spacing for 4 screens (#97)
+  int startX = 80;
+  int spacing = 40;
   for (int i = 0; i < NUM_SCREENS; i++) {
     if (i == currentScreen) {
       c->fillRect(startX + i * spacing, y + 3, 28, 19, COLOR_HEADER);
@@ -4976,6 +4974,11 @@ void drawValue(TFT_eSprite* c, int x, int y, const char* value, uint16_t color =
 }
 
 // drawScreenOps() removed — content now in Settings > About (#102)
+
+// Telemetry screen stub — delegates to GPS for now (#97)
+void drawScreenTelemetry(TFT_eSprite* c) {
+  drawScreenGPS(c);
+}
 
 void drawScreenGPS(TFT_eSprite* c) {
   zoneBegin();
@@ -7211,17 +7214,14 @@ void updateOLED() {
     case SCREEN_COMPASS:
       drawOLEDScreenCompass();
       break;
-    case SCREEN_GPS:
-      drawOLEDScreenGPS();
+    case SCREEN_GEOCACHE:
+      drawOLEDScreenGeocache();
       break;
     case SCREEN_ENV:
       drawOLEDScreenEnv();
       break;
-    case SCREEN_IMU:
-      drawOLEDScreenIMU();
-      break;
-    case SCREEN_GEOCACHE:
-      drawOLEDScreenGeocache();
+    case SCREEN_TELEMETRY:
+      drawOLEDScreenTelemetry();
       break;
     case SCREEN_SETTINGS:
       oled.setTextSize(1);
@@ -7237,6 +7237,11 @@ void updateOLED() {
 }
 
 // drawOLEDScreenOps() removed — content now in Settings > About (#102)
+
+// OLED Telemetry stub — delegates to GPS for now (#97)
+void drawOLEDScreenTelemetry() {
+  drawOLEDScreenGPS();
+}
 
 void drawOLEDScreenGPS() {
   char buf[32];
