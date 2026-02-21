@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.32.2"
+#define FW_VERSION "0.32.3"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -720,7 +720,7 @@ void serialLogFlush() {
         serialLogFile.write((uint8_t*)serialLogBuf, serialLogBufPos);
       } else {
         serialLogActive = false;
-        Serial.println("[LOG] SD write failed, logging disabled");
+        LOG_ERROR("[LOG] SD write failed, logging disabled");
       }
     }
     serialLogFile.flush();
@@ -866,16 +866,15 @@ void setup() {
   // Boot banner - capture to ring buffer for web serial
   char banner[128];
   snprintf(banner, sizeof(banner), "=================================\nField Compass Dual %s\n=================================\n\n", FW_VERSION);
-  serialRingAppend(banner);
-  Serial.print(banner);
+  logPrintf("%s", banner);
 
-  Serial.println(">>> About to init TFT...");
+  LOG_DEBUG("About to init TFT...");
   Serial.flush();
 
   // Initialize TFT first for visual feedback (TFT_eSPI handles SPI init)
   initTFT();
 
-  Serial.println(">>> TFT init done");
+  LOG_DEBUG("TFT init done");
   Serial.flush();
 
   // Initialize I2C
@@ -1148,9 +1147,7 @@ void loop() {
              gpsData.hdop,
              gpsHadFirstFix ? gpsFirstFixTime / 1000 : 0,
              battV, battP, battR);
-    serialRingAppend(buf);
-    serialLogAppend(buf);  // SD log (#59)
-    Serial.print(buf);
+    logPrintf("%s", buf);
 
     // TFT debug logging (P1 blank bug investigation)
     #if DEBUG_TFT
@@ -1158,9 +1155,7 @@ void loop() {
     unsigned long reinitAge = (millis() - lastTFTReinit) / 1000;
     snprintf(buf, sizeof(buf), "[TFT] sleep:%d scr:%d upd:%lus ago reinit:%lus ago cnt:%lu\n",
              tftSleeping, currentScreen, tftAge, reinitAge, tftUpdateCount);
-    serialRingAppend(buf);
-    serialLogAppend(buf);  // SD log (#59)
-    Serial.print(buf);
+    logPrintf("%s", buf);
     #endif
 
     lastStatusLog = millis();
@@ -3730,11 +3725,11 @@ void initWebServer() {
   if (!wifiConnected) return;
   if (webServerStarted) return;  // Already started
 
-  Serial.print("Starting web server... ");
+  LOG_INFO("Starting web server...");
 
   // Setup mDNS
   if (MDNS.begin("fieldcompass")) {
-    Serial.print("mDNS OK (fieldcompass.local) ");
+    LOG_INFO("mDNS OK (fieldcompass.local)");
   }
 
   // Register handlers
@@ -3764,10 +3759,7 @@ void initWebServer() {
 
   webServer.begin();
   webServerStarted = true;
-  Serial.println("OK");
-  Serial.print("  URL: http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("/");
+  LOG_INFO("Web server OK — http://%s/", WiFi.localIP().toString().c_str());
 }
 
 // ============== Weather Log Statistics ==============
@@ -4731,8 +4723,7 @@ void readBME688() {
   if (!envSensor.run()) {
     // Check for errors only if status is negative
     if (envSensor.status < BSEC_OK) {
-      Serial.print("BSEC error: ");
-      Serial.println(envSensor.status);
+      LOG_ERROR("BSEC error: %d", envSensor.status);
     }
   }
 }
