@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.35.1"
+#define FW_VERSION "0.35.2"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -4269,6 +4269,14 @@ void handleSettingsCSelect() {
     if (spriteAvailable) forceDisplayUpdate = true;
     return;
   }
+
+  // Factory Reset (6): C-short = Back without resetting (#104)
+  if (settingsSubScreen == 6) {
+    settingsSubScreen = 0;
+    logPrintln("[SETTINGS] Back (Factory Reset) via C");
+    if (spriteAvailable) forceDisplayUpdate = true;
+    return;
+  }
 }
 
 // Handle C long press on Settings screen (back navigation)
@@ -4495,6 +4503,24 @@ void handleTap(int16_t x, int16_t y) {
     if (x >= 10 && x <= 120 && y >= 278 && y <= 312) {
       settingsSubScreen = 0;
       logPrintln("[SETTINGS] Back (About)");
+      if (spriteAvailable) forceDisplayUpdate = true;
+    }
+    return;
+  }
+
+  // Factory Reset sub-screen taps (#104)
+  if (currentScreen == SCREEN_SETTINGS && settingsSubScreen == 6) {
+    // Back button tap
+    if (x >= 10 && x <= 120 && y >= 278 && y <= 312) {
+      settingsSubScreen = 0;
+      logPrintln("[SETTINGS] Back (Factory Reset)");
+      if (spriteAvailable) forceDisplayUpdate = true;
+    }
+    // Reset button tap
+    if (x >= 360 && x <= 470 && y >= 278 && y <= 312) {
+      factoryReset();
+      settingsSubScreen = 0;
+      logPrintln("[SETTINGS] Factory reset confirmed via tap");
       if (spriteAvailable) forceDisplayUpdate = true;
     }
     return;
