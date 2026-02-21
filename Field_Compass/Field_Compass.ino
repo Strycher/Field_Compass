@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.34.1"
+#define FW_VERSION "0.34.2"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -5294,7 +5294,7 @@ void drawScreenCompass(TFT_eSprite* c) {
     }
   }
 
-  // Zone 3: GPS Coordinates (textSize 1, 2 lines)
+  // Zone 2: GPS Coordinates (textSize 1, 2 lines)
   {
     int gpsMode = gpsData.valid ? 0 : (gpsData.receiving ? 1 : 2);
     if (gpsMode == 0) {
@@ -5302,37 +5302,85 @@ void drawScreenCompass(TFT_eSprite* c) {
     } else {
       sprintf(buf, "G%d_s%d", gpsMode, gpsData.satellites);
     }
-    if (zoneMark(8, 100, 170, 28, buf)) {
-      c->fillRect(8, 100, 170, 28, COLOR_BG);
+    if (zoneMark(8, 80, 170, 28, buf)) {
+      c->fillRect(8, 80, 170, 28, COLOR_BG);
       c->setTextSize(1);
       if (gpsData.valid) {
-        // Line 1: Lat
         c->setTextColor(COLOR_DIM);
-        c->setCursor(8, 100);
+        c->setCursor(8, 80);
         c->print("Lat ");
         c->setTextColor(COLOR_VALUE);
         c->printf("%.4f%c", fabs(gpsData.latitude), gpsData.latitude >= 0 ? 'N' : 'S');
-        // Line 2: Lon
         c->setTextColor(COLOR_DIM);
-        c->setCursor(8, 114);
+        c->setCursor(8, 94);
         c->print("Lon ");
         c->setTextColor(COLOR_VALUE);
         c->printf("%.4f%c", fabs(gpsData.longitude), gpsData.longitude >= 0 ? 'E' : 'W');
       } else if (gpsData.receiving) {
         c->setTextColor(COLOR_WARN);
-        c->setCursor(8, 100);
+        c->setCursor(8, 80);
         c->print("GPS Acquiring...");
-        c->setCursor(8, 114);
+        c->setCursor(8, 94);
         c->printf("Sats: %d", gpsData.satellites);
       } else {
         c->setTextColor(COLOR_ERROR);
-        c->setCursor(8, 104);
+        c->setCursor(8, 84);
         c->print("No GPS");
       }
     }
   }
 
-  // Zone 4: Temperature (textSize 1)
+  // Zone 3: Altitude (textSize 1) — grouped with GPS data
+  {
+    if (gpsData.valid) {
+      float alt = useMetricUnits ? gpsData.altitude : gpsData.altitude * 3.28084;
+      sprintf(buf, "A%.0f%c", alt, useMetricUnits ? 'm' : 'f');
+    } else {
+      strcpy(buf, "A--");
+    }
+    if (zoneMark(8, 108, 170, 14, buf)) {
+      c->fillRect(8, 108, 170, 14, COLOR_BG);
+      c->setTextSize(1);
+      c->setCursor(8, 108);
+      c->setTextColor(COLOR_DIM);
+      c->print("Alt ");
+      if (gpsData.valid) {
+        float alt = useMetricUnits ? gpsData.altitude : gpsData.altitude * 3.28084;
+        c->setTextColor(COLOR_VALUE);
+        c->printf("%.0f %s", alt, useMetricUnits ? "m" : "ft");
+      } else {
+        c->setTextColor(COLOR_DIM);
+        c->print("--");
+      }
+    }
+  }
+
+  // Zone 4: Speed (textSize 1) — grouped with GPS data
+  {
+    if (gpsData.valid) {
+      float speed = gpsData.speedKnots * (useMetricUnits ? 1.852 : 1.15078);
+      sprintf(buf, "S%.1f%c", speed, useMetricUnits ? 'k' : 'm');
+    } else {
+      strcpy(buf, "S--");
+    }
+    if (zoneMark(8, 122, 170, 14, buf)) {
+      c->fillRect(8, 122, 170, 14, COLOR_BG);
+      c->setTextSize(1);
+      c->setCursor(8, 122);
+      c->setTextColor(COLOR_DIM);
+      c->print("Spd ");
+      if (gpsData.valid) {
+        float speed = gpsData.speedKnots * (useMetricUnits ? 1.852 : 1.15078);
+        c->setTextColor(COLOR_VALUE);
+        c->printf("%.1f %s", speed, useMetricUnits ? "km/h" : "mph");
+      } else {
+        c->setTextColor(COLOR_DIM);
+        c->printf("-- %s", useMetricUnits ? "km/h" : "mph");
+      }
+    }
+  }
+
+  // Zone 5: Temperature (textSize 1)
   {
     bool hasTempSensor = shtAvailable || bmeAvailable;
     if (hasTempSensor) {
@@ -5342,10 +5390,10 @@ void drawScreenCompass(TFT_eSprite* c) {
     } else {
       strcpy(buf, "T--");
     }
-    if (zoneMark(8, 140, 170, 14, buf)) {
-      c->fillRect(8, 140, 170, 14, COLOR_BG);
+    if (zoneMark(8, 144, 170, 14, buf)) {
+      c->fillRect(8, 144, 170, 14, COLOR_BG);
       c->setTextSize(1);
-      c->setCursor(8, 140);
+      c->setCursor(8, 144);
       c->setTextColor(COLOR_DIM);
       c->print("Temp ");
       if (hasTempSensor) {
@@ -5366,7 +5414,7 @@ void drawScreenCompass(TFT_eSprite* c) {
     }
   }
 
-  // Zone 5: Forecast + trend (textSize 1)
+  // Zone 6: Forecast + trend (textSize 1)
   {
     sprintf(buf, "F_%s_%s", getTrendArrow(), weatherTrend.forecast);
     if (zoneMark(8, 158, 170, 14, buf)) {
@@ -5385,31 +5433,6 @@ void drawScreenCompass(TFT_eSprite* c) {
                strcmp(fc, "Traveled") == 0) fcstColor = COLOR_DIM;
       c->setTextColor(fcstColor);
       c->printf("%s %s", getTrendArrow(), fc);
-    }
-  }
-
-  // Zone 6: Speed (textSize 1)
-  {
-    if (gpsData.valid) {
-      float speed = gpsData.speedKnots * (useMetricUnits ? 1.852 : 1.15078);
-      sprintf(buf, "S%.1f%c", speed, useMetricUnits ? 'k' : 'm');
-    } else {
-      strcpy(buf, "S--");
-    }
-    if (zoneMark(8, 176, 170, 14, buf)) {
-      c->fillRect(8, 176, 170, 14, COLOR_BG);
-      c->setTextSize(1);
-      c->setCursor(8, 176);
-      c->setTextColor(COLOR_DIM);
-      c->print("Spd ");
-      if (gpsData.valid) {
-        float speed = gpsData.speedKnots * (useMetricUnits ? 1.852 : 1.15078);
-        c->setTextColor(COLOR_VALUE);
-        c->printf("%.1f %s", speed, useMetricUnits ? "km/h" : "mph");
-      } else {
-        c->setTextColor(COLOR_DIM);
-        c->printf("-- %s", useMetricUnits ? "km/h" : "mph");
-      }
     }
   }
 
@@ -5435,31 +5458,6 @@ void drawScreenCompass(TFT_eSprite* c) {
       } else {
         c->setTextColor(COLOR_ERROR);
         c->print("No GPS");
-      }
-    }
-  }
-
-  // Zone 8: Altitude (textSize 1)
-  {
-    if (gpsData.valid) {
-      float alt = useMetricUnits ? gpsData.altitude : gpsData.altitude * 3.28084;
-      sprintf(buf, "A%.0f%c", alt, useMetricUnits ? 'm' : 'f');
-    } else {
-      strcpy(buf, "A--");
-    }
-    if (zoneMark(8, 218, 170, 14, buf)) {
-      c->fillRect(8, 218, 170, 14, COLOR_BG);
-      c->setTextSize(1);
-      c->setCursor(8, 218);
-      c->setTextColor(COLOR_DIM);
-      c->print("Alt ");
-      if (gpsData.valid) {
-        float alt = useMetricUnits ? gpsData.altitude : gpsData.altitude * 3.28084;
-        c->setTextColor(COLOR_VALUE);
-        c->printf("%.0f %s", alt, useMetricUnits ? "m" : "ft");
-      } else {
-        c->setTextColor(COLOR_DIM);
-        c->print("--");
       }
     }
   }
