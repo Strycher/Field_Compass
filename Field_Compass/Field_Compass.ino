@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.33.0"
+#define FW_VERSION "0.33.1"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -5327,18 +5327,18 @@ void drawScreenCompass(TFT_eSprite* c) {
   }
 
   // === Right Panel: Compass Rose ===
-  // Zone 6: Compass rose — key on heading rounded to 2° steps
+  // Zone 10: Compass rose — key on heading rounded to 2° steps
   if (imuAvailable && magAvailable) {
     int roseHeading = ((int)imuData.heading / 2) * 2;
     sprintf(buf, "rose_%d", roseHeading);
-    if (zoneMark(137, 32, 186, 186, buf))
-      drawCompassRose(c, 230, 125, 75, imuData.heading);
+    if (zoneMark(182, 30, 298, 265, buf))
+      drawCompassRose(c, 320, 162, 120, imuData.heading);
   } else {
-    if (zoneMark(137, 32, 186, 186, "rose_none")) {
-      c->drawCircle(230, 125, 75, COLOR_DIM);
+    if (zoneMark(182, 30, 298, 265, "rose_none")) {
+      c->drawCircle(320, 162, 120, COLOR_DIM);
       c->setTextColor(COLOR_DIM);
       c->setTextSize(3);
-      c->setCursor(222, 115);
+      c->setCursor(312, 152);
       c->print("?");
     }
   }
