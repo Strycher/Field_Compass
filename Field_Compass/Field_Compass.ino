@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.34.0"
+#define FW_VERSION "0.34.1"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -5267,34 +5267,29 @@ void drawScreenCompass(TFT_eSprite* c) {
 
   // === Left Panel: Text Data ===
   if (imuAvailable && magAvailable) {
-    // Zone 1: Heading (textSize 4) — large degrees display
-    sprintf(buf, "%.0f", imuData.heading);
+    // Zone 1: Heading + Cardinal (textSize 4) — e.g., "204° SW"
+    const char* cardinal = getCardinal(imuData.heading);
+    sprintf(buf, "%.0f_%s", imuData.heading, cardinal);
     if (zoneMark(8, 34, 170, 36, buf)) {
       c->fillRect(8, 34, 170, 36, COLOR_BG);
       c->setTextColor(COLOR_TEXT);
       c->setTextSize(4);
       c->setCursor(8, 36);
-      c->print(buf);
+      c->printf("%.0f", imuData.heading);
+      // Degree symbol proportional to textSize 4
       int degX = c->getCursorX() + 2;
       c->drawCircle(degX + 4, 38, 4, COLOR_TEXT);
-    }
-
-    // Zone 2: Cardinal direction (textSize 2)
-    const char* cardinal = getCardinal(imuData.heading);
-    if (zoneMark(8, 72, 170, 20, cardinal)) {
-      c->fillRect(8, 72, 170, 20, COLOR_BG);
-      c->setTextColor(COLOR_VALUE);
-      c->setTextSize(2);
-      c->setCursor(8, 74);
+      // Cardinal direction after degree symbol
+      c->setCursor(degX + 14, 36);
       c->print(cardinal);
     }
   } else {
-    // No IMU — single merged zone replaces heading + cardinal
-    if (zoneMark(8, 34, 170, 56, "No IMU")) {
-      c->fillRect(8, 34, 170, 56, COLOR_BG);
+    // No IMU — single zone replaces heading + cardinal
+    if (zoneMark(8, 34, 170, 36, "No IMU")) {
+      c->fillRect(8, 34, 170, 36, COLOR_BG);
       c->setTextColor(COLOR_ERROR);
       c->setTextSize(2);
-      c->setCursor(8, 52);
+      c->setCursor(8, 45);
       c->print("No IMU");
     }
   }
@@ -5494,10 +5489,10 @@ void drawScreenCompass(TFT_eSprite* c) {
     int roseHeading = ((int)imuData.heading / 2) * 2;
     sprintf(buf, "rose_%d", roseHeading);
     if (zoneMark(182, 30, 298, 265, buf))
-      drawCompassRose(c, 320, 162, 120, imuData.heading);
+      drawCompassRose(c, 320, 162, 108, imuData.heading);
   } else {
     if (zoneMark(182, 30, 298, 265, "rose_none")) {
-      c->drawCircle(320, 162, 120, COLOR_DIM);
+      c->drawCircle(320, 162, 108, COLOR_DIM);
       c->setTextColor(COLOR_DIM);
       c->setTextSize(3);
       c->setCursor(312, 152);
@@ -5633,8 +5628,8 @@ void drawCompassRose(TFT_eSprite* c, int cx, int cy, int radius, float heading) 
   // Proportional needle dimensions derived from radius
   int cardLen  = radius * 93 / 100;  // Cardinal length (93% of r)
   int interLen = radius * 60 / 100;  // Intercardinal length (60% of r)
-  int cardHW   = radius * 8 / 100;   // Cardinal half-width (8% of r)
-  int interHW  = radius * 5 / 100;   // Intercardinal half-width (5% of r)
+  int cardHW   = radius * 10 / 100;  // Cardinal half-width (10% of r)
+  int interHW  = radius * 6 / 100;   // Intercardinal half-width (6% of r)
 
   // 8 diamond needles: cardinals (longer, wider) + intercardinals (shorter, thinner)
   struct Needle {
@@ -5682,8 +5677,8 @@ void drawCompassRose(TFT_eSprite* c, int cx, int cy, int radius, float heading) 
     c->fillTriangle(tailX, tailY, sideX1, sideY1, sideX2, sideY2, tailColor);
   }
 
-  // Proportional center hub
-  int hubR = max(4, radius / 20);  // 6px at r=120
+  // Proportional center hub — sized to frame needle bases
+  int hubR = max(5, radius / 15);  // 7px at r=108
   c->fillCircle(cx, cy, hubR, COLOR_TEXT);
   c->drawCircle(cx, cy, hubR, COLOR_DIM);
 
