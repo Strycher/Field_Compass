@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.36.0"
+#define FW_VERSION "0.36.1"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -472,6 +472,7 @@ uint32_t tftSleepMs      = 0;                              // 0 = never (default
 uint32_t oledSleepMs     = 300000;                         // 5 minutes default
 int      displayFocusRow = -1;                             // 0=Bright, 1=TFT timeout, 2=OLED timeout, 3=Back, 4=OK
 int      compassCalFocusRow = -1;                          // 0=Start Cal, 1=Back (#89)
+int      resetFocusRow = -1;                               // 0=Back, 1=Reset (#104)
 
 // Timezone presets with POSIX TZ strings (#98)
 struct TZPreset {
@@ -4097,6 +4098,19 @@ void handleSettingsButtons(bool buttonA, bool buttonB) {
       if (spriteAvailable) forceDisplayUpdate = true;
     }
   }
+
+  // Factory Reset sub-screen: A/B = focus between Back (0) and Reset (1) (#104)
+  if (settingsSubScreen == 6) {
+    if (resetFocusRow < 0) resetFocusRow = 0;
+    if (buttonA && resetFocusRow > 0) {
+      resetFocusRow--;
+      if (spriteAvailable) forceDisplayUpdate = true;
+    }
+    if (buttonB && resetFocusRow < 1) {
+      resetFocusRow++;
+      if (spriteAvailable) forceDisplayUpdate = true;
+    }
+  }
 }
 
 // Handle C short press on Settings screen
@@ -4117,6 +4131,7 @@ void handleSettingsCSelect() {
     configFocusRow = -1;    // Reset focus on entry (#98)
     displayFocusRow = -1;   // Reset display focus too (#91)
     compassCalFocusRow = -1; // Reset compass cal focus (#89)
+    resetFocusRow = -1;     // Reset factory reset focus (#104)
     logPrintf("[SETTINGS] Selected: %s\n", settingsMenuItems[settingsMenuIndex]);
     if (spriteAvailable) forceDisplayUpdate = true;
     else tft.fillScreen(COLOR_BG);
@@ -4270,10 +4285,20 @@ void handleSettingsCSelect() {
     return;
   }
 
-  // Factory Reset (6): C-short = Back without resetting (#104)
+  // Factory Reset (6): C-short activates focused button (#104)
   if (settingsSubScreen == 6) {
-    settingsSubScreen = 0;
-    logPrintln("[SETTINGS] Back (Factory Reset) via C");
+    if (resetFocusRow == 1) {
+      // Reset confirmed
+      factoryReset();
+      resetFocusRow = -1;
+      settingsSubScreen = 0;
+      logPrintln("[SETTINGS] Factory reset confirmed via button C");
+    } else {
+      // Back (focusRow 0 or no focus)
+      resetFocusRow = -1;
+      settingsSubScreen = 0;
+      logPrintln("[SETTINGS] Back (Factory Reset) via C");
+    }
     if (spriteAvailable) forceDisplayUpdate = true;
     return;
   }
@@ -6082,8 +6107,9 @@ void drawSettingsFactoryReset(TFT_eSprite* c) {
     c->print("be preserved.");
   }
 
-  // Action bar: Back / Reset
-  if (zoneMark(0, 270, SCREEN_W, 50, "FRESET_BAR")) {
+  // Action bar: Back / Reset — include focus in zone key for dirty tracking (#104)
+  sprintf(buf, "FRESET_BAR_f%d", resetFocusRow);
+  if (zoneMark(0, 270, SCREEN_W, 50, buf)) {
     c->fillRect(0, 270, SCREEN_W, 50, 0x18C3);
     c->setTextSize(2);
 
@@ -6098,6 +6124,10 @@ void drawSettingsFactoryReset(TFT_eSprite* c) {
     c->setTextColor(COLOR_TEXT);
     c->setCursor(378, 286);
     c->print("RESET");
+
+    // Focus highlight
+    if (resetFocusRow == 0) c->drawRoundRect(8, 276, 114, 38, 8, COLOR_HEADER);   // Back focus
+    if (resetFocusRow == 1) c->drawRoundRect(358, 276, 114, 38, 8, COLOR_HEADER); // Reset focus
   }
 }
 
