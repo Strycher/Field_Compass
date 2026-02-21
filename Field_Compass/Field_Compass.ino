@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.32.1"
+#define FW_VERSION "0.32.2"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -116,6 +116,15 @@ const char* NTP_SERVER = "pool.ntp.org";
 #define DEBUG_BSEC  0  // BSEC2 readings logging
 #define DEBUG_SLEEP 0  // Display sleep/wake logging
 #define DEBUG_TFT   1  // TFT display state logging (P1 blank bug debug)
+
+// Log level control — compile-time only (#39)
+#define LOG_LEVEL_NONE  0
+#define LOG_LEVEL_ERROR 1
+#define LOG_LEVEL_WARN  2
+#define LOG_LEVEL_INFO  3
+#define LOG_LEVEL_DEBUG 4
+
+#define LOG_LEVEL LOG_LEVEL_INFO  // Default: ERROR + WARN + INFO
 
 // Screen settings
 #define NUM_SCREENS 5
@@ -643,6 +652,50 @@ void magLogPrintln(const char* msg) {
   Serial.println(msg);
 }
 
+// Timestamp helper for LOG_* macros (#39)
+// Returns "[HH:MM:SS] " (wall clock) or "[UUU:MM:SS] " (uptime if no time source)
+const char* logTimestamp() {
+  static char tsBuf[16];
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo, 0)) {
+    snprintf(tsBuf, sizeof(tsBuf), "[%02d:%02d:%02d] ",
+             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+  } else {
+    unsigned long s = millis() / 1000;
+    snprintf(tsBuf, sizeof(tsBuf), "[%03lu:%02lu:%02lu] ",
+             s / 3600, (s % 3600) / 60, s % 60);
+  }
+  return tsBuf;
+}
+
+// Severity-level log macros — compile to nothing when below LOG_LEVEL (#39)
+// Usage: LOG_INFO("WiFi connected to %s", ssid);
+// Output: [12:34:56] INFO  WiFi connected to tsunami
+
+#if LOG_LEVEL >= LOG_LEVEL_ERROR
+  #define LOG_ERROR(fmt, ...) logPrintf("%sERROR " fmt "\n", logTimestamp(), ##__VA_ARGS__)
+#else
+  #define LOG_ERROR(fmt, ...) ((void)0)
+#endif
+
+#if LOG_LEVEL >= LOG_LEVEL_WARN
+  #define LOG_WARN(fmt, ...)  logPrintf("%sWARN  " fmt "\n", logTimestamp(), ##__VA_ARGS__)
+#else
+  #define LOG_WARN(fmt, ...)  ((void)0)
+#endif
+
+#if LOG_LEVEL >= LOG_LEVEL_INFO
+  #define LOG_INFO(fmt, ...)  logPrintf("%sINFO  " fmt "\n", logTimestamp(), ##__VA_ARGS__)
+#else
+  #define LOG_INFO(fmt, ...)  ((void)0)
+#endif
+
+#if LOG_LEVEL >= LOG_LEVEL_DEBUG
+  #define LOG_DEBUG(fmt, ...) logPrintf("%sDEBUG " fmt "\n", logTimestamp(), ##__VA_ARGS__)
+#else
+  #define LOG_DEBUG(fmt, ...) ((void)0)
+#endif
+
 // ============== Serial Log to SD (#59) ==============
 
 void serialLogAppend(const char* str) {
@@ -910,6 +963,8 @@ void setup() {
 
   // Load geocaches from SD card (#70)
   loadGeocachesFromSD();
+
+  LOG_INFO("Log macros active (level=%d)", LOG_LEVEL);
 
   // Clear screen for main display
   tft.fillScreen(COLOR_BG);
