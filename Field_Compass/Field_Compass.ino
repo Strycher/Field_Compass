@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.37.2"
+#define FW_VERSION "0.38.0"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -1439,18 +1439,30 @@ void initLVGL() {
     }
   }
 
-  // Test widget: render green "LVGL OK" label during boot, hold 2s
+  // Interactive input test (#106): button + touch label
   #if LVGL_TEST_MODE
   {
-    lv_obj_t* label = lv_label_create(lv_screen_active());
-    lv_label_set_text(label, "LVGL OK");
-    lv_obj_align(label, LV_ALIGN_BOTTOM_LEFT, 5, -5);
-    lv_obj_set_style_text_color(label, lv_color_hex(0x00FF00), 0);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+    // Status label (bottom-left) — confirms LVGL rendering
+    lv_obj_t* touchLabel = lv_label_create(lv_screen_active());
+    lv_label_set_text(touchLabel, "Touch: (---, ---)");
+    lv_obj_align(touchLabel, LV_ALIGN_BOTTOM_LEFT, 5, -5);
+    lv_obj_set_style_text_color(touchLabel, lv_color_hex(0x00FF00), 0);
+    lv_obj_set_style_text_font(touchLabel, &lv_font_montserrat_14, 0);
+
+    // Button (center) — focusable by encoder, tappable by touch
+    lv_obj_t* btn = lv_button_create(lv_screen_active());
+    lv_obj_set_size(btn, 200, 60);
+    lv_obj_align(btn, LV_ALIGN_CENTER, 0, 0);
+
+    lv_obj_t* btnLabel = lv_label_create(btn);
+    lv_label_set_text(btnLabel, "LVGL Input Test");
+    lv_obj_center(btnLabel);
+
+    // Button auto-joins default group (set above) for encoder focus
     lv_timer_handler();  // Render once to TFT
     delay(2000);         // Hold for visual confirmation
   }
-  logPrintln("[LVGL] Test label rendered (LVGL_TEST_MODE=1)");
+  logPrintln("[LVGL] Input test UI rendered (LVGL_TEST_MODE=1)");
   #endif
 }
 
