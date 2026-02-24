@@ -7277,15 +7277,37 @@ void updateDisplay() {
         lv_obj_add_flag(geocacheScr, LV_OBJ_FLAG_HIDDEN);
     }
 
+    // Show/hide LVGL environment screen based on currentScreen (#111)
+    if (envScr) {
+      if (currentScreen == SCREEN_ENV)
+        lv_obj_clear_flag(envScr, LV_OBJ_FLAG_HIDDEN);
+      else
+        lv_obj_add_flag(envScr, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Show/hide LVGL telemetry screen based on currentScreen (#111)
+    if (telemetryScr) {
+      if (currentScreen == SCREEN_TELEMETRY)
+        lv_obj_clear_flag(telemetryScr, LV_OBJ_FLAG_HIDDEN);
+      else
+        lv_obj_add_flag(telemetryScr, LV_OBJ_FLAG_HIDDEN);
+    }
+
     // LVGL-managed screens: update data, skip legacy sprite draw
     if ((currentScreen == SCREEN_COMPASS && compassScr) ||
-        (currentScreen == SCREEN_GEOCACHE && geocacheScr)) {
+        (currentScreen == SCREEN_GEOCACHE && geocacheScr) ||
+        (currentScreen == SCREEN_ENV && envScr) ||
+        (currentScreen == SCREEN_TELEMETRY && telemetryScr)) {
 
       if (currentScreen == SCREEN_COMPASS) {
         updateCompassData();
         fcNavBarSetActive(compassNavBar, currentScreen);
       } else if (currentScreen == SCREEN_GEOCACHE) {
         updateGeocacheData();
+      } else if (currentScreen == SCREEN_ENV) {
+        updateEnvData();
+      } else if (currentScreen == SCREEN_TELEMETRY) {
+        updateTelemetryData();
       }
 
       // Screen-change clear: wipe sprite framebuffer when transitioning
