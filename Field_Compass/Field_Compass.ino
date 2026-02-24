@@ -2304,6 +2304,124 @@ void updateCompassData() {
   }
 }
 
+// ============== LVGL Geocache Nav Draw Callback (#110) ==============
+
+static void geocacheNavDrawCb(lv_event_t* e) {
+  lv_obj_t* obj = (lv_obj_t*)lv_event_get_target(e);
+  lv_layer_t* layer = lv_event_get_layer(e);
+
+  lv_area_t coords;
+  lv_obj_get_coords(obj, &coords);
+  int32_t cx = (coords.x1 + coords.x2) / 2;
+  int32_t cy = (coords.y1 + coords.y2) / 2;
+
+  // Need valid cache and GPS data to draw
+  if (cacheListCount == 0 || !cacheList[selectedCacheIndex].valid) return;
+  if (!gpsData.valid) return;
+
+  GeocacheEntry& cache = cacheList[selectedCacheIndex];
+  float distKm = calcDistanceKm(gpsData.latitude, gpsData.longitude,
+                                 cache.latitude, cache.longitude);
+  float distM = distKm * 1000.0f;
+  float bearing = calcBearing(gpsData.latitude, gpsData.longitude,
+                               cache.latitude, cache.longitude);
+  float accuracyM = getGpsAccuracyMeters();
+  bool inSearchZone = (distM < accuracyM);
+
+  if (inSearchZone) {
+    // === Search Zone Circle (pulsing) ===
+    float ratio = (accuracyM > 0) ? (distM / accuracyM) : 0;
+    int32_t baseR = 20 + (int32_t)((1.0f - ratio) * 40.0f);  // 20-60px
+    int32_t r = baseR + gcNavPulseRadius;
+
+    // Filled orange circle
+    lv_draw_arc_dsc_t arcDsc;
+    lv_draw_arc_dsc_init(&arcDsc);
+    arcDsc.center.x = cx;
+    arcDsc.center.y = cy;
+    arcDsc.radius = r;
+    arcDsc.start_angle = 0;
+    arcDsc.end_angle = 360;
+    arcDsc.color = FC_COLOR_WARN;
+    arcDsc.opa = LV_OPA_COVER;
+    arcDsc.width = r;  // Filled
+    lv_draw_arc(layer, &arcDsc);
+
+    // White outline
+    lv_draw_arc_dsc_t outDsc;
+    lv_draw_arc_dsc_init(&outDsc);
+    outDsc.center.x = cx;
+    outDsc.center.y = cy;
+    outDsc.radius = r + 2;
+    outDsc.start_angle = 0;
+    outDsc.end_angle = 360;
+    outDsc.color = FC_COLOR_TEXT;
+    outDsc.opa = LV_OPA_COVER;
+    outDsc.width = 2;
+    lv_draw_arc(layer, &outDsc);
+
+    // Center dot
+    lv_draw_arc_dsc_t dotDsc;
+    lv_draw_arc_dsc_init(&dotDsc);
+    dotDsc.center.x = cx;
+    dotDsc.center.y = cy;
+    dotDsc.radius = 4;
+    dotDsc.start_angle = 0;
+    dotDsc.end_angle = 360;
+    dotDsc.color = FC_COLOR_TEXT;
+    dotDsc.opa = LV_OPA_COVER;
+    dotDsc.width = 4;
+    lv_draw_arc(layer, &dotDsc);
+  } else {
+    // === Direction Arrow (same math as legacy drawNavTriangle) ===
+    float triangleAngle = bearing - imuData.heading;
+    if (triangleAngle < 0) triangleAngle += 360;
+    if (triangleAngle >= 360) triangleAngle -= 360;
+
+    int size = 50;
+    float rad = (triangleAngle - 90.0f) * (float)M_PI / 180.0f;
+
+    // Tip point
+    int32_t tipX = cx + (int32_t)(cosf(rad) * size);
+    int32_t tipY = cy + (int32_t)(sinf(rad) * size);
+
+    // Rear corners (±140° from tip direction)
+    float rear1Rad = rad + 140.0f * (float)M_PI / 180.0f;
+    float rear2Rad = rad - 140.0f * (float)M_PI / 180.0f;
+    int32_t rear1X = cx + (int32_t)(cosf(rear1Rad) * size * 0.7f);
+    int32_t rear1Y = cy + (int32_t)(sinf(rear1Rad) * size * 0.7f);
+    int32_t rear2X = cx + (int32_t)(cosf(rear2Rad) * size * 0.7f);
+    int32_t rear2Y = cy + (int32_t)(sinf(rear2Rad) * size * 0.7f);
+
+    // Rear center notch
+    float rearCRad = rad + 180.0f * (float)M_PI / 180.0f;
+    int32_t rearCX = cx + (int32_t)(cosf(rearCRad) * size * 0.3f);
+    int32_t rearCY = cy + (int32_t)(sinf(rearCRad) * size * 0.3f);
+
+    lv_color_t arrowColor = FC_COLOR_HEADER;  // Cyan
+
+    // Triangle 1: tip → rear1 → rearCenter
+    lv_draw_triangle_dsc_t tri1;
+    lv_draw_triangle_dsc_init(&tri1);
+    tri1.p[0].x = tipX; tri1.p[0].y = tipY;
+    tri1.p[1].x = rear1X; tri1.p[1].y = rear1Y;
+    tri1.p[2].x = rearCX; tri1.p[2].y = rearCY;
+    tri1.color = arrowColor;
+    tri1.opa = LV_OPA_COVER;
+    lv_draw_triangle(layer, &tri1);
+
+    // Triangle 2: tip → rear2 → rearCenter
+    lv_draw_triangle_dsc_t tri2;
+    lv_draw_triangle_dsc_init(&tri2);
+    tri2.p[0].x = tipX; tri2.p[0].y = tipY;
+    tri2.p[1].x = rear2X; tri2.p[1].y = rear2Y;
+    tri2.p[2].x = rearCX; tri2.p[2].y = rearCY;
+    tri2.color = arrowColor;
+    tri2.opa = LV_OPA_COVER;
+    lv_draw_triangle(layer, &tri2);
+  }
+}
+
 // ============== LVGL Geocache Screen Builder (#110) ==============
 
 void buildGeocacheScreen() {
@@ -2322,6 +2440,68 @@ void buildGeocacheScreen() {
   lv_obj_set_size(geocacheNavCtr, SCREEN_W, SCREEN_H);
   lv_obj_set_pos(geocacheNavCtr, 0, 0);
   lv_obj_clear_flag(geocacheNavCtr, LV_OBJ_FLAG_SCROLLABLE);
+
+  // === Nav Sub-screen widgets (sub 0) ===
+  gcNavHeader = fcHeaderCreate(geocacheNavCtr, "GEOCACHE");
+
+  // Cache name (centered)
+  gcNavLblName = lv_label_create(geocacheNavCtr);
+  lv_obj_set_pos(gcNavLblName, 0, 33);
+  lv_obj_set_width(gcNavLblName, SCREEN_W);
+  lv_obj_set_style_text_font(gcNavLblName, FC_FONT_LG, 0);
+  lv_obj_set_style_text_color(gcNavLblName, FC_COLOR_TEXT, 0);
+  lv_obj_set_style_text_align(gcNavLblName, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(gcNavLblName, "No cache loaded");
+
+  // Distance
+  gcNavLblDist = lv_label_create(geocacheNavCtr);
+  lv_obj_set_pos(gcNavLblDist, 8, 57);
+  lv_obj_set_style_text_font(gcNavLblDist, FC_FONT_MD, 0);
+  lv_obj_set_style_text_color(gcNavLblDist, FC_COLOR_VALUE, 0);
+  lv_label_set_text(gcNavLblDist, "--");
+
+  // Difficulty / Terrain
+  gcNavLblDT = lv_label_create(geocacheNavCtr);
+  lv_obj_set_pos(gcNavLblDT, 140, 57);
+  lv_obj_set_style_text_font(gcNavLblDT, FC_FONT_XS, 0);
+  lv_obj_set_style_text_color(gcNavLblDT, FC_COLOR_DIM, 0);
+  lv_label_set_text(gcNavLblDT, "");
+
+  // Bearing
+  gcNavLblBearing = lv_label_create(geocacheNavCtr);
+  lv_obj_set_pos(gcNavLblBearing, 300, 57);
+  lv_obj_set_style_text_font(gcNavLblBearing, FC_FONT_MD, 0);
+  lv_obj_set_style_text_color(gcNavLblBearing, FC_COLOR_VALUE, 0);
+  lv_label_set_text(gcNavLblBearing, "");
+
+  // Nav graphic area (custom draw — triangle or search zone)
+  gcNavGraphicObj = lv_obj_create(geocacheNavCtr);
+  lv_obj_remove_style_all(gcNavGraphicObj);
+  lv_obj_set_size(gcNavGraphicObj, 200, 120);
+  lv_obj_set_pos(gcNavGraphicObj, 140, 78);
+  lv_obj_clear_flag(gcNavGraphicObj, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(gcNavGraphicObj, geocacheNavDrawCb, LV_EVENT_DRAW_MAIN, NULL);
+
+  // Accuracy
+  gcNavLblAccuracy = lv_label_create(geocacheNavCtr);
+  lv_obj_set_pos(gcNavLblAccuracy, 0, 200);
+  lv_obj_set_width(gcNavLblAccuracy, SCREEN_W);
+  lv_obj_set_style_text_font(gcNavLblAccuracy, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(gcNavLblAccuracy, FC_COLOR_VALUE, 0);
+  lv_obj_set_style_text_align(gcNavLblAccuracy, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(gcNavLblAccuracy, "");
+
+  // Hint
+  gcNavLblHint = lv_label_create(geocacheNavCtr);
+  lv_obj_set_pos(gcNavLblHint, 8, 222);
+  lv_obj_set_width(gcNavLblHint, SCREEN_W - 16);
+  lv_obj_set_style_text_font(gcNavLblHint, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(gcNavLblHint, FC_COLOR_DIM, 0);
+  lv_label_set_long_mode(gcNavLblHint, LV_LABEL_LONG_WRAP);
+  lv_label_set_text(gcNavLblHint, "");
+
+  // Nav bar
+  gcNavNavBar = fcNavBarCreate(geocacheNavCtr, NUM_SCREENS, SCREEN_GEOCACHE);
 
   // List sub-screen container (sub 1)
   geocacheListCtr = lv_obj_create(geocacheScr);
