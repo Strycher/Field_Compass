@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.37.1"
+#define FW_VERSION "0.37.2"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -935,6 +935,33 @@ void lvglTouchReadCb(lv_indev_t* indev, lv_indev_data_t* data) {
   }
 }
 
+// ============== LVGL Encoder Read Callback (#106) ==============
+
+// Maps A/B/C buttons to LVGL encoder: A=prev(-1), B=next(+1), C=enter.
+// Edge detection emits a single enc_diff pulse per press.
+void lvglEncoderReadCb(lv_indev_t* indev, lv_indev_data_t* data) {
+  (void)indev;
+
+  static bool prevA = false, prevB = false, prevC = false;
+
+  bool curA = !digitalRead(BUTTON_A);  // active LOW
+  bool curB = !digitalRead(BUTTON_B);
+  bool curC = !digitalRead(BUTTON_C);
+
+  int16_t diff = 0;
+
+  // Edge detect: fire once on press-down
+  if (curA && !prevA) diff = -1;   // A = previous
+  if (curB && !prevB) diff = +1;   // B = next
+
+  data->enc_diff = diff;
+  data->state = curC ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+
+  prevA = curA;
+  prevB = curB;
+  prevC = curC;
+}
+
 // ============== Touch ISR ==============
 
 void IRAM_ATTR touchISR() {
@@ -1394,6 +1421,22 @@ void initLVGL() {
     lv_indev_set_read_cb(lvglTouchIndev, lvglTouchReadCb);
     lv_indev_set_display(lvglTouchIndev, lvglDisplay);
     logPrintln("[LVGL] Touch indev created (pointer)");
+  }
+
+  // Create encoder input device (buttons A/B/C → encoder) (#106)
+  lvglEncoderIndev = lv_indev_create();
+  if (lvglEncoderIndev) {
+    lv_indev_set_type(lvglEncoderIndev, LV_INDEV_TYPE_ENCODER);
+    lv_indev_set_read_cb(lvglEncoderIndev, lvglEncoderReadCb);
+    lv_indev_set_display(lvglEncoderIndev, lvglDisplay);
+
+    // Create focus group for encoder navigation
+    lvglGroup = lv_group_create();
+    if (lvglGroup) {
+      lv_indev_set_group(lvglEncoderIndev, lvglGroup);
+      lv_group_set_default(lvglGroup);  // New widgets auto-join this group
+      logPrintln("[LVGL] Encoder indev + group created");
+    }
   }
 
   // Test widget: render green "LVGL OK" label during boot, hold 2s
