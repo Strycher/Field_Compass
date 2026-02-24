@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.38.2"
+#define FW_VERSION "0.39.0"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -1516,30 +1516,32 @@ void initLVGL() {
   // Initialize Field Compass theme and named styles (#107)
   initFCTheme();
 
-  // Interactive input test (#106): button + touch label
+  // Font & color demo screen (#107): all 7 styles on black background
   #if LVGL_TEST_MODE
   {
-    // Status label (bottom-left) — confirms LVGL rendering
-    lv_obj_t* touchLabel = lv_label_create(lv_screen_active());
-    lv_label_set_text(touchLabel, "Touch: (---, ---)");
-    lv_obj_align(touchLabel, LV_ALIGN_BOTTOM_LEFT, 5, -5);
-    lv_obj_set_style_text_color(touchLabel, lv_color_hex(0x00FF00), 0);
-    lv_obj_set_style_text_font(touchLabel, &lv_font_montserrat_14, 0);
-
-    // Button (center) — focusable by encoder, tappable by touch
-    lv_obj_t* btn = lv_button_create(lv_screen_active());
-    lv_obj_set_size(btn, 200, 60);
-    lv_obj_align(btn, LV_ALIGN_CENTER, 0, 0);
-
-    lv_obj_t* btnLabel = lv_label_create(btn);
-    lv_label_set_text(btnLabel, "LVGL Input Test");
-    lv_obj_center(btnLabel);
-
-    // Button auto-joins default group (set above) for encoder focus
-    lv_timer_handler();  // Render once to TFT
-    delay(2000);         // Hold for visual confirmation
+    static const struct { lv_style_t* style; const char* sample; } rows[] = {
+      { &fcStyleHeader, "HEADER - Cyan 24px" },
+      { &fcStyleValue,  "VALUE - Green 20px" },
+      { &fcStyleHero,   "HERO - Green 32px" },
+      { &fcStyleBody,   "BODY - White 18px" },
+      { &fcStyleLabel,  "LABEL - Gray 16px" },
+      { &fcStyleWarn,   "WARN - Orange 18px" },
+      { &fcStyleError,  "ERROR - Red 18px" },
+    };
+    int16_t y = 10;
+    for (int i = 0; i < 7; i++) {
+      lv_obj_t* lbl = lv_label_create(lv_screen_active());
+      lv_label_set_text(lbl, rows[i].sample);
+      lv_obj_add_style(lbl, rows[i].style, 0);
+      lv_obj_set_pos(lbl, 10, y);
+      // Advance Y based on font line height + padding
+      const lv_font_t* f = lv_obj_get_style_text_font(lbl, LV_PART_MAIN);
+      y += lv_font_get_line_height(f) + 6;
+    }
+    lv_timer_handler();  // Render to TFT
+    delay(3000);         // Hold for visual confirmation
   }
-  logPrintln("[LVGL] Input test UI rendered (LVGL_TEST_MODE=1)");
+  logPrintln("[LVGL] Font/color demo rendered (LVGL_TEST_MODE=1)");
   #endif
 }
 
