@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.38.1"
+#define FW_VERSION "0.38.2"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -79,6 +79,15 @@ static bool lvglAvailable = false;
 static lv_indev_t* lvglTouchIndev = NULL;   // FT6336U → LV_INDEV_TYPE_POINTER
 static lv_indev_t* lvglEncoderIndev = NULL; // Buttons → LV_INDEV_TYPE_ENCODER
 static lv_group_t* lvglGroup = NULL;        // Focus group for encoder navigation
+
+// LVGL named styles — Field Compass theme (#107)
+static lv_style_t fcStyleHeader;   // Cyan, XL (24) — screen titles
+static lv_style_t fcStyleValue;    // Green, LG (20) — sensor values
+static lv_style_t fcStyleHero;     // Green, HERO (32) — large numbers
+static lv_style_t fcStyleBody;     // White, MD (18) — body text
+static lv_style_t fcStyleLabel;    // Gray, SM (16) — secondary labels
+static lv_style_t fcStyleWarn;     // Orange, MD (18) — warnings
+static lv_style_t fcStyleError;    // Red, MD (18) — errors
 
 // ============== Configuration ==============
 
@@ -214,6 +223,24 @@ const char* NTP_SERVER = "pool.ntp.org";
 #define COLOR_WARN      0xFD20  // Orange
 #define COLOR_ERROR     0xF800  // Red
 #define COLOR_DIM       0x7BEF  // Gray
+
+// LVGL color palette — RGB888 equivalents of RGB565 defines above (#107)
+#define FC_COLOR_BG       lv_color_hex(0x000000)   // Black
+#define FC_COLOR_TEXT     lv_color_hex(0xFFFFFF)   // White
+#define FC_COLOR_HEADER   lv_color_hex(0x00FFFF)   // Cyan
+#define FC_COLOR_VALUE    lv_color_hex(0x00FF00)   // Green
+#define FC_COLOR_WARN     lv_color_hex(0xFF6400)   // Orange
+#define FC_COLOR_ERROR    lv_color_hex(0xFF0000)   // Red
+#define FC_COLOR_DIM      lv_color_hex(0x7B7B7B)   // Gray
+
+// LVGL font aliases — semantic sizes for Field Compass UI (#107)
+#define FC_FONT_XS    &lv_font_montserrat_14   // Fine labels, status text
+#define FC_FONT_SM    &lv_font_montserrat_16   // Body text, list items
+#define FC_FONT_MD    &lv_font_montserrat_18   // Standard values (theme default)
+#define FC_FONT_LG    &lv_font_montserrat_20   // Emphasized values
+#define FC_FONT_XL    &lv_font_montserrat_24   // Section headers
+#define FC_FONT_XXL   &lv_font_montserrat_28   // Large headers
+#define FC_FONT_HERO  &lv_font_montserrat_32   // Hero values (heading, telemetry)
 
 // ============== Global Objects ==============
 
@@ -1368,6 +1395,53 @@ void initTFT() {
   }
 }
 
+// ============== Field Compass LVGL Theme (#107) ==============
+void initFCTheme() {
+  // Initialize default dark theme with cyan primary, green secondary
+  lv_theme_t* theme = lv_theme_default_init(
+      lvglDisplay,
+      FC_COLOR_HEADER,    // primary — focus rings, active elements
+      FC_COLOR_VALUE,     // secondary — accents, toggles
+      true,               // dark mode
+      FC_FONT_MD          // default app font = 18px Montserrat
+  );
+  lv_display_set_theme(lvglDisplay, theme);
+
+  // Screen background: black
+  lv_obj_set_style_bg_color(lv_screen_active(), FC_COLOR_BG, 0);
+
+  // Initialize named styles
+  lv_style_init(&fcStyleHeader);
+  lv_style_set_text_color(&fcStyleHeader, FC_COLOR_HEADER);
+  lv_style_set_text_font(&fcStyleHeader, FC_FONT_XL);
+
+  lv_style_init(&fcStyleValue);
+  lv_style_set_text_color(&fcStyleValue, FC_COLOR_VALUE);
+  lv_style_set_text_font(&fcStyleValue, FC_FONT_LG);
+
+  lv_style_init(&fcStyleHero);
+  lv_style_set_text_color(&fcStyleHero, FC_COLOR_VALUE);
+  lv_style_set_text_font(&fcStyleHero, FC_FONT_HERO);
+
+  lv_style_init(&fcStyleBody);
+  lv_style_set_text_color(&fcStyleBody, FC_COLOR_TEXT);
+  lv_style_set_text_font(&fcStyleBody, FC_FONT_MD);
+
+  lv_style_init(&fcStyleLabel);
+  lv_style_set_text_color(&fcStyleLabel, FC_COLOR_DIM);
+  lv_style_set_text_font(&fcStyleLabel, FC_FONT_SM);
+
+  lv_style_init(&fcStyleWarn);
+  lv_style_set_text_color(&fcStyleWarn, FC_COLOR_WARN);
+  lv_style_set_text_font(&fcStyleWarn, FC_FONT_MD);
+
+  lv_style_init(&fcStyleError);
+  lv_style_set_text_color(&fcStyleError, FC_COLOR_ERROR);
+  lv_style_set_text_font(&fcStyleError, FC_FONT_MD);
+
+  logPrintln("[LVGL] Field Compass theme initialized (7 styles)");
+}
+
 // ============== LVGL Initialization (#105) ==============
 
 void initLVGL() {
@@ -1438,6 +1512,9 @@ void initLVGL() {
       logPrintln("[LVGL] Encoder indev + group created");
     }
   }
+
+  // Initialize Field Compass theme and named styles (#107)
+  initFCTheme();
 
   // Interactive input test (#106): button + touch label
   #if LVGL_TEST_MODE
