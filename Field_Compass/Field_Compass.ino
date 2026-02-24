@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.41.0"
+#define FW_VERSION "0.41.1"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -2124,7 +2124,7 @@ static void compassRoseDrawCb(lv_event_t* e) {
 void updateCompassData() {
   char buf[64];
 
-  // Heading + cardinal
+  // Section 1: Heading + cardinal
   if (imuAvailable && magAvailable) {
     const char* card = getCardinal(imuData.heading);
     lv_label_set_text_fmt(compassLblHdg, "%.0f\xC2\xB0 %s", imuData.heading, card);
@@ -2134,7 +2134,7 @@ void updateCompassData() {
     lv_obj_set_style_text_color(compassLblHdg, FC_COLOR_ERROR, 0);
   }
 
-  // GPS coordinates
+  // Section 2: GPS coordinates
   if (gpsData.valid) {
     lv_label_set_text_fmt(compassLblLat, "Lat %.4f%c",
       fabs(gpsData.latitude), gpsData.latitude >= 0 ? 'N' : 'S');
@@ -2153,7 +2153,7 @@ void updateCompassData() {
     lv_obj_set_style_text_color(compassLblLat, FC_COLOR_ERROR, 0);
   }
 
-  // Altitude
+  // Section 3: Altitude
   if (gpsData.valid) {
     float alt = useMetricUnits ? gpsData.altitude : gpsData.altitude * 3.28084;
     lv_label_set_text_fmt(compassLblAlt, "Alt %.0f %s",
@@ -2162,7 +2162,7 @@ void updateCompassData() {
     lv_label_set_text(compassLblAlt, "Alt --");
   }
 
-  // Speed
+  // Section 4: Speed
   if (gpsData.valid) {
     float speed = gpsData.speedKnots * (useMetricUnits ? 1.852 : 1.15078);
     lv_label_set_text_fmt(compassLblSpd, "Spd %.1f %s",
@@ -2172,7 +2172,7 @@ void updateCompassData() {
       useMetricUnits ? "km/h" : "mph");
   }
 
-  // Temperature
+  // Section 5: Temperature
   bool hasTempSensor = shtAvailable || bmeAvailable;
   if (hasTempSensor) {
     float tempC = shtAvailable ? shtData.temperature : envData.temperature;
@@ -2183,7 +2183,7 @@ void updateCompassData() {
     lv_label_set_text(compassLblTemp, "Temp --");
   }
 
-  // Forecast with color coding
+  // Section 6: Forecast with color coding
   const char* fc = weatherTrend.forecast;
   lv_color_t fcstColor = FC_COLOR_VALUE;
   if (strstr(fc, "Storm")) fcstColor = FC_COLOR_ERROR;
@@ -2194,7 +2194,7 @@ void updateCompassData() {
   lv_obj_set_style_text_color(compassLblFcst, fcstColor, 0);
   lv_label_set_text_fmt(compassLblFcst, "Fcst %s %s", getTrendArrow(), fc);
 
-  // GPS status
+  // Section 7: GPS status
   if (gpsData.valid) {
     lv_label_set_text_fmt(compassLblGps, "GPS OK Sat:%d HDOP:%.1f",
       gpsData.satellites, gpsData.hdop);
@@ -2208,7 +2208,7 @@ void updateCompassData() {
     lv_obj_set_style_text_color(compassLblGps, FC_COLOR_ERROR, 0);
   }
 
-  // Time
+  // Section 8: Time
   char timeBuf[16];
   struct tm timeinfo;
   if (getLocalTime(&timeinfo, 0)) {
@@ -2219,7 +2219,7 @@ void updateCompassData() {
   }
   lv_label_set_text(compassLblTime, timeBuf);
 
-  // Invalidate compass rose if heading changed >2°
+  // Section 9: Invalidate compass rose if heading changed >2°
   if (imuAvailable && magAvailable) {
     float diff = fabs(imuData.heading - compassLastHeading);
     if (diff > 180) diff = 360 - diff;  // Wrap-around
@@ -2227,7 +2227,7 @@ void updateCompassData() {
       compassLastHeading = imuData.heading;
       lv_obj_invalidate(compassRoseObj);
 
-      // Reposition cardinal direction labels around rose
+      // Section 10: Reposition cardinal direction labels around rose
       if (compassLblN) {
         int32_t roseCx = 331;  // Center of rose (182 + 298/2)
         int32_t roseCy = 160;  // Center of rose (30 + 260/2)
