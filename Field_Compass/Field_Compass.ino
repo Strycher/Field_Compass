@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.40.0"
+#define FW_VERSION "0.40.1"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -1312,12 +1312,10 @@ void loop() {
   // Check TFT health and perform preventive re-init if needed
   checkTFTHealth();
 
-  // LVGL timer handler — process animations, redraws, timers
-  #if LVGL_TEST_MODE
+  // LVGL timer handler — process animations, redraws, timers (#109)
   if (lvglAvailable && !tftSleeping) {
     lv_timer_handler();
   }
-  #endif
 
   // Update display based on current screen
   updateDisplay();
@@ -1833,6 +1831,247 @@ lv_obj_t* fcListPickerOpen(const char* title, const char** items,
   return overlay;
 }
 
+// ============== LVGL Compass Screen (#109) ==============
+
+// Compass screen container and child widgets
+static lv_obj_t* compassScr      = NULL;  // Root container (full screen)
+static lv_obj_t* compassHeader   = NULL;  // fcHeader widget
+static lv_obj_t* compassNavBar   = NULL;  // fcNavBar widget
+static lv_obj_t* compassRoseObj  = NULL;  // Custom draw rose area
+static lv_obj_t* compassLblHdg   = NULL;  // "204° SW"
+static lv_obj_t* compassLblLat   = NULL;  // "Lat 39.3525N"
+static lv_obj_t* compassLblLon   = NULL;  // "Lon 84.3825W"
+static lv_obj_t* compassLblAlt   = NULL;  // "Alt 820 ft"
+static lv_obj_t* compassLblSpd   = NULL;  // "Spd 2.3 mph"
+static lv_obj_t* compassLblTemp  = NULL;  // "Temp 72.5°F"
+static lv_obj_t* compassLblFcst  = NULL;  // "↑ Fair"
+static lv_obj_t* compassLblGps   = NULL;  // "GPS OK Sat:8"
+static lv_obj_t* compassLblTime  = NULL;  // "3:42:15 PM"
+
+// Compass rose draw callback (forward declare — implemented in Task 2)
+static void compassRoseDrawCb(lv_event_t* e);
+
+// Last drawn heading for invalidation threshold
+static float compassLastHeading = -999.0f;
+
+void buildCompassScreen() {
+  // Root container — full screen, no scrolling, black background
+  compassScr = lv_obj_create(lv_screen_active());
+  lv_obj_remove_style_all(compassScr);
+  lv_obj_set_size(compassScr, SCREEN_W, SCREEN_H);
+  lv_obj_set_pos(compassScr, 0, 0);
+  lv_obj_set_style_bg_color(compassScr, FC_COLOR_BG, 0);
+  lv_obj_set_style_bg_opa(compassScr, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(compassScr, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Header bar (reuse #108 widget)
+  compassHeader = fcHeaderCreate(compassScr, "COMPASS");
+
+  // Vertical separator line between panels
+  lv_obj_t* sep = lv_obj_create(compassScr);
+  lv_obj_remove_style_all(sep);
+  lv_obj_set_size(sep, 1, 256);
+  lv_obj_set_pos(sep, 178, 34);
+  lv_obj_set_style_bg_color(sep, lv_color_hex(0x212121), 0);
+  lv_obj_set_style_bg_opa(sep, LV_OPA_COVER, 0);
+
+  // === Left Panel Labels ===
+
+  // Heading + cardinal (large green text)
+  compassLblHdg = lv_label_create(compassScr);
+  lv_obj_set_pos(compassLblHdg, 8, 34);
+  lv_obj_set_style_text_font(compassLblHdg, FC_FONT_XXL, 0);
+  lv_obj_set_style_text_color(compassLblHdg, FC_COLOR_VALUE, 0);
+  lv_label_set_text(compassLblHdg, "--");
+
+  // Latitude
+  compassLblLat = lv_label_create(compassScr);
+  lv_obj_set_pos(compassLblLat, 8, 72);
+  lv_obj_set_style_text_font(compassLblLat, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(compassLblLat, FC_COLOR_VALUE, 0);
+  lv_label_set_text(compassLblLat, "Lat --");
+
+  // Longitude
+  compassLblLon = lv_label_create(compassScr);
+  lv_obj_set_pos(compassLblLon, 8, 90);
+  lv_obj_set_style_text_font(compassLblLon, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(compassLblLon, FC_COLOR_VALUE, 0);
+  lv_label_set_text(compassLblLon, "Lon --");
+
+  // Altitude
+  compassLblAlt = lv_label_create(compassScr);
+  lv_obj_set_pos(compassLblAlt, 8, 112);
+  lv_obj_set_style_text_font(compassLblAlt, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(compassLblAlt, FC_COLOR_VALUE, 0);
+  lv_label_set_text(compassLblAlt, "Alt --");
+
+  // Speed
+  compassLblSpd = lv_label_create(compassScr);
+  lv_obj_set_pos(compassLblSpd, 8, 132);
+  lv_obj_set_style_text_font(compassLblSpd, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(compassLblSpd, FC_COLOR_VALUE, 0);
+  lv_label_set_text(compassLblSpd, "Spd --");
+
+  // Temperature
+  compassLblTemp = lv_label_create(compassScr);
+  lv_obj_set_pos(compassLblTemp, 8, 152);
+  lv_obj_set_style_text_font(compassLblTemp, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(compassLblTemp, FC_COLOR_VALUE, 0);
+  lv_label_set_text(compassLblTemp, "Temp --");
+
+  // Forecast
+  compassLblFcst = lv_label_create(compassScr);
+  lv_obj_set_pos(compassLblFcst, 8, 172);
+  lv_obj_set_style_text_font(compassLblFcst, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(compassLblFcst, FC_COLOR_VALUE, 0);
+  lv_label_set_text(compassLblFcst, "Fcst --");
+
+  // GPS status
+  compassLblGps = lv_label_create(compassScr);
+  lv_obj_set_pos(compassLblGps, 8, 200);
+  lv_obj_set_style_text_font(compassLblGps, FC_FONT_XS, 0);
+  lv_obj_set_style_text_color(compassLblGps, FC_COLOR_VALUE, 0);
+  lv_label_set_text(compassLblGps, "GPS --");
+
+  // Time (bottom of left panel)
+  compassLblTime = lv_label_create(compassScr);
+  lv_obj_set_pos(compassLblTime, 8, 268);
+  lv_obj_set_style_text_font(compassLblTime, FC_FONT_LG, 0);
+  lv_obj_set_style_text_color(compassLblTime, FC_COLOR_TEXT, 0);
+  lv_label_set_text(compassLblTime, "--:--");
+
+  // === Right Panel: Compass Rose placeholder ===
+  // (Custom draw callback added in Task 2)
+  compassRoseObj = lv_obj_create(compassScr);
+  lv_obj_remove_style_all(compassRoseObj);
+  lv_obj_set_size(compassRoseObj, 298, 260);
+  lv_obj_set_pos(compassRoseObj, 182, 30);
+  lv_obj_clear_flag(compassRoseObj, LV_OBJ_FLAG_SCROLLABLE);
+
+  // NavBar at bottom
+  compassNavBar = fcNavBarCreate(compassScr, NUM_SCREENS, SCREEN_COMPASS);
+
+  // Start hidden — shown when currentScreen == SCREEN_COMPASS
+  lv_obj_add_flag(compassScr, LV_OBJ_FLAG_HIDDEN);
+
+  logPrintln("[LVGL] Compass screen built (#109)");
+}
+
+// Stub draw callback (Task 2 replaces with full compass rose)
+static void compassRoseDrawCb(lv_event_t* e) {
+  (void)e;  // Unused until Task 2
+}
+
+// Update left panel labels from sensor data (called from updateDisplay at 2Hz)
+void updateCompassData() {
+  char buf[64];
+
+  // Heading + cardinal
+  if (imuAvailable && magAvailable) {
+    const char* card = getCardinal(imuData.heading);
+    lv_label_set_text_fmt(compassLblHdg, "%.0f\xC2\xB0 %s", imuData.heading, card);
+    lv_obj_set_style_text_color(compassLblHdg, FC_COLOR_VALUE, 0);
+  } else {
+    lv_label_set_text(compassLblHdg, "No IMU");
+    lv_obj_set_style_text_color(compassLblHdg, FC_COLOR_ERROR, 0);
+  }
+
+  // GPS coordinates
+  if (gpsData.valid) {
+    lv_label_set_text_fmt(compassLblLat, "Lat %.4f%c",
+      fabs(gpsData.latitude), gpsData.latitude >= 0 ? 'N' : 'S');
+    lv_label_set_text_fmt(compassLblLon, "Lon %.4f%c",
+      fabs(gpsData.longitude), gpsData.longitude >= 0 ? 'E' : 'W');
+    lv_obj_set_style_text_color(compassLblLat, FC_COLOR_VALUE, 0);
+    lv_obj_set_style_text_color(compassLblLon, FC_COLOR_VALUE, 0);
+  } else if (gpsData.receiving) {
+    lv_label_set_text(compassLblLat, "GPS Acquiring...");
+    lv_label_set_text_fmt(compassLblLon, "Sats: %d", gpsData.satellites);
+    lv_obj_set_style_text_color(compassLblLat, FC_COLOR_WARN, 0);
+    lv_obj_set_style_text_color(compassLblLon, FC_COLOR_WARN, 0);
+  } else {
+    lv_label_set_text(compassLblLat, "No GPS");
+    lv_label_set_text(compassLblLon, "");
+    lv_obj_set_style_text_color(compassLblLat, FC_COLOR_ERROR, 0);
+  }
+
+  // Altitude
+  if (gpsData.valid) {
+    float alt = useMetricUnits ? gpsData.altitude : gpsData.altitude * 3.28084;
+    lv_label_set_text_fmt(compassLblAlt, "Alt %.0f %s",
+      alt, useMetricUnits ? "m" : "ft");
+  } else {
+    lv_label_set_text(compassLblAlt, "Alt --");
+  }
+
+  // Speed
+  if (gpsData.valid) {
+    float speed = gpsData.speedKnots * (useMetricUnits ? 1.852 : 1.15078);
+    lv_label_set_text_fmt(compassLblSpd, "Spd %.1f %s",
+      speed, useMetricUnits ? "km/h" : "mph");
+  } else {
+    lv_label_set_text_fmt(compassLblSpd, "Spd -- %s",
+      useMetricUnits ? "km/h" : "mph");
+  }
+
+  // Temperature
+  bool hasTempSensor = shtAvailable || bmeAvailable;
+  if (hasTempSensor) {
+    float tempC = shtAvailable ? shtData.temperature : envData.temperature;
+    float tempDisplay = useFahrenheit ? tempC * 9.0 / 5.0 + 32.0 : tempC;
+    lv_label_set_text_fmt(compassLblTemp, "Temp %.1f\xC2\xB0%c",
+      tempDisplay, useFahrenheit ? 'F' : 'C');
+  } else {
+    lv_label_set_text(compassLblTemp, "Temp --");
+  }
+
+  // Forecast with color coding
+  const char* fc = weatherTrend.forecast;
+  lv_color_t fcstColor = FC_COLOR_VALUE;
+  if (strstr(fc, "Storm")) fcstColor = FC_COLOR_ERROR;
+  else if (strstr(fc, "Rain") || strstr(fc, "Snow") ||
+           strstr(fc, "Unsettled") || strstr(fc, "Precip")) fcstColor = FC_COLOR_WARN;
+  else if (strcmp(fc, "Init") == 0 || strcmp(fc, "Learning") == 0 ||
+           strcmp(fc, "Traveled") == 0) fcstColor = FC_COLOR_DIM;
+  lv_obj_set_style_text_color(compassLblFcst, fcstColor, 0);
+  lv_label_set_text_fmt(compassLblFcst, "Fcst %s %s", getTrendArrow(), fc);
+
+  // GPS status
+  if (gpsData.valid) {
+    lv_label_set_text_fmt(compassLblGps, "GPS OK Sat:%d HDOP:%.1f",
+      gpsData.satellites, gpsData.hdop);
+    lv_obj_set_style_text_color(compassLblGps, FC_COLOR_VALUE, 0);
+  } else if (gpsData.receiving) {
+    lv_label_set_text_fmt(compassLblGps, "GPS Acquiring Sat:%d",
+      gpsData.satellites);
+    lv_obj_set_style_text_color(compassLblGps, FC_COLOR_WARN, 0);
+  } else {
+    lv_label_set_text(compassLblGps, "No GPS");
+    lv_obj_set_style_text_color(compassLblGps, FC_COLOR_ERROR, 0);
+  }
+
+  // Time
+  char timeBuf[16];
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo, 0)) {
+    formatTimeStr(timeBuf, timeinfo.tm_hour, timeinfo.tm_min,
+                  timeinfo.tm_sec, false);
+  } else {
+    strcpy(timeBuf, "--:--");
+  }
+  lv_label_set_text(compassLblTime, timeBuf);
+
+  // Invalidate compass rose if heading changed >2°
+  if (imuAvailable && magAvailable) {
+    float diff = fabs(imuData.heading - compassLastHeading);
+    if (diff > 180) diff = 360 - diff;  // Wrap-around
+    if (diff >= 2.0f) {
+      compassLastHeading = imuData.heading;
+      lv_obj_invalidate(compassRoseObj);
+    }
+  }
+}
+
 // ============== LVGL Initialization (#105) ==============
 
 void initLVGL() {
@@ -1906,6 +2145,9 @@ void initLVGL() {
 
   // Initialize Field Compass theme and named styles (#107)
   initFCTheme();
+
+  // Build LVGL compass screen (#109)
+  buildCompassScreen();
 
   // Widget library demo screen (#108): all 6 widgets
   #if LVGL_TEST_MODE
@@ -5637,30 +5879,54 @@ void updateDisplay() {
 
   // Update TFT display (if not sleeping)
   if (!tftSleeping) {
-    TFT_eSprite* c = &spr;
 
-    // On screen change: clear sprite + push full black frame to TFT to erase old content,
-    // then invalidate all zones so the new screen's first frame pushes everything.
-    static int lastDrawnScreen = -1;
-    if (spriteAvailable && (currentScreen != lastDrawnScreen || wasForced)) {
-      spr.fillSprite(COLOR_BG);
-      spr.pushSprite(0, 0);  // Full push to clear old screen artifacts from TFT
-      zonePrevCount = 0;     // Force all zones dirty on next frame
-      lastDrawnScreen = currentScreen;
+    // Show/hide LVGL compass screen based on currentScreen (#109)
+    if (compassScr) {
+      if (currentScreen == SCREEN_COMPASS) {
+        lv_obj_clear_flag(compassScr, LV_OBJ_FLAG_HIDDEN);
+      } else {
+        lv_obj_add_flag(compassScr, LV_OBJ_FLAG_HIDDEN);
+      }
     }
 
-    // Each drawScreenXxx calls zoneBegin(), registers zones with zoneMark(),
-    // and only draws content for dirty zones. drawNavBar is called inside each screen.
-    switch (currentScreen) {
-      case SCREEN_COMPASS:   drawScreenCompass(c);   break;
-      case SCREEN_GEOCACHE:  drawScreenGeocache(c);  break;
-      case SCREEN_ENV:       drawScreenEnv(c);       break;
-      case SCREEN_TELEMETRY: drawScreenTelemetry(c); break;
-      case SCREEN_SETTINGS:  drawScreenSettings(c);  break;
-    }
+    // LVGL-managed compass screen: update data, skip legacy sprite draw
+    if (currentScreen == SCREEN_COMPASS && compassScr) {
+      updateCompassData();
+      fcNavBarSetActive(compassNavBar, currentScreen);
 
-    // Push only dirty zones to TFT (small partial SPI transfers = no visible flash)
-    zonePushDirty();
+      // Screen-change clear: wipe sprite framebuffer when transitioning
+      // from a legacy screen to the LVGL compass screen
+      static int lastLvglScreen = -1;
+      if (currentScreen != lastLvglScreen) {
+        if (spriteAvailable) {
+          spr.fillSprite(COLOR_BG);
+          spr.pushSprite(0, 0);
+        }
+        lastLvglScreen = currentScreen;
+      }
+    } else {
+      // Legacy sprite pipeline for all other screens
+      TFT_eSprite* c = &spr;
+
+      // On screen change: clear sprite + push full black frame to TFT
+      static int lastDrawnScreen = -1;
+      if (spriteAvailable && (currentScreen != lastDrawnScreen || wasForced)) {
+        spr.fillSprite(COLOR_BG);
+        spr.pushSprite(0, 0);
+        zonePrevCount = 0;
+        lastDrawnScreen = currentScreen;
+      }
+
+      switch (currentScreen) {
+        case SCREEN_COMPASS:   drawScreenCompass(c);   break;
+        case SCREEN_GEOCACHE:  drawScreenGeocache(c);  break;
+        case SCREEN_ENV:       drawScreenEnv(c);       break;
+        case SCREEN_TELEMETRY: drawScreenTelemetry(c); break;
+        case SCREEN_SETTINGS:  drawScreenSettings(c);  break;
+      }
+
+      zonePushDirty();
+    }
 
     // Track TFT update for health monitoring
     lastTFTUpdate = millis();
