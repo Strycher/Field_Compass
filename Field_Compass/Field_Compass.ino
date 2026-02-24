@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.36.3"
+#define FW_VERSION "0.36.4"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -933,6 +933,9 @@ void setup() {
   LOG_DEBUG("TFT init done");
   Serial.flush();
 
+  // Initialize LVGL (coexistence: runs alongside sprite pipeline)
+  initLVGL();
+
   // Initialize I2C
   Wire.begin();
 
@@ -1301,6 +1304,67 @@ void initTFT() {
   } else {
     logPrintln("OK (480x320) — no PSRAM, direct draw");
   }
+}
+
+// ============== LVGL Initialization (#105) ==============
+
+void initLVGL() {
+  logPrint("Initializing LVGL 9.5... ");
+
+  // Core init
+  lv_init();
+
+  // Register tick source (esp_timer µs → ms)
+  lv_tick_set_cb(lvglTickCb);
+
+  // Register log callback
+  #if LV_USE_LOG != 0
+  lv_log_register_print_cb(lvglLogCb);
+  #endif
+
+  // Allocate draw buffers in PSRAM (two 480×50 partial-render buffers)
+  if (psramFound()) {
+    lvglBuf1 = (uint8_t*)heap_caps_malloc(LVGL_BUF_SIZE, MALLOC_CAP_SPIRAM);
+    lvglBuf2 = (uint8_t*)heap_caps_malloc(LVGL_BUF_SIZE, MALLOC_CAP_SPIRAM);
+  }
+  if (!lvglBuf1 || !lvglBuf2) {
+    logPrintln("FAIL — PSRAM buffer alloc");
+    if (lvglBuf1) { heap_caps_free(lvglBuf1); lvglBuf1 = NULL; }
+    if (lvglBuf2) { heap_caps_free(lvglBuf2); lvglBuf2 = NULL; }
+    return;
+  }
+
+  // Create display (480×320 landscape, matching TFT rotation 1)
+  lvglDisplay = lv_display_create(480, 320);
+  if (!lvglDisplay) {
+    logPrintln("FAIL — display create");
+    heap_caps_free(lvglBuf1); lvglBuf1 = NULL;
+    heap_caps_free(lvglBuf2); lvglBuf2 = NULL;
+    return;
+  }
+
+  // Set flush callback and double-buffered partial rendering
+  lv_display_set_flush_cb(lvglDisplay, lvglFlushCb);
+  lv_display_set_buffers(lvglDisplay, lvglBuf1, lvglBuf2,
+                         LVGL_BUF_SIZE, LV_DISPLAY_RENDER_MODE_PARTIAL);
+
+  lvglAvailable = true;
+  logPrintf("OK (buf: 2x%dKB PSRAM, %dKB free)\n",
+            LVGL_BUF_SIZE / 1024, ESP.getFreePsram() / 1024);
+
+  // Test widget: render green "LVGL OK" label during boot, hold 2s
+  #if LVGL_TEST_MODE
+  {
+    lv_obj_t* label = lv_label_create(lv_screen_active());
+    lv_label_set_text(label, "LVGL OK");
+    lv_obj_align(label, LV_ALIGN_BOTTOM_LEFT, 5, -5);
+    lv_obj_set_style_text_color(label, lv_color_hex(0x00FF00), 0);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+    lv_timer_handler();  // Render once to TFT
+    delay(2000);         // Hold for visual confirmation
+  }
+  logPrintln("[LVGL] Test label rendered (LVGL_TEST_MODE=1)");
+  #endif
 }
 
 // Preventive TFT re-initialization (P1 blank bug workaround)
