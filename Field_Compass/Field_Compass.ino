@@ -2095,7 +2095,7 @@ void buildCompassScreen() {
   lv_obj_t* lubber = lv_obj_create(compassScr);
   lv_obj_remove_style_all(lubber);
   lv_obj_set_size(lubber, 14, 10);
-  lv_obj_set_pos(lubber, 324, 20);  // Centered above rose ring at cx=331
+  lv_obj_set_pos(lubber, 324, 40);  // Just above outer ring (top at y=52), below header (y=30)
   lv_obj_set_style_bg_color(lubber, FC_COLOR_WARN, 0);
   lv_obj_set_style_bg_opa(lubber, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(lubber, 2, 0);
@@ -2114,7 +2114,7 @@ void buildCompassScreen() {
     lv_label_set_text(*cardLbls[i], cardinals[i]);
     lv_obj_set_style_text_font(*cardLbls[i], FC_FONT_SM, 0);
     lv_obj_set_style_text_color(*cardLbls[i], cardColors[i], 0);
-    lv_obj_set_pos(*cardLbls[i], 0, 0);  // Initial; repositioned on heading update
+    lv_obj_set_pos(*cardLbls[i], -50, -50);  // Off-screen until first heading update
   }
 
   // NavBar at bottom
@@ -3141,7 +3141,7 @@ void buildTelemetryScreen() {
   makeLabel(&telLblGpsSkyHint, "Need clear sky view", 60, 130, FC_FONT_MD, FC_COLOR_DIM);
   lv_obj_add_flag(telLblGpsSkyHint, LV_OBJ_FLAG_HIDDEN);
 
-  makeLabel(&telLblGpsSatCount, "Sats: 0", 60, 155, FC_FONT_LG, FC_COLOR_VALUE);
+  makeLabel(&telLblGpsSatCount, "Sats: 0", 60, 147, FC_FONT_LG, FC_COLOR_VALUE);
   lv_obj_add_flag(telLblGpsSatCount, LV_OBJ_FLAG_HIDDEN);
 
   // GPS no-data state labels (hidden by default)
