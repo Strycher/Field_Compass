@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.36.2"
+#define FW_VERSION "0.36.3"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -61,6 +61,19 @@ const uint8_t bsec2_config[] = {
 // Set to 1 to enable LVGL test rendering (label in corner during boot).
 // Set to 0 for normal operation where sprite pipeline handles all rendering.
 #define LVGL_TEST_MODE 1
+
+// LVGL display object and draw buffers (PSRAM-backed for performance)
+static lv_display_t* lvglDisplay = NULL;
+
+// Two 480x50 partial-render buffers in PSRAM (~48KB each, 96KB total)
+// Allocated dynamically in initLVGL() via heap_caps_malloc(MALLOC_CAP_SPIRAM)
+#define LVGL_BUF_LINES 50
+#define LVGL_BUF_SIZE  (480 * LVGL_BUF_LINES * sizeof(uint16_t))
+static uint8_t* lvglBuf1 = NULL;
+static uint8_t* lvglBuf2 = NULL;
+
+// LVGL initialization flag
+static bool lvglAvailable = false;
 
 // ============== Configuration ==============
 
@@ -858,6 +871,41 @@ void initSerialLog() {
   lastLogRotation = millis();
   logPrintf("[LOG] Logging to %s\n", serialLogFilename);
 }
+
+// ============== LVGL Tick Callback ==============
+
+// LVGL needs a tick source to track elapsed time for animations/timers.
+// On ESP32-S3, esp_timer_get_time() returns microseconds since boot.
+static uint32_t lvglTickCb(void) {
+  return (uint32_t)(esp_timer_get_time() / 1000ULL);  // Convert µs to ms
+}
+
+// ============== LVGL Flush Callback ==============
+
+// Called by LVGL when a rendered region is ready to be sent to the display.
+// Uses TFT_eSPI's SPI transaction-safe pushColors with byte swap.
+void lvglFlushCb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
+  uint32_t w = (area->x2 - area->x1 + 1);
+  uint32_t h = (area->y2 - area->y1 + 1);
+
+  tft.startWrite();
+  tft.setAddrWindow(area->x1, area->y1, w, h);
+  // swap=true: byte-swaps from LVGL native little-endian to ST7796U big-endian
+  tft.pushColors((uint16_t*)px_map, w * h, true);
+  tft.endWrite();
+
+  lv_display_flush_ready(disp);
+}
+
+// ============== LVGL Log Callback ==============
+
+#if LV_USE_LOG != 0
+void lvglLogCb(lv_log_level_t level, const char* buf) {
+  LV_UNUSED(level);
+  Serial.println(buf);
+  Serial.flush();
+}
+#endif
 
 // ============== Touch ISR ==============
 
