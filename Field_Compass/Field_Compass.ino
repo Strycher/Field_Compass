@@ -3194,6 +3194,256 @@ void buildTelemetryScreen() {
   telNavBar = fcNavBarCreate(telemetryScr, NUM_SCREENS, SCREEN_TELEMETRY);
 }
 
+// ============== LVGL Environment Data Update (#111) ==============
+
+void updateEnvData() {
+  if (!envScr) return;
+  char buf[80];
+
+  fcNavBarSetActive(envNavBar, currentScreen);
+
+  if (!bmeAvailable && !shtAvailable) {
+    // No sensors at all — show error, hide all rows
+    lv_obj_clear_flag(envLblNoSensors, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(envLblTempLabel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(envLblTempValue, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(envLblHumidLabel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(envLblHumidValue, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(envLblIaqLabel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(envLblIaqValue, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(envLblCo2Label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(envLblCo2Value, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(envLblPressLabel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(envLblPressValue, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(envLblFcstLabel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(envLblFcstValue, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+
+  // Sensors available — hide error, show temp+humid rows
+  lv_obj_add_flag(envLblNoSensors, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(envLblTempLabel, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(envLblTempValue, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(envLblHumidLabel, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(envLblHumidValue, LV_OBJ_FLAG_HIDDEN);
+
+  float tempC = shtAvailable ? shtData.temperature : envData.temperature;
+  float tempF = tempC * 9.0 / 5.0 + 32.0;
+  const char* tempSrc = shtAvailable ? "SHT" : "BME";
+
+  // Temp value (respects useFahrenheit) — UTF-8 degree sign \xC2\xB0
+  if (useFahrenheit)
+    snprintf(buf, sizeof(buf), "%.1f\xC2\xB0""F (%.1fC) %s", tempF, tempC, tempSrc);
+  else
+    snprintf(buf, sizeof(buf), "%.1f\xC2\xB0""C (%.1fF) %s", tempC, tempF, tempSrc);
+  lv_label_set_text(envLblTempValue, buf);
+
+  // Humidity
+  float humid = shtAvailable ? shtData.humidity : envData.humidity;
+  snprintf(buf, sizeof(buf), "%.1f%% %s", humid, tempSrc);
+  lv_label_set_text(envLblHumidValue, buf);
+
+  if (bmeAvailable) {
+    // Show BME-only rows
+    lv_obj_clear_flag(envLblIaqLabel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(envLblIaqValue, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(envLblCo2Label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(envLblCo2Value, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(envLblPressLabel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(envLblPressValue, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(envLblFcstLabel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(envLblFcstValue, LV_OBJ_FLAG_HIDDEN);
+
+    // IAQ with color coding
+    snprintf(buf, sizeof(buf), "%.0f [%s]", envData.iaq, getIaqAccuracyText(envData.iaqAccuracy));
+    lv_label_set_text(envLblIaqValue, buf);
+    if (envData.iaq > 200)
+      lv_obj_set_style_text_color(envLblIaqValue, FC_COLOR_ERROR, 0);
+    else if (envData.iaq > 100)
+      lv_obj_set_style_text_color(envLblIaqValue, FC_COLOR_WARN, 0);
+    else
+      lv_obj_set_style_text_color(envLblIaqValue, FC_COLOR_VALUE, 0);
+
+    // CO2 with color coding
+    snprintf(buf, sizeof(buf), "%.0f ppm", envData.co2Equivalent);
+    lv_label_set_text(envLblCo2Value, buf);
+    if (envData.co2Equivalent > 2000)
+      lv_obj_set_style_text_color(envLblCo2Value, FC_COLOR_ERROR, 0);
+    else if (envData.co2Equivalent > 1000)
+      lv_obj_set_style_text_color(envLblCo2Value, FC_COLOR_WARN, 0);
+    else
+      lv_obj_set_style_text_color(envLblCo2Value, FC_COLOR_VALUE, 0);
+
+    // Pressure
+    snprintf(buf, sizeof(buf), "%.1f hPa (%.2f\")", envData.pressure, hPaToInHg(envData.pressure));
+    lv_label_set_text(envLblPressValue, buf);
+
+    // Forecast with color coding
+    snprintf(buf, sizeof(buf), "%s %s", getTrendArrow(), weatherTrend.forecast);
+    lv_label_set_text(envLblFcstValue, buf);
+    if (strstr(weatherTrend.forecast, "Storm"))
+      lv_obj_set_style_text_color(envLblFcstValue, FC_COLOR_ERROR, 0);
+    else if (strstr(weatherTrend.forecast, "Rain") || strstr(weatherTrend.forecast, "Snow"))
+      lv_obj_set_style_text_color(envLblFcstValue, FC_COLOR_WARN, 0);
+    else
+      lv_obj_set_style_text_color(envLblFcstValue, FC_COLOR_VALUE, 0);
+
+  } else {
+    // No BME — show N/A for BME-only rows
+    lv_obj_clear_flag(envLblIaqLabel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(envLblIaqValue, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(envLblIaqValue, "N/A (no BME688)");
+    lv_obj_set_style_text_color(envLblIaqValue, FC_COLOR_DIM, 0);
+
+    lv_obj_clear_flag(envLblPressLabel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(envLblPressValue, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(envLblPressValue, "N/A (no BME688)");
+    lv_obj_set_style_text_color(envLblPressValue, FC_COLOR_DIM, 0);
+
+    // Hide CO2 and Forecast when no BME
+    lv_obj_add_flag(envLblCo2Label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(envLblCo2Value, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(envLblFcstLabel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(envLblFcstValue, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+// ============== LVGL Telemetry Data Update (#111) ==============
+
+// Helper: show or hide GPS data row labels
+static void telShowGpsDataRows(bool show) {
+  lv_obj_t* gpsLabels[] = {
+    telLblLatLabel, telLblLatValue, telLblLonLabel, telLblLonValue,
+    telLblAltLabel, telLblAltValue, telLblSpdLabel, telLblSpdValue,
+    telLblSatLabel, telLblSatValue, telLblHdopLabel, telLblHdopValue,
+    telLblStatusLabel, telLblStatusValue
+  };
+  for (auto lbl : gpsLabels) {
+    if (show)
+      lv_obj_clear_flag(lbl, LV_OBJ_FLAG_HIDDEN);
+    else
+      lv_obj_add_flag(lbl, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+static void telShowImuDataRows(bool show) {
+  lv_obj_t* imuLabels[] = {
+    telLblHdgLabel, telLblHdgValue, telLblRollLabel, telLblRollValue,
+    telLblPitchLabel, telLblPitchValue, telLblAccelLabel, telLblAccelValue
+  };
+  for (auto lbl : imuLabels) {
+    if (show)
+      lv_obj_clear_flag(lbl, LV_OBJ_FLAG_HIDDEN);
+    else
+      lv_obj_add_flag(lbl, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+void updateTelemetryData() {
+  if (!telemetryScr) return;
+  char buf[80];
+
+  fcNavBarSetActive(telNavBar, currentScreen);
+
+  // === GPS Section ===
+  if (gpsData.valid) {
+    // Show data rows, hide acquiring/error labels
+    telShowGpsDataRows(true);
+    lv_obj_add_flag(telLblGpsAcquiring, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(telLblGpsElapsed, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(telLblGpsSkyHint, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(telLblGpsSatCount, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(telLblGpsNoData, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(telLblGpsCheckConn, LV_OBJ_FLAG_HIDDEN);
+
+    // Lat
+    snprintf(buf, sizeof(buf), "%.6f %c", fabs(gpsData.latitude),
+             gpsData.latitude >= 0 ? 'N' : 'S');
+    lv_label_set_text(telLblLatValue, buf);
+
+    // Lon
+    snprintf(buf, sizeof(buf), "%.6f %c", fabs(gpsData.longitude),
+             gpsData.longitude >= 0 ? 'E' : 'W');
+    lv_label_set_text(telLblLonValue, buf);
+
+    // Alt (respects useMetricUnits)
+    float alt = useMetricUnits ? gpsData.altitude : gpsData.altitude * 3.28084;
+    snprintf(buf, sizeof(buf), "%.1f %s", alt, useMetricUnits ? "m" : "ft");
+    lv_label_set_text(telLblAltValue, buf);
+
+    // Speed
+    float speed = gpsData.speedKnots * (useMetricUnits ? 1.852 : 1.15078);
+    snprintf(buf, sizeof(buf), "%.1f %s", speed, useMetricUnits ? "km/h" : "mph");
+    lv_label_set_text(telLblSpdValue, buf);
+
+    // Satellites
+    snprintf(buf, sizeof(buf), "%d", gpsData.satellites);
+    lv_label_set_text(telLblSatValue, buf);
+
+    // HDOP
+    snprintf(buf, sizeof(buf), "%.1f", gpsData.hdop);
+    lv_label_set_text(telLblHdopValue, buf);
+
+    // Status
+    if (gpsHadFirstFix)
+      snprintf(buf, sizeof(buf), "Fix OK (TTFF %lus)", gpsFirstFixTime / 1000);
+    else
+      strcpy(buf, "Fix OK");
+    lv_label_set_text(telLblStatusValue, buf);
+
+  } else if (gpsData.receiving) {
+    // Acquiring — hide data rows, show acquiring labels
+    telShowGpsDataRows(false);
+    lv_obj_add_flag(telLblGpsNoData, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(telLblGpsCheckConn, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_clear_flag(telLblGpsAcquiring, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(telLblGpsElapsed, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(telLblGpsSkyHint, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(telLblGpsSatCount, LV_OBJ_FLAG_HIDDEN);
+
+    unsigned long elapsed = millis() / 1000;
+    snprintf(buf, sizeof(buf), "Elapsed: %lum %lus", elapsed / 60, elapsed % 60);
+    lv_label_set_text(telLblGpsElapsed, buf);
+
+    snprintf(buf, sizeof(buf), "Sats: %d", gpsData.satellites);
+    lv_label_set_text(telLblGpsSatCount, buf);
+
+  } else {
+    // No GPS — hide data rows + acquiring, show error
+    telShowGpsDataRows(false);
+    lv_obj_add_flag(telLblGpsAcquiring, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(telLblGpsElapsed, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(telLblGpsSkyHint, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(telLblGpsSatCount, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_clear_flag(telLblGpsNoData, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(telLblGpsCheckConn, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  // === IMU Section ===
+  if (imuAvailable && magAvailable) {
+    telShowImuDataRows(true);
+    lv_obj_add_flag(telLblNoImu, LV_OBJ_FLAG_HIDDEN);
+
+    snprintf(buf, sizeof(buf), "%.0f %s", imuData.heading, getCardinal(imuData.heading));
+    lv_label_set_text(telLblHdgValue, buf);
+
+    snprintf(buf, sizeof(buf), "%.0f deg", imuData.roll);
+    lv_label_set_text(telLblRollValue, buf);
+
+    snprintf(buf, sizeof(buf), "%.0f deg", imuData.pitch);
+    lv_label_set_text(telLblPitchValue, buf);
+
+    snprintf(buf, sizeof(buf), "%.2f m/s2", imuData.accelMag);
+    lv_label_set_text(telLblAccelValue, buf);
+
+  } else {
+    telShowImuDataRows(false);
+    lv_obj_clear_flag(telLblNoImu, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
 // ============== LVGL Initialization (#105) ==============
 
 void initLVGL() {
