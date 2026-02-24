@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.37.0"
+#define FW_VERSION "0.37.1"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -74,6 +74,11 @@ static uint8_t* lvglBuf2 = NULL;
 
 // LVGL initialization flag
 static bool lvglAvailable = false;
+
+// LVGL input devices (#106)
+static lv_indev_t* lvglTouchIndev = NULL;   // FT6336U → LV_INDEV_TYPE_POINTER
+static lv_indev_t* lvglEncoderIndev = NULL; // Buttons → LV_INDEV_TYPE_ENCODER
+static lv_group_t* lvglGroup = NULL;        // Focus group for encoder navigation
 
 // ============== Configuration ==============
 
@@ -907,6 +912,29 @@ void lvglLogCb(lv_log_level_t level, const char* buf) {
 }
 #endif
 
+// ============== LVGL Touch Read Callback (#106) ==============
+
+// Called by LVGL's indev timer (~33ms). Polls FT6336U over I2C.
+// I2C reads are non-destructive — both legacy and LVGL read the same hardware.
+void lvglTouchReadCb(lv_indev_t* indev, lv_indev_data_t* data) {
+  (void)indev;
+
+  if (!touchAvailable) {
+    data->state = LV_INDEV_STATE_RELEASED;
+    return;
+  }
+
+  if (ctp.touched()) {
+    TS_Point p = ctp.getPoint();
+    // Same coordinate transform as legacy pipeline:
+    data->point.x = (int32_t)(480 - p.y);  // horizontal 0-479
+    data->point.y = (int32_t)(p.x);        // vertical   0-319
+    data->state   = LV_INDEV_STATE_PRESSED;
+  } else {
+    data->state = LV_INDEV_STATE_RELEASED;
+  }
+}
+
 // ============== Touch ISR ==============
 
 void IRAM_ATTR touchISR() {
@@ -1358,6 +1386,15 @@ void initLVGL() {
   lvglAvailable = true;
   logPrintf("OK (buf: 2x%dKB PSRAM, %dKB free)\n",
             LVGL_BUF_SIZE / 1024, ESP.getFreePsram() / 1024);
+
+  // Create touch input device (FT6336U → pointer) (#106)
+  lvglTouchIndev = lv_indev_create();
+  if (lvglTouchIndev) {
+    lv_indev_set_type(lvglTouchIndev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(lvglTouchIndev, lvglTouchReadCb);
+    lv_indev_set_display(lvglTouchIndev, lvglDisplay);
+    logPrintln("[LVGL] Touch indev created (pointer)");
+  }
 
   // Test widget: render green "LVGL OK" label during boot, hold 2s
   #if LVGL_TEST_MODE
