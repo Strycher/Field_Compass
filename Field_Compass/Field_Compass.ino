@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.39.1"
+#define FW_VERSION "0.39.2"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -1557,6 +1557,133 @@ void fcNavBarSetActive(lv_obj_t* navBar, uint8_t activeIdx) {
     lv_obj_t* numLbl = lv_obj_get_child(dot, 0);
     lv_obj_set_style_text_color(numLbl, active ? FC_COLOR_BG : FC_COLOR_DIM, 0);
   }
+}
+
+// --- Action Bar: 50px dark gray bar with Back/OK buttons ---
+lv_obj_t* fcActionBarCreate(lv_obj_t* parent, bool showBack, bool showOK) {
+  lv_obj_t* cont = lv_obj_create(parent);
+  lv_obj_remove_style_all(cont);
+  lv_obj_set_size(cont, SCREEN_W, 50);
+  lv_obj_set_pos(cont, 0, 270);
+  lv_obj_set_style_bg_color(cont, FC_COLOR_W_BAR, 0);
+  lv_obj_set_style_bg_opa(cont, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Child [0]: Back button
+  lv_obj_t* backBtn = lv_button_create(cont);
+  lv_obj_set_size(backBtn, 110, 34);
+  lv_obj_set_pos(backBtn, 10, 8);
+  lv_obj_set_style_bg_color(backBtn, FC_COLOR_W_BTN, 0);
+  lv_obj_set_style_radius(backBtn, 6, 0);
+  if (!showBack) lv_obj_add_flag(backBtn, LV_OBJ_FLAG_HIDDEN);
+
+  lv_obj_t* backLbl = lv_label_create(backBtn);
+  lv_label_set_text(backLbl, LV_SYMBOL_LEFT " Back");
+  lv_obj_set_style_text_color(backLbl, FC_COLOR_TEXT, 0);
+  lv_obj_set_style_text_font(backLbl, FC_FONT_SM, 0);
+  lv_obj_center(backLbl);
+
+  // Child [1]: OK button
+  lv_obj_t* okBtn = lv_button_create(cont);
+  lv_obj_set_size(okBtn, 110, 34);
+  lv_obj_set_pos(okBtn, 360, 8);
+  lv_obj_set_style_bg_color(okBtn, FC_COLOR_W_OK, 0);
+  lv_obj_set_style_radius(okBtn, 6, 0);
+  if (!showOK) lv_obj_add_flag(okBtn, LV_OBJ_FLAG_HIDDEN);
+
+  lv_obj_t* okLbl = lv_label_create(okBtn);
+  lv_label_set_text(okLbl, "OK " LV_SYMBOL_RIGHT);
+  lv_obj_set_style_text_color(okLbl, FC_COLOR_TEXT, 0);
+  lv_obj_set_style_text_font(okLbl, FC_FONT_SM, 0);
+  lv_obj_center(okLbl);
+
+  return cont;
+}
+
+// --- Toggle: two-option selector with green=selected ---
+
+// Internal: update toggle visuals based on value
+static void fcToggleUpdateVisuals(lv_obj_t* cont, bool value) {
+  lv_obj_t* btnA = lv_obj_get_child(cont, 1);
+  lv_obj_t* btnB = lv_obj_get_child(cont, 2);
+
+  lv_obj_set_style_bg_color(btnA, value ? FC_COLOR_W_INACTIVE : FC_COLOR_W_OK, 0);
+  lv_obj_set_style_bg_color(btnB, value ? FC_COLOR_W_OK : FC_COLOR_W_INACTIVE, 0);
+
+  lv_obj_t* lblA = lv_obj_get_child(btnA, 0);
+  lv_obj_t* lblB = lv_obj_get_child(btnB, 0);
+  lv_obj_set_style_text_color(lblA, value ? FC_COLOR_DIM : FC_COLOR_TEXT, 0);
+  lv_obj_set_style_text_color(lblB, value ? FC_COLOR_TEXT : FC_COLOR_DIM, 0);
+}
+
+// Internal: toggle click handler
+static void fcToggleClickCb(lv_event_t* e) {
+  lv_obj_t* btn = (lv_obj_t*)lv_event_get_target(e);
+  lv_obj_t* cont = lv_obj_get_parent(btn);
+  lv_obj_t* btnB = lv_obj_get_child(cont, 2);
+
+  bool newVal = (btn == btnB);
+  lv_obj_set_user_data(cont, (void*)(intptr_t)newVal);
+  fcToggleUpdateVisuals(cont, newVal);
+  lv_obj_send_event(cont, LV_EVENT_VALUE_CHANGED, NULL);
+}
+
+lv_obj_t* fcToggleCreate(lv_obj_t* parent, int16_t y,
+                          const char* label, const char* optA,
+                          const char* optB, bool value) {
+  lv_obj_t* cont = lv_obj_create(parent);
+  lv_obj_remove_style_all(cont);
+  lv_obj_set_size(cont, SCREEN_W - 20, 30);
+  lv_obj_set_pos(cont, 10, y);
+  lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Child [0]: label
+  lv_obj_t* lbl = lv_label_create(cont);
+  lv_label_set_text(lbl, label);
+  lv_obj_set_style_text_color(lbl, FC_COLOR_DIM, 0);
+  lv_obj_set_style_text_font(lbl, FC_FONT_SM, 0);
+  lv_obj_set_pos(lbl, 10, 7);
+
+  // Child [1]: option A button
+  int ax = 140;
+  lv_obj_t* btnA = lv_button_create(cont);
+  lv_obj_set_size(btnA, 130, 30);
+  lv_obj_set_pos(btnA, ax, 0);
+  lv_obj_set_style_radius(btnA, 6, 0);
+  lv_obj_add_event_cb(btnA, fcToggleClickCb, LV_EVENT_CLICKED, NULL);
+
+  lv_obj_t* lblA = lv_label_create(btnA);
+  lv_label_set_text(lblA, optA);
+  lv_obj_set_style_text_font(lblA, FC_FONT_SM, 0);
+  lv_obj_center(lblA);
+
+  // Child [2]: option B button
+  int bx = ax + 130 + 10;
+  lv_obj_t* btnB = lv_button_create(cont);
+  lv_obj_set_size(btnB, 130, 30);
+  lv_obj_set_pos(btnB, bx, 0);
+  lv_obj_set_style_radius(btnB, 6, 0);
+  lv_obj_add_event_cb(btnB, fcToggleClickCb, LV_EVENT_CLICKED, NULL);
+
+  lv_obj_t* lblB = lv_label_create(btnB);
+  lv_label_set_text(lblB, optB);
+  lv_obj_set_style_text_font(lblB, FC_FONT_SM, 0);
+  lv_obj_center(lblB);
+
+  // Set initial value and visuals
+  lv_obj_set_user_data(cont, (void*)(intptr_t)value);
+  fcToggleUpdateVisuals(cont, value);
+
+  return cont;
+}
+
+bool fcToggleGetValue(lv_obj_t* toggle) {
+  return (bool)(intptr_t)lv_obj_get_user_data(toggle);
+}
+
+void fcToggleSetValue(lv_obj_t* toggle, bool value) {
+  lv_obj_set_user_data(toggle, (void*)(intptr_t)value);
+  fcToggleUpdateVisuals(toggle, value);
 }
 
 // ============== LVGL Initialization (#105) ==============
