@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.36.1"
+#define FW_VERSION "0.36.2"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -53,6 +53,14 @@ const uint8_t bsec2_config[] = {
 #include <RTClib.h>           // Adalogger PCF8523 RTC
 #include <SD.h>
 #include <esp_task_wdt.h>
+
+// ============== LVGL Integration (#105 — coexistence phase) ==============
+#include <lvgl.h>
+#include <esp_timer.h>              // For esp_timer_get_time() used by LVGL tick
+
+// Set to 1 to enable LVGL test rendering (label in corner during boot).
+// Set to 0 for normal operation where sprite pipeline handles all rendering.
+#define LVGL_TEST_MODE 1
 
 // ============== Configuration ==============
 
