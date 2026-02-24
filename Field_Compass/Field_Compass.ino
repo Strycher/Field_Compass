@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.40.2"
+#define FW_VERSION "0.41.0"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -1848,6 +1848,12 @@ static lv_obj_t* compassLblFcst  = NULL;  // "↑ Fair"
 static lv_obj_t* compassLblGps   = NULL;  // "GPS OK Sat:8"
 static lv_obj_t* compassLblTime  = NULL;  // "3:42:15 PM"
 
+// Cardinal direction labels (rotate with heading around rose)
+static lv_obj_t* compassLblN = NULL;
+static lv_obj_t* compassLblE = NULL;
+static lv_obj_t* compassLblS = NULL;
+static lv_obj_t* compassLblW = NULL;
+
 // Compass rose draw callback (forward declare — implemented in Task 2)
 static void compassRoseDrawCb(lv_event_t* e);
 
@@ -1957,6 +1963,23 @@ void buildCompassScreen() {
   lv_obj_set_style_bg_color(lubber, FC_COLOR_WARN, 0);
   lv_obj_set_style_bg_opa(lubber, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(lubber, 2, 0);
+
+  // Cardinal direction labels (N/E/S/W — positioned dynamically in updateCompassData)
+  const char* cardinals[] = {"N", "E", "S", "W"};
+  lv_obj_t** cardLbls[] = {&compassLblN, &compassLblE, &compassLblS, &compassLblW};
+  lv_color_t cardColors[] = {
+    lv_color_hex(0x00FFFF),  // N cyan (matches north needle)
+    lv_color_hex(0xFFFFFF),  // E white
+    lv_color_hex(0xFF0000),  // S red (matches south needle)
+    lv_color_hex(0xFFFFFF),  // W white
+  };
+  for (int i = 0; i < 4; i++) {
+    *cardLbls[i] = lv_label_create(compassScr);
+    lv_label_set_text(*cardLbls[i], cardinals[i]);
+    lv_obj_set_style_text_font(*cardLbls[i], FC_FONT_SM, 0);
+    lv_obj_set_style_text_color(*cardLbls[i], cardColors[i], 0);
+    lv_obj_set_pos(*cardLbls[i], 0, 0);  // Initial; repositioned on heading update
+  }
 
   // NavBar at bottom
   compassNavBar = fcNavBarCreate(compassScr, NUM_SCREENS, SCREEN_COMPASS);
@@ -2203,6 +2226,23 @@ void updateCompassData() {
     if (diff >= 2.0f) {
       compassLastHeading = imuData.heading;
       lv_obj_invalidate(compassRoseObj);
+
+      // Reposition cardinal direction labels around rose
+      if (compassLblN) {
+        int32_t roseCx = 331;  // Center of rose (182 + 298/2)
+        int32_t roseCy = 160;  // Center of rose (30 + 260/2)
+        int32_t labelR = 120;  // Just outside outer ring (radius=108 + padding)
+        float cardAngles[] = {0, 90, 180, 270};
+        lv_obj_t* cardObjs[] = {compassLblN, compassLblE, compassLblS, compassLblW};
+        float rot = -compassLastHeading;
+
+        for (int ci = 0; ci < 4; ci++) {
+          float rad = (cardAngles[ci] + rot - 90.0f) * (float)M_PI / 180.0f;
+          int32_t lx = roseCx + (int32_t)(cosf(rad) * labelR) - 5;  // ~half char width
+          int32_t ly = roseCy + (int32_t)(sinf(rad) * labelR) - 8;  // ~half char height
+          lv_obj_set_pos(cardObjs[ci], lx, ly);
+        }
+      }
     }
   }
 }
