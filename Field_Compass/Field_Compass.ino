@@ -1860,6 +1860,63 @@ static void compassRoseDrawCb(lv_event_t* e);
 // Last drawn heading for invalidation threshold
 static float compassLastHeading = -999.0f;
 
+// ============== LVGL Geocache Screen (#110) ==============
+
+// Root + sub-screen containers
+static lv_obj_t* geocacheScr = NULL;        // Root container
+static lv_obj_t* geocacheNavCtr = NULL;      // Nav sub-screen container
+static lv_obj_t* geocacheListCtr = NULL;     // List sub-screen container
+static lv_obj_t* geocacheDetailsCtr = NULL;  // Details sub-screen container
+
+// Nav sub-screen labels
+static lv_obj_t* gcNavHeader = NULL;
+static lv_obj_t* gcNavNavBar = NULL;
+static lv_obj_t* gcNavLblName = NULL;
+static lv_obj_t* gcNavLblDist = NULL;
+static lv_obj_t* gcNavLblDT = NULL;
+static lv_obj_t* gcNavLblBearing = NULL;
+static lv_obj_t* gcNavGraphicObj = NULL;     // Custom draw area
+static lv_obj_t* gcNavLblAccuracy = NULL;
+static lv_obj_t* gcNavLblHint = NULL;
+
+// List sub-screen handles
+static lv_obj_t* gcListHeader = NULL;
+static lv_obj_t* gcListNavBar = NULL;
+static lv_obj_t* gcListLblCount = NULL;
+static lv_obj_t* gcListScrollCtr = NULL;
+static lv_obj_t* gcListLblHints = NULL;
+
+// List row handles (MAX_CACHES=20)
+static lv_obj_t* gcListRows[MAX_CACHES] = {};
+static lv_obj_t* gcListRowSelector[MAX_CACHES] = {};
+static lv_obj_t* gcListRowDist[MAX_CACHES] = {};
+static lv_obj_t* gcListRowName[MAX_CACHES] = {};
+static lv_obj_t* gcListRowFound[MAX_CACHES] = {};
+static lv_obj_t* gcListRowDT[MAX_CACHES] = {};
+
+// Details sub-screen labels
+static lv_obj_t* gcDetHeader = NULL;
+static lv_obj_t* gcDetNavBar = NULL;
+static lv_obj_t* gcDetLblCount = NULL;
+static lv_obj_t* gcDetLblName = NULL;
+static lv_obj_t* gcDetLblGC = NULL;
+static lv_obj_t* gcDetLblCoords = NULL;
+static lv_obj_t* gcDetLblDT = NULL;
+static lv_obj_t* gcDetLblDist = NULL;
+static lv_obj_t* gcDetLblHintLabel = NULL;
+static lv_obj_t* gcDetLblHint = NULL;
+static lv_obj_t* gcDetLblFound = NULL;
+static lv_obj_t* gcDetLblHints = NULL;
+
+// Nav graphic state tracking
+static float gcNavLastBearing = -999;
+static float gcNavLastHeading = -999;
+static bool  gcNavLastInZone = false;
+static int32_t gcNavPulseRadius = 0;  // For search zone animation
+
+// Forward declarations (#110)
+static void geocacheNavDrawCb(lv_event_t* e);
+
 void buildCompassScreen() {
   // Root container — full screen, no scrolling, black background
   compassScr = lv_obj_create(lv_screen_active());
@@ -2247,6 +2304,47 @@ void updateCompassData() {
   }
 }
 
+// ============== LVGL Geocache Screen Builder (#110) ==============
+
+void buildGeocacheScreen() {
+  // Root container — full screen, hidden by default
+  geocacheScr = lv_obj_create(lv_screen_active());
+  lv_obj_remove_style_all(geocacheScr);
+  lv_obj_set_size(geocacheScr, SCREEN_W, SCREEN_H);
+  lv_obj_set_pos(geocacheScr, 0, 0);
+  lv_obj_set_style_bg_color(geocacheScr, FC_COLOR_BG, 0);
+  lv_obj_set_style_bg_opa(geocacheScr, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(geocacheScr, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Nav sub-screen container (sub 0)
+  geocacheNavCtr = lv_obj_create(geocacheScr);
+  lv_obj_remove_style_all(geocacheNavCtr);
+  lv_obj_set_size(geocacheNavCtr, SCREEN_W, SCREEN_H);
+  lv_obj_set_pos(geocacheNavCtr, 0, 0);
+  lv_obj_clear_flag(geocacheNavCtr, LV_OBJ_FLAG_SCROLLABLE);
+
+  // List sub-screen container (sub 1)
+  geocacheListCtr = lv_obj_create(geocacheScr);
+  lv_obj_remove_style_all(geocacheListCtr);
+  lv_obj_set_size(geocacheListCtr, SCREEN_W, SCREEN_H);
+  lv_obj_set_pos(geocacheListCtr, 0, 0);
+  lv_obj_clear_flag(geocacheListCtr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(geocacheListCtr, LV_OBJ_FLAG_HIDDEN);
+
+  // Details sub-screen container (sub 2)
+  geocacheDetailsCtr = lv_obj_create(geocacheScr);
+  lv_obj_remove_style_all(geocacheDetailsCtr);
+  lv_obj_set_size(geocacheDetailsCtr, SCREEN_W, SCREEN_H);
+  lv_obj_set_pos(geocacheDetailsCtr, 0, 0);
+  lv_obj_clear_flag(geocacheDetailsCtr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(geocacheDetailsCtr, LV_OBJ_FLAG_HIDDEN);
+
+  // Start entire geocache screen hidden
+  lv_obj_add_flag(geocacheScr, LV_OBJ_FLAG_HIDDEN);
+
+  logPrintln("[LVGL] Geocache screen built (#110)");
+}
+
 // ============== LVGL Initialization (#105) ==============
 
 void initLVGL() {
@@ -2323,6 +2421,9 @@ void initLVGL() {
 
   // Build LVGL compass screen (#109)
   buildCompassScreen();
+
+  // Build LVGL geocache screen (#110)
+  buildGeocacheScreen();
 
   // Widget library demo screen (#108): all 6 widgets
   #if LVGL_TEST_MODE
