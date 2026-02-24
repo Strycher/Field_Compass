@@ -2511,6 +2511,87 @@ void buildGeocacheScreen() {
   lv_obj_clear_flag(geocacheListCtr, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(geocacheListCtr, LV_OBJ_FLAG_HIDDEN);
 
+  // === List Sub-screen widgets (sub 1) ===
+  gcListHeader = fcHeaderCreate(geocacheListCtr, "CACHE LIST");
+
+  // Count label in header area
+  gcListLblCount = lv_label_create(geocacheListCtr);
+  lv_obj_set_pos(gcListLblCount, 360, 7);
+  lv_obj_set_style_text_font(gcListLblCount, FC_FONT_XS, 0);
+  lv_obj_set_style_text_color(gcListLblCount, FC_COLOR_DIM, 0);
+  lv_label_set_text(gcListLblCount, "");
+
+  // Scrollable list container
+  gcListScrollCtr = lv_obj_create(geocacheListCtr);
+  lv_obj_remove_style_all(gcListScrollCtr);
+  lv_obj_set_size(gcListScrollCtr, SCREEN_W, 228);
+  lv_obj_set_pos(gcListScrollCtr, 0, 33);
+  lv_obj_set_style_bg_color(gcListScrollCtr, FC_COLOR_BG, 0);
+  lv_obj_set_style_bg_opa(gcListScrollCtr, LV_OPA_COVER, 0);
+  lv_obj_add_flag(gcListScrollCtr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_style_pad_row(gcListScrollCtr, 2, 0);
+  lv_obj_set_flex_flow(gcListScrollCtr, LV_FLEX_FLOW_COLUMN);
+
+  // Pre-create all MAX_CACHES rows
+  for (int i = 0; i < MAX_CACHES; i++) {
+    gcListRows[i] = lv_obj_create(gcListScrollCtr);
+    lv_obj_remove_style_all(gcListRows[i]);
+    lv_obj_set_size(gcListRows[i], 460, 28);
+    lv_obj_clear_flag(gcListRows[i], LV_OBJ_FLAG_SCROLLABLE);
+
+    // Selector ">"
+    gcListRowSelector[i] = lv_label_create(gcListRows[i]);
+    lv_obj_set_pos(gcListRowSelector[i], 4, 4);
+    lv_obj_set_style_text_font(gcListRowSelector[i], FC_FONT_SM, 0);
+    lv_obj_set_style_text_color(gcListRowSelector[i], FC_COLOR_HEADER, 0);
+    lv_label_set_text(gcListRowSelector[i], "");
+
+    // Distance
+    gcListRowDist[i] = lv_label_create(gcListRows[i]);
+    lv_obj_set_pos(gcListRowDist[i], 20, 4);
+    lv_obj_set_style_text_font(gcListRowDist[i], FC_FONT_SM, 0);
+    lv_obj_set_style_text_color(gcListRowDist[i], FC_COLOR_VALUE, 0);
+    lv_label_set_text(gcListRowDist[i], "");
+
+    // Name
+    gcListRowName[i] = lv_label_create(gcListRows[i]);
+    lv_obj_set_pos(gcListRowName[i], 95, 4);
+    lv_obj_set_width(gcListRowName[i], 180);
+    lv_obj_set_style_text_font(gcListRowName[i], FC_FONT_SM, 0);
+    lv_obj_set_style_text_color(gcListRowName[i], FC_COLOR_TEXT, 0);
+    lv_label_set_long_mode(gcListRowName[i], LV_LABEL_LONG_CLIP);
+    lv_label_set_text(gcListRowName[i], "");
+
+    // Found badge
+    gcListRowFound[i] = lv_label_create(gcListRows[i]);
+    lv_obj_set_pos(gcListRowFound[i], 280, 4);
+    lv_obj_set_style_text_font(gcListRowFound[i], FC_FONT_SM, 0);
+    lv_obj_set_style_text_color(gcListRowFound[i], FC_COLOR_VALUE, 0);
+    lv_label_set_text(gcListRowFound[i], "");
+
+    // D/T
+    gcListRowDT[i] = lv_label_create(gcListRows[i]);
+    lv_obj_set_pos(gcListRowDT[i], 300, 4);
+    lv_obj_set_style_text_font(gcListRowDT[i], FC_FONT_XS, 0);
+    lv_obj_set_style_text_color(gcListRowDT[i], FC_COLOR_DIM, 0);
+    lv_label_set_text(gcListRowDT[i], "");
+
+    // Hide rows beyond current cache count
+    lv_obj_add_flag(gcListRows[i], LV_OBJ_FLAG_HIDDEN);
+  }
+
+  // Button hints
+  gcListLblHints = lv_label_create(geocacheListCtr);
+  lv_obj_set_pos(gcListLblHints, 0, 265);
+  lv_obj_set_width(gcListLblHints, SCREEN_W);
+  lv_obj_set_style_text_font(gcListLblHints, FC_FONT_XS, 0);
+  lv_obj_set_style_text_color(gcListLblHints, FC_COLOR_DIM, 0);
+  lv_obj_set_style_text_align(gcListLblHints, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(gcListLblHints, "[A]Up [B]Down [C]Select [C+]Details");
+
+  // Nav bar
+  gcListNavBar = fcNavBarCreate(geocacheListCtr, NUM_SCREENS, SCREEN_GEOCACHE);
+
   // Details sub-screen container (sub 2)
   geocacheDetailsCtr = lv_obj_create(geocacheScr);
   lv_obj_remove_style_all(geocacheDetailsCtr);
@@ -2518,6 +2599,89 @@ void buildGeocacheScreen() {
   lv_obj_set_pos(geocacheDetailsCtr, 0, 0);
   lv_obj_clear_flag(geocacheDetailsCtr, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(geocacheDetailsCtr, LV_OBJ_FLAG_HIDDEN);
+
+  // === Details Sub-screen widgets (sub 2) ===
+  gcDetHeader = fcHeaderCreate(geocacheDetailsCtr, "CACHE DETAILS");
+
+  // Count in header area
+  gcDetLblCount = lv_label_create(geocacheDetailsCtr);
+  lv_obj_set_pos(gcDetLblCount, 360, 7);
+  lv_obj_set_style_text_font(gcDetLblCount, FC_FONT_XS, 0);
+  lv_obj_set_style_text_color(gcDetLblCount, FC_COLOR_DIM, 0);
+  lv_label_set_text(gcDetLblCount, "");
+
+  // Cache name
+  gcDetLblName = lv_label_create(geocacheDetailsCtr);
+  lv_obj_set_pos(gcDetLblName, 8, 35);
+  lv_obj_set_width(gcDetLblName, SCREEN_W - 16);
+  lv_obj_set_style_text_font(gcDetLblName, FC_FONT_LG, 0);
+  lv_obj_set_style_text_color(gcDetLblName, FC_COLOR_TEXT, 0);
+  lv_label_set_long_mode(gcDetLblName, LV_LABEL_LONG_CLIP);
+  lv_label_set_text(gcDetLblName, "");
+
+  // GC code
+  gcDetLblGC = lv_label_create(geocacheDetailsCtr);
+  lv_obj_set_pos(gcDetLblGC, 8, 57);
+  lv_obj_set_style_text_font(gcDetLblGC, FC_FONT_MD, 0);
+  lv_obj_set_style_text_color(gcDetLblGC, FC_COLOR_HEADER, 0);
+  lv_label_set_text(gcDetLblGC, "");
+
+  // Coordinates
+  gcDetLblCoords = lv_label_create(geocacheDetailsCtr);
+  lv_obj_set_pos(gcDetLblCoords, 8, 79);
+  lv_obj_set_style_text_font(gcDetLblCoords, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(gcDetLblCoords, FC_COLOR_VALUE, 0);
+  lv_label_set_text(gcDetLblCoords, "");
+
+  // Difficulty/Terrain
+  gcDetLblDT = lv_label_create(geocacheDetailsCtr);
+  lv_obj_set_pos(gcDetLblDT, 8, 97);
+  lv_obj_set_style_text_font(gcDetLblDT, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(gcDetLblDT, FC_COLOR_DIM, 0);
+  lv_label_set_text(gcDetLblDT, "");
+
+  // Distance + bearing (dynamic)
+  gcDetLblDist = lv_label_create(geocacheDetailsCtr);
+  lv_obj_set_pos(gcDetLblDist, 8, 119);
+  lv_obj_set_style_text_font(gcDetLblDist, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(gcDetLblDist, FC_COLOR_VALUE, 0);
+  lv_label_set_text(gcDetLblDist, "");
+
+  // Hint label
+  gcDetLblHintLabel = lv_label_create(geocacheDetailsCtr);
+  lv_obj_set_pos(gcDetLblHintLabel, 8, 141);
+  lv_obj_set_style_text_font(gcDetLblHintLabel, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(gcDetLblHintLabel, FC_COLOR_DIM, 0);
+  lv_label_set_text(gcDetLblHintLabel, "Hint:");
+
+  // Hint text (wrapped)
+  gcDetLblHint = lv_label_create(geocacheDetailsCtr);
+  lv_obj_set_pos(gcDetLblHint, 8, 159);
+  lv_obj_set_width(gcDetLblHint, SCREEN_W - 16);
+  lv_obj_set_style_text_font(gcDetLblHint, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(gcDetLblHint, FC_COLOR_DIM, 0);
+  lv_label_set_long_mode(gcDetLblHint, LV_LABEL_LONG_WRAP);
+  lv_label_set_text(gcDetLblHint, "");
+
+  // Found status
+  gcDetLblFound = lv_label_create(geocacheDetailsCtr);
+  lv_obj_set_pos(gcDetLblFound, 0, 200);
+  lv_obj_set_width(gcDetLblFound, SCREEN_W);
+  lv_obj_set_style_text_font(gcDetLblFound, FC_FONT_MD, 0);
+  lv_obj_set_style_text_align(gcDetLblFound, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(gcDetLblFound, "");
+
+  // Button hints
+  gcDetLblHints = lv_label_create(geocacheDetailsCtr);
+  lv_obj_set_pos(gcDetLblHints, 0, 265);
+  lv_obj_set_width(gcDetLblHints, SCREEN_W);
+  lv_obj_set_style_text_font(gcDetLblHints, FC_FONT_XS, 0);
+  lv_obj_set_style_text_color(gcDetLblHints, FC_COLOR_DIM, 0);
+  lv_obj_set_style_text_align(gcDetLblHints, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(gcDetLblHints, "[A]Prev [B]Next [C]Toggle [C+]Back");
+
+  // Nav bar
+  gcDetNavBar = fcNavBarCreate(geocacheDetailsCtr, NUM_SCREENS, SCREEN_GEOCACHE);
 
   // Start entire geocache screen hidden
   lv_obj_add_flag(geocacheScr, LV_OBJ_FLAG_HIDDEN);
