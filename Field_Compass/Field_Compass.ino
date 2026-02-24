@@ -2689,6 +2689,223 @@ void buildGeocacheScreen() {
   logPrintln("[LVGL] Geocache screen built (#110)");
 }
 
+// ============== LVGL Geocache Accuracy Color (#110) ==============
+
+static lv_color_t getLvglAccuracyColor(float accuracyM) {
+  if (accuracyM < 10.0f) return FC_COLOR_VALUE;   // Green — excellent
+  if (accuracyM < 25.0f) return FC_COLOR_WARN;    // Orange — good
+  return FC_COLOR_ERROR;                           // Red — poor
+}
+
+// ============== LVGL Geocache Data Update (#110) ==============
+
+void updateGeocacheData() {
+  if (!geocacheScr) return;
+
+  // Sub-screen visibility switching
+  if (geocacheSubScreen == 0) {
+    lv_obj_clear_flag(geocacheNavCtr, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(geocacheListCtr, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(geocacheDetailsCtr, LV_OBJ_FLAG_HIDDEN);
+  } else if (geocacheSubScreen == 1) {
+    lv_obj_add_flag(geocacheNavCtr, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(geocacheListCtr, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(geocacheDetailsCtr, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(geocacheNavCtr, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(geocacheListCtr, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(geocacheDetailsCtr, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  // === NAV sub-screen data (sub 0) ===
+  if (geocacheSubScreen == 0) {
+    if (cacheListCount == 0 || !cacheList[selectedCacheIndex].valid) {
+      lv_label_set_text(gcNavLblName, "No cache loaded");
+      lv_label_set_text(gcNavLblDist, "");
+      lv_label_set_text(gcNavLblDT, "");
+      lv_label_set_text(gcNavLblBearing, "");
+      lv_label_set_text(gcNavLblAccuracy, "");
+      lv_label_set_text(gcNavLblHint, "Upload caches via web interface");
+      return;
+    }
+
+    GeocacheEntry& cache = cacheList[selectedCacheIndex];
+    lv_label_set_text(gcNavLblName, cache.name);
+    lv_label_set_text_fmt(gcNavLblDT, "D:%.1f T:%.1f", cache.difficulty, cache.terrain);
+
+    if (gpsData.valid) {
+      float distKm = calcDistanceKm(gpsData.latitude, gpsData.longitude,
+                                      cache.latitude, cache.longitude);
+      float distM = distKm * 1000.0f;
+      float bearing = calcBearing(gpsData.latitude, gpsData.longitude,
+                                   cache.latitude, cache.longitude);
+      float accuracyM = getGpsAccuracyMeters();
+      bool inSearchZone = (distM < accuracyM);
+
+      // Distance
+      if (inSearchZone) {
+        lv_label_set_text(gcNavLblDist, "SEARCH ZONE");
+        lv_obj_set_style_text_color(gcNavLblDist, FC_COLOR_WARN, 0);
+      } else if (useMetricUnits) {
+        if (distKm >= 1.0f) lv_label_set_text_fmt(gcNavLblDist, "%.1f km", distKm);
+        else lv_label_set_text_fmt(gcNavLblDist, "%d m", (int)distM);
+        lv_obj_set_style_text_color(gcNavLblDist, FC_COLOR_VALUE, 0);
+      } else {
+        float distMi = distKm * 0.621371f;
+        float distFt = distM * 3.28084f;
+        if (distMi >= 0.1f) lv_label_set_text_fmt(gcNavLblDist, "%.1f mi", distMi);
+        else lv_label_set_text_fmt(gcNavLblDist, "%d ft", (int)distFt);
+        lv_obj_set_style_text_color(gcNavLblDist, FC_COLOR_VALUE, 0);
+      }
+
+      // Bearing
+      lv_label_set_text_fmt(gcNavLblBearing, "%d\xC2\xB0", (int)bearing);
+
+      // Accuracy (color-coded)
+      if (useMetricUnits) {
+        lv_label_set_text_fmt(gcNavLblAccuracy, "+/-%dm", (int)accuracyM);
+      } else {
+        lv_label_set_text_fmt(gcNavLblAccuracy, "+/-%dft", (int)(accuracyM * 3.28084f));
+      }
+      lv_obj_set_style_text_color(gcNavLblAccuracy, getLvglAccuracyColor(accuracyM), 0);
+
+      // Hint (full in search zone, truncated otherwise)
+      if (inSearchZone) {
+        lv_label_set_text(gcNavLblHint, cache.hint);
+      } else {
+        char hintPreview[32];
+        strncpy(hintPreview, cache.hint, 30);
+        hintPreview[30] = '\0';
+        if (strlen(cache.hint) > 30) strcat(hintPreview, "..");
+        lv_label_set_text(gcNavLblHint, hintPreview);
+      }
+
+      // Invalidate nav graphic on bearing/heading change (2° threshold)
+      float bDiff = fabs(bearing - gcNavLastBearing);
+      float hDiff = fabs(imuData.heading - gcNavLastHeading);
+      if (bDiff > 180) bDiff = 360 - bDiff;
+      if (hDiff > 180) hDiff = 360 - hDiff;
+      if (bDiff >= 2.0f || hDiff >= 2.0f || inSearchZone != gcNavLastInZone) {
+        gcNavLastBearing = bearing;
+        gcNavLastHeading = imuData.heading;
+        gcNavLastInZone = inSearchZone;
+        lv_obj_invalidate(gcNavGraphicObj);
+      }
+    } else {
+      lv_label_set_text(gcNavLblDist, "Acquiring GPS...");
+      lv_obj_set_style_text_color(gcNavLblDist, FC_COLOR_WARN, 0);
+      lv_label_set_text(gcNavLblBearing, "");
+      lv_label_set_text(gcNavLblAccuracy, "");
+    }
+    fcNavBarSetActive(gcNavNavBar, currentScreen);
+  }
+
+  // === LIST sub-screen data (sub 1) ===
+  if (geocacheSubScreen == 1) {
+    lv_label_set_text_fmt(gcListLblCount, "[%d/%d]", listHighlightIndex + 1, cacheListCount);
+
+    for (int i = 0; i < MAX_CACHES; i++) {
+      if (i >= cacheListCount) {
+        lv_obj_add_flag(gcListRows[i], LV_OBJ_FLAG_HIDDEN);
+        continue;
+      }
+      lv_obj_clear_flag(gcListRows[i], LV_OBJ_FLAG_HIDDEN);
+      GeocacheEntry& c = cacheList[i];
+
+      // Selector
+      lv_label_set_text(gcListRowSelector[i], (i == listHighlightIndex) ? ">" : " ");
+      lv_obj_set_style_text_color(gcListRowSelector[i],
+        (i == listHighlightIndex) ? FC_COLOR_HEADER : FC_COLOR_DIM, 0);
+
+      // Highlight row background
+      if (i == listHighlightIndex) {
+        lv_obj_set_style_bg_color(gcListRows[i], lv_color_hex(0x1A1A2E), 0);
+        lv_obj_set_style_bg_opa(gcListRows[i], LV_OPA_COVER, 0);
+      } else {
+        lv_obj_set_style_bg_opa(gcListRows[i], LV_OPA_TRANSP, 0);
+      }
+
+      // Distance
+      if (gpsData.valid) {
+        float dk = calcDistanceKm(gpsData.latitude, gpsData.longitude,
+                                   c.latitude, c.longitude);
+        if (useMetricUnits) {
+          if (dk >= 1.0f) lv_label_set_text_fmt(gcListRowDist[i], "%.1fkm", dk);
+          else lv_label_set_text_fmt(gcListRowDist[i], "%dm", (int)(dk * 1000));
+        } else {
+          float mi = dk * 0.621371f;
+          if (mi >= 0.1f) lv_label_set_text_fmt(gcListRowDist[i], "%.1fmi", mi);
+          else lv_label_set_text_fmt(gcListRowDist[i], "%dft", (int)(dk * 3280.84f));
+        }
+      } else {
+        lv_label_set_text(gcListRowDist[i], "--");
+      }
+
+      // Name (truncated to 16 chars)
+      char nameBuf[20];
+      strncpy(nameBuf, c.name, 16);
+      nameBuf[16] = '\0';
+      if (strlen(c.name) > 16) { nameBuf[14] = '.'; nameBuf[15] = '.'; nameBuf[16] = '\0'; }
+      lv_label_set_text(gcListRowName[i], nameBuf);
+
+      // Found badge
+      lv_label_set_text(gcListRowFound[i], c.found ? "*" : "");
+
+      // D/T
+      lv_label_set_text_fmt(gcListRowDT[i], "D:%d T:%d", (int)c.difficulty, (int)c.terrain);
+    }
+
+    // Scroll highlighted row into view
+    if (listHighlightIndex < cacheListCount) {
+      lv_obj_scroll_to_view(gcListRows[listHighlightIndex], LV_ANIM_ON);
+    }
+    fcNavBarSetActive(gcListNavBar, currentScreen);
+  }
+
+  // === DETAILS sub-screen data (sub 2) ===
+  if (geocacheSubScreen == 2) {
+    if (listHighlightIndex >= cacheListCount) return;
+    GeocacheEntry& c = cacheList[listHighlightIndex];
+
+    lv_label_set_text_fmt(gcDetLblCount, "[%d/%d]", listHighlightIndex + 1, cacheListCount);
+    lv_label_set_text(gcDetLblName, c.name);
+    lv_label_set_text(gcDetLblGC, c.gcCode);
+    lv_label_set_text_fmt(gcDetLblCoords, "%.4f%c %.4f%c",
+      fabs(c.latitude), c.latitude >= 0 ? 'N' : 'S',
+      fabs(c.longitude), c.longitude >= 0 ? 'E' : 'W');
+    lv_label_set_text_fmt(gcDetLblDT, "Difficulty: %.1f  Terrain: %.1f",
+      c.difficulty, c.terrain);
+
+    // Dynamic distance
+    if (gpsData.valid) {
+      float dk = calcDistanceKm(gpsData.latitude, gpsData.longitude,
+                                 c.latitude, c.longitude);
+      float bearing = calcBearing(gpsData.latitude, gpsData.longitude,
+                                   c.latitude, c.longitude);
+      if (useMetricUnits) {
+        lv_label_set_text_fmt(gcDetLblDist, "%.2f km  Bearing: %d\xC2\xB0", dk, (int)bearing);
+      } else {
+        lv_label_set_text_fmt(gcDetLblDist, "%.2f mi  Bearing: %d\xC2\xB0",
+          dk * 0.621371f, (int)bearing);
+      }
+    } else {
+      lv_label_set_text(gcDetLblDist, "GPS not available");
+    }
+
+    lv_label_set_text(gcDetLblHint, c.hint);
+
+    // Found status (color-coded)
+    if (c.found) {
+      lv_label_set_text(gcDetLblFound, "[* FOUND]");
+      lv_obj_set_style_text_color(gcDetLblFound, FC_COLOR_VALUE, 0);
+    } else {
+      lv_label_set_text(gcDetLblFound, "[ NOT FOUND ]");
+      lv_obj_set_style_text_color(gcDetLblFound, FC_COLOR_DIM, 0);
+    }
+    fcNavBarSetActive(gcDetNavBar, currentScreen);
+  }
+}
+
 // ============== LVGL Initialization (#105) ==============
 
 void initLVGL() {
