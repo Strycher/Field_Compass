@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.40.1"
+#define FW_VERSION "0.40.2"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -1940,13 +1940,23 @@ void buildCompassScreen() {
   lv_obj_set_style_text_color(compassLblTime, FC_COLOR_TEXT, 0);
   lv_label_set_text(compassLblTime, "--:--");
 
-  // === Right Panel: Compass Rose placeholder ===
-  // (Custom draw callback added in Task 2)
+  // === Right Panel: Compass Rose (custom draw) ===
   compassRoseObj = lv_obj_create(compassScr);
   lv_obj_remove_style_all(compassRoseObj);
   lv_obj_set_size(compassRoseObj, 298, 260);
   lv_obj_set_pos(compassRoseObj, 182, 30);
   lv_obj_clear_flag(compassRoseObj, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(compassRoseObj, compassRoseDrawCb, LV_EVENT_DRAW_MAIN, NULL);
+
+  // Lubber line — fixed orange triangle at top of rose (does not rotate)
+  // Uses a small filled rectangle as approximation; future polish can use draw callback
+  lv_obj_t* lubber = lv_obj_create(compassScr);
+  lv_obj_remove_style_all(lubber);
+  lv_obj_set_size(lubber, 14, 10);
+  lv_obj_set_pos(lubber, 324, 20);  // Centered above rose ring at cx=331
+  lv_obj_set_style_bg_color(lubber, FC_COLOR_WARN, 0);
+  lv_obj_set_style_bg_opa(lubber, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(lubber, 2, 0);
 
   // NavBar at bottom
   compassNavBar = fcNavBarCreate(compassScr, NUM_SCREENS, SCREEN_COMPASS);
@@ -1957,9 +1967,134 @@ void buildCompassScreen() {
   logPrintln("[LVGL] Compass screen built (#109)");
 }
 
-// Stub draw callback (Task 2 replaces with full compass rose)
+// Compass rose custom draw callback — anti-aliased via LVGL primitives (#109)
 static void compassRoseDrawCb(lv_event_t* e) {
-  (void)e;  // Unused until Task 2
+  lv_obj_t* obj = (lv_obj_t*)lv_event_get_target(e);
+  lv_layer_t* layer = lv_event_get_layer(e);
+
+  // Rose geometry — center of the 298x260 container
+  lv_area_t coords;
+  lv_obj_get_coords(obj, &coords);
+  int32_t objW = lv_obj_get_width(obj);
+  int32_t objH = lv_obj_get_height(obj);
+  int32_t cx = coords.x1 + objW / 2;
+  int32_t cy = coords.y1 + objH / 2;
+  int32_t radius = 108;
+
+  float heading = compassLastHeading;
+  if (heading < 0) heading = 0;
+  float rotDeg = -heading;
+
+  // --- Outer ring (anti-aliased arc) ---
+  lv_draw_arc_dsc_t arcDsc;
+  lv_draw_arc_dsc_init(&arcDsc);
+  arcDsc.center.x = cx;
+  arcDsc.center.y = cy;
+  arcDsc.radius = radius;
+  arcDsc.width = 2;
+  arcDsc.start_angle = 0;
+  arcDsc.end_angle = 360;
+  arcDsc.color = lv_color_hex(0x808080);
+  arcDsc.opa = LV_OPA_COVER;
+  lv_draw_arc(layer, &arcDsc);
+
+  // --- Tick marks (12 ticks every 30°) ---
+  int tickCardLen = radius / 10;
+  int tickInterLen = radius / 20;
+
+  for (int i = 0; i < 12; i++) {
+    float tickAngle = (i * 30.0f + rotDeg - 90.0f) * (float)M_PI / 180.0f;
+    int tickLen = (i % 3 == 0) ? tickCardLen : tickInterLen;
+
+    lv_draw_line_dsc_t lineDsc;
+    lv_draw_line_dsc_init(&lineDsc);
+    lineDsc.p1.x = cx + (int32_t)(cosf(tickAngle) * (radius - tickLen));
+    lineDsc.p1.y = cy + (int32_t)(sinf(tickAngle) * (radius - tickLen));
+    lineDsc.p2.x = cx + (int32_t)(cosf(tickAngle) * radius);
+    lineDsc.p2.y = cy + (int32_t)(sinf(tickAngle) * radius);
+    lineDsc.width = (i % 3 == 0) ? 2 : 1;
+    lineDsc.color = lv_color_hex(0x808080);
+    lineDsc.opa = LV_OPA_COVER;
+    lv_draw_line(layer, &lineDsc);
+  }
+
+  // --- 8 Diamond needles ---
+  struct {
+    float angle;
+    int length;
+    int halfWidth;
+    lv_color_t color;
+    lv_color_t tailColor;
+  } needles[] = {
+    {  0, radius*93/100, radius*10/100, lv_color_hex(0x00FFFF), lv_color_hex(0x212121)},  // N cyan
+    { 45, radius*60/100, radius*6/100,  lv_color_hex(0x808080), lv_color_hex(0x808080)},  // NE gray
+    { 90, radius*93/100, radius*10/100, lv_color_hex(0xFFFFFF), lv_color_hex(0x212121)},  // E white
+    {135, radius*60/100, radius*6/100,  lv_color_hex(0x808080), lv_color_hex(0x808080)},  // SE gray
+    {180, radius*93/100, radius*10/100, lv_color_hex(0xFF0000), lv_color_hex(0x212121)},  // S red
+    {225, radius*60/100, radius*6/100,  lv_color_hex(0x808080), lv_color_hex(0x808080)},  // SW gray
+    {270, radius*93/100, radius*10/100, lv_color_hex(0xFFFFFF), lv_color_hex(0x212121)},  // W white
+    {315, radius*60/100, radius*6/100,  lv_color_hex(0x808080), lv_color_hex(0x808080)},  // NW gray
+  };
+
+  for (int i = 0; i < 8; i++) {
+    float tipRad = (needles[i].angle + rotDeg - 90.0f) * (float)M_PI / 180.0f;
+    float perpRad = tipRad + (float)M_PI / 2.0f;
+
+    int32_t tipX = cx + (int32_t)(cosf(tipRad) * needles[i].length);
+    int32_t tipY = cy + (int32_t)(sinf(tipRad) * needles[i].length);
+
+    int32_t sX1 = cx + (int32_t)(cosf(perpRad) * needles[i].halfWidth);
+    int32_t sY1 = cy + (int32_t)(sinf(perpRad) * needles[i].halfWidth);
+    int32_t sX2 = cx - (int32_t)(cosf(perpRad) * needles[i].halfWidth);
+    int32_t sY2 = cy - (int32_t)(sinf(perpRad) * needles[i].halfWidth);
+
+    float tailRad = tipRad + (float)M_PI;
+    int tailLen = needles[i].length / 3;
+    int32_t tailX = cx + (int32_t)(cosf(tailRad) * tailLen);
+    int32_t tailY = cy + (int32_t)(sinf(tailRad) * tailLen);
+
+    // Tip triangle (front half of diamond)
+    lv_draw_triangle_dsc_t triDsc;
+    lv_draw_triangle_dsc_init(&triDsc);
+    triDsc.p[0].x = tipX;  triDsc.p[0].y = tipY;
+    triDsc.p[1].x = sX1;   triDsc.p[1].y = sY1;
+    triDsc.p[2].x = sX2;   triDsc.p[2].y = sY2;
+    triDsc.color = needles[i].color;
+    triDsc.opa = LV_OPA_COVER;
+    lv_draw_triangle(layer, &triDsc);
+
+    // Tail triangle (back half of diamond)
+    triDsc.p[0].x = tailX; triDsc.p[0].y = tailY;
+    triDsc.color = needles[i].tailColor;
+    lv_draw_triangle(layer, &triDsc);
+  }
+
+  // --- Center hub (filled circle via thick arc) ---
+  int hubR = max(5, (int)(radius / 15));
+  lv_draw_arc_dsc_t hubDsc;
+  lv_draw_arc_dsc_init(&hubDsc);
+  hubDsc.center.x = cx;
+  hubDsc.center.y = cy;
+  hubDsc.radius = hubR;
+  hubDsc.width = hubR;
+  hubDsc.start_angle = 0;
+  hubDsc.end_angle = 360;
+  hubDsc.color = lv_color_hex(0xFFFFFF);
+  hubDsc.opa = LV_OPA_COVER;
+  lv_draw_arc(layer, &hubDsc);
+
+  // Hub outline
+  lv_draw_arc_dsc_t hubOutDsc;
+  lv_draw_arc_dsc_init(&hubOutDsc);
+  hubOutDsc.center.x = cx;
+  hubOutDsc.center.y = cy;
+  hubOutDsc.radius = hubR;
+  hubOutDsc.width = 1;
+  hubOutDsc.start_angle = 0;
+  hubOutDsc.end_angle = 360;
+  hubOutDsc.color = lv_color_hex(0x808080);
+  hubOutDsc.opa = LV_OPA_COVER;
+  lv_draw_arc(layer, &hubOutDsc);
 }
 
 // Update left panel labels from sensor data (called from updateDisplay at 2Hz)
