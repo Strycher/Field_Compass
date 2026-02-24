@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.39.2"
+#define FW_VERSION "0.40.0"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -1686,6 +1686,153 @@ void fcToggleSetValue(lv_obj_t* toggle, bool value) {
   fcToggleUpdateVisuals(toggle, value);
 }
 
+// --- Dropdown: label + value button + down arrow ---
+lv_obj_t* fcDropdownCreate(lv_obj_t* parent, int16_t y,
+                            const char* label, const char* initialValue) {
+  lv_obj_t* cont = lv_obj_create(parent);
+  lv_obj_remove_style_all(cont);
+  lv_obj_set_size(cont, SCREEN_W - 20, 30);
+  lv_obj_set_pos(cont, 10, y);
+  lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Child [0]: label
+  lv_obj_t* lbl = lv_label_create(cont);
+  lv_label_set_text(lbl, label);
+  lv_obj_set_style_text_color(lbl, FC_COLOR_DIM, 0);
+  lv_obj_set_style_text_font(lbl, FC_FONT_SM, 0);
+  lv_obj_set_pos(lbl, 10, 7);
+
+  // Child [1]: value button (clickable trigger)
+  int vx = 140;
+  int vw = SCREEN_W - 20 - vx;
+  lv_obj_t* valBtn = lv_button_create(cont);
+  lv_obj_set_size(valBtn, vw, 30);
+  lv_obj_set_pos(valBtn, vx, 0);
+  lv_obj_set_style_bg_color(valBtn, FC_COLOR_W_INACTIVE, 0);
+  lv_obj_set_style_radius(valBtn, 6, 0);
+
+  // Value text (child [0] of valBtn)
+  lv_obj_t* valLbl = lv_label_create(valBtn);
+  lv_label_set_text(valLbl, initialValue);
+  lv_obj_set_style_text_color(valLbl, FC_COLOR_VALUE, 0);
+  lv_obj_set_style_text_font(valLbl, FC_FONT_SM, 0);
+  lv_obj_align(valLbl, LV_ALIGN_LEFT_MID, 10, 0);
+
+  // Arrow indicator (child [1] of valBtn)
+  lv_obj_t* arrowLbl = lv_label_create(valBtn);
+  lv_label_set_text(arrowLbl, LV_SYMBOL_DOWN);
+  lv_obj_set_style_text_color(arrowLbl, FC_COLOR_DIM, 0);
+  lv_obj_set_style_text_font(arrowLbl, FC_FONT_XS, 0);
+  lv_obj_align(arrowLbl, LV_ALIGN_RIGHT_MID, -5, 0);
+
+  // Store index in user_data (default 0)
+  lv_obj_set_user_data(cont, (void*)(intptr_t)0);
+
+  return cont;
+}
+
+int fcDropdownGetIndex(lv_obj_t* dropdown) {
+  return (int)(intptr_t)lv_obj_get_user_data(dropdown);
+}
+
+void fcDropdownSetValue(lv_obj_t* dropdown, int idx, const char* text) {
+  lv_obj_set_user_data(dropdown, (void*)(intptr_t)idx);
+  lv_obj_t* valBtn = lv_obj_get_child(dropdown, 1);
+  lv_obj_t* valLbl = lv_obj_get_child(valBtn, 0);
+  lv_label_set_text(valLbl, text);
+}
+
+// --- List Picker: modal scrollable selection overlay ---
+
+// Internal: list item click handler — select and close
+static void fcListPickerItemCb(lv_event_t* e) {
+  lv_obj_t* itemBtn = (lv_obj_t*)lv_event_get_target(e);
+  int idx = (int)(intptr_t)lv_obj_get_user_data(itemBtn);
+
+  // Navigate up: itemBtn -> list -> box -> overlay
+  lv_obj_t* list = lv_obj_get_parent(itemBtn);
+  lv_obj_t* box = lv_obj_get_parent(list);
+  lv_obj_t* overlay = lv_obj_get_parent(box);
+
+  // Get caller stored in overlay user_data
+  lv_obj_t* caller = (lv_obj_t*)lv_obj_get_user_data(overlay);
+
+  // Notify caller with selected index
+  if (caller) {
+    lv_obj_send_event(caller, LV_EVENT_VALUE_CHANGED, (void*)(intptr_t)idx);
+  }
+
+  // Close: delete overlay (removes everything)
+  lv_obj_delete(overlay);
+}
+
+lv_obj_t* fcListPickerOpen(const char* title, const char** items,
+                            int count, int selectedIdx, lv_obj_t* caller) {
+  // Full-screen semi-transparent overlay
+  lv_obj_t* overlay = lv_obj_create(lv_screen_active());
+  lv_obj_remove_style_all(overlay);
+  lv_obj_set_size(overlay, SCREEN_W, SCREEN_H);
+  lv_obj_set_pos(overlay, 0, 0);
+  lv_obj_set_style_bg_color(overlay, FC_COLOR_BG, 0);
+  lv_obj_set_style_bg_opa(overlay, LV_OPA_50, 0);
+  lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_user_data(overlay, (void*)caller);
+
+  // Modal container: 420x220, centered
+  lv_obj_t* box = lv_obj_create(overlay);
+  lv_obj_remove_style_all(box);
+  lv_obj_set_size(box, 420, 220);
+  lv_obj_center(box);
+  lv_obj_set_style_bg_color(box, FC_COLOR_W_OVERLAY, 0);
+  lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_color(box, FC_COLOR_DIM, 0);
+  lv_obj_set_style_border_width(box, 1, 0);
+  lv_obj_set_style_radius(box, 8, 0);
+  lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Title label
+  lv_obj_t* titleLbl = lv_label_create(box);
+  lv_label_set_text(titleLbl, title);
+  lv_obj_set_style_text_color(titleLbl, FC_COLOR_HEADER, 0);
+  lv_obj_set_style_text_font(titleLbl, FC_FONT_SM, 0);
+  lv_obj_set_pos(titleLbl, 10, 6);
+
+  // Scrollable list area
+  lv_obj_t* listArea = lv_obj_create(box);
+  lv_obj_remove_style_all(listArea);
+  lv_obj_set_size(listArea, 410, 180);
+  lv_obj_set_pos(listArea, 5, 32);
+  lv_obj_set_style_bg_opa(listArea, LV_OPA_TRANSP, 0);
+  lv_obj_set_flex_flow(listArea, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(listArea, 4, 0);
+
+  // List items
+  for (int i = 0; i < count; i++) {
+    lv_obj_t* itemBtn = lv_button_create(listArea);
+    lv_obj_set_size(itemBtn, 400, 32);
+    lv_obj_set_style_bg_color(itemBtn,
+      (i == selectedIdx) ? FC_COLOR_W_OK : FC_COLOR_W_OVERLAY, 0);
+    lv_obj_set_style_radius(itemBtn, 4, 0);
+    lv_obj_set_style_min_height(itemBtn, 32, 0);
+    lv_obj_set_user_data(itemBtn, (void*)(intptr_t)i);
+    lv_obj_add_event_cb(itemBtn, fcListPickerItemCb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t* itemLbl = lv_label_create(itemBtn);
+    lv_label_set_text(itemLbl, items[i]);
+    lv_obj_set_style_text_color(itemLbl, FC_COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(itemLbl, FC_FONT_SM, 0);
+    lv_obj_align(itemLbl, LV_ALIGN_LEFT_MID, 10, 0);
+  }
+
+  // Scroll to selected item
+  if (selectedIdx > 0 && selectedIdx < count) {
+    lv_obj_t* selBtn = lv_obj_get_child(listArea, selectedIdx);
+    lv_obj_scroll_to_view(selBtn, LV_ANIM_OFF);
+  }
+
+  return overlay;
+}
+
 // ============== LVGL Initialization (#105) ==============
 
 void initLVGL() {
@@ -1760,32 +1907,34 @@ void initLVGL() {
   // Initialize Field Compass theme and named styles (#107)
   initFCTheme();
 
-  // Font & color demo screen (#107): all 7 styles on black background
+  // Widget library demo screen (#108): all 6 widgets
   #if LVGL_TEST_MODE
   {
-    static const struct { lv_style_t* style; const char* sample; } rows[] = {
-      { &fcStyleHeader, "HEADER - Cyan 24px" },
-      { &fcStyleValue,  "VALUE - Green 20px" },
-      { &fcStyleHero,   "HERO - Green 32px" },
-      { &fcStyleBody,   "BODY - White 18px" },
-      { &fcStyleLabel,  "LABEL - Gray 16px" },
-      { &fcStyleWarn,   "WARN - Orange 18px" },
-      { &fcStyleError,  "ERROR - Red 18px" },
-    };
-    int16_t y = 10;
-    for (int i = 0; i < 7; i++) {
-      lv_obj_t* lbl = lv_label_create(lv_screen_active());
-      lv_label_set_text(lbl, rows[i].sample);
-      lv_obj_add_style(lbl, rows[i].style, 0);
-      lv_obj_set_pos(lbl, 10, y);
-      // Advance Y based on font line height + padding
-      const lv_font_t* f = lv_obj_get_style_text_font(lbl, LV_PART_MAIN);
-      y += lv_font_get_line_height(f) + 6;
-    }
+    // Header with title + gear icon
+    lv_obj_t* header = fcHeaderCreate(lv_screen_active(), "WIDGET DEMO");
+
+    // Toggle: 12h/24h time format
+    lv_obj_t* toggle1 = fcToggleCreate(lv_screen_active(), 45,
+      "Time", "12-Hour", "24-Hour", false);
+
+    // Toggle: temp unit
+    lv_obj_t* toggle2 = fcToggleCreate(lv_screen_active(), 85,
+      "Temp", "\xC2\xB0""F", "\xC2\xB0""C", false);
+
+    // Dropdown: timezone (static items for demo)
+    lv_obj_t* dropdown = fcDropdownCreate(lv_screen_active(), 130,
+      "Zone", "Eastern (UTC-5)");
+
+    // Action bar with Back + OK
+    lv_obj_t* actionBar = fcActionBarCreate(lv_screen_active(), true, true);
+
+    // Nav bar with 4 screens, screen 1 active
+    lv_obj_t* navBar = fcNavBarCreate(lv_screen_active(), 4, 0);
+
     lv_timer_handler();  // Render to TFT
-    delay(3000);         // Hold for visual confirmation
+    delay(5000);         // Hold for visual confirmation
   }
-  logPrintln("[LVGL] Font/color demo rendered (LVGL_TEST_MODE=1)");
+  logPrintln("[LVGL] Widget demo rendered (LVGL_TEST_MODE=1)");
   #endif
 }
 
