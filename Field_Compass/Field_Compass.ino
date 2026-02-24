@@ -1917,6 +1917,85 @@ static int32_t gcNavPulseRadius = 0;  // For search zone animation
 // Forward declarations (#110)
 static void geocacheNavDrawCb(lv_event_t* e);
 
+// ============== LVGL Environment Screen (#111) ==============
+
+// Root container
+static lv_obj_t* envScr = NULL;
+
+// Header + NavBar
+static lv_obj_t* envHeader = NULL;
+static lv_obj_t* envNavBar = NULL;
+
+// Label pairs: dim label + colored value
+static lv_obj_t* envLblTempLabel = NULL;
+static lv_obj_t* envLblTempValue = NULL;
+static lv_obj_t* envLblHumidLabel = NULL;
+static lv_obj_t* envLblHumidValue = NULL;
+static lv_obj_t* envLblIaqLabel = NULL;
+static lv_obj_t* envLblIaqValue = NULL;
+static lv_obj_t* envLblCo2Label = NULL;
+static lv_obj_t* envLblCo2Value = NULL;
+static lv_obj_t* envLblPressLabel = NULL;
+static lv_obj_t* envLblPressValue = NULL;
+static lv_obj_t* envLblFcstLabel = NULL;
+static lv_obj_t* envLblFcstValue = NULL;
+
+// Error state label (no sensors)
+static lv_obj_t* envLblNoSensors = NULL;
+
+// ============== LVGL Telemetry Screen (#111) ==============
+
+// Root container
+static lv_obj_t* telemetryScr = NULL;
+
+// Header + NavBar
+static lv_obj_t* telHeader = NULL;
+static lv_obj_t* telNavBar = NULL;
+
+// Section labels
+static lv_obj_t* telLblGpsSection = NULL;
+static lv_obj_t* telLblImuSection = NULL;
+
+// GPS data labels (left column: label+value, right column: label+value)
+static lv_obj_t* telLblLatLabel = NULL;
+static lv_obj_t* telLblLatValue = NULL;
+static lv_obj_t* telLblLonLabel = NULL;
+static lv_obj_t* telLblLonValue = NULL;
+static lv_obj_t* telLblAltLabel = NULL;
+static lv_obj_t* telLblAltValue = NULL;
+static lv_obj_t* telLblSpdLabel = NULL;
+static lv_obj_t* telLblSpdValue = NULL;
+static lv_obj_t* telLblSatLabel = NULL;
+static lv_obj_t* telLblSatValue = NULL;
+static lv_obj_t* telLblHdopLabel = NULL;
+static lv_obj_t* telLblHdopValue = NULL;
+static lv_obj_t* telLblStatusLabel = NULL;
+static lv_obj_t* telLblStatusValue = NULL;
+
+// GPS acquiring/error state labels
+static lv_obj_t* telLblGpsAcquiring = NULL;
+static lv_obj_t* telLblGpsElapsed = NULL;
+static lv_obj_t* telLblGpsSkyHint = NULL;
+static lv_obj_t* telLblGpsSatCount = NULL;
+static lv_obj_t* telLblGpsNoData = NULL;
+static lv_obj_t* telLblGpsCheckConn = NULL;
+
+// Divider line
+static lv_obj_t* telDivider = NULL;
+
+// IMU data labels
+static lv_obj_t* telLblHdgLabel = NULL;
+static lv_obj_t* telLblHdgValue = NULL;
+static lv_obj_t* telLblRollLabel = NULL;
+static lv_obj_t* telLblRollValue = NULL;
+static lv_obj_t* telLblPitchLabel = NULL;
+static lv_obj_t* telLblPitchValue = NULL;
+static lv_obj_t* telLblAccelLabel = NULL;
+static lv_obj_t* telLblAccelValue = NULL;
+
+// IMU error state
+static lv_obj_t* telLblNoImu = NULL;
+
 void buildCompassScreen() {
   // Root container — full screen, no scrolling, black background
   compassScr = lv_obj_create(lv_screen_active());
@@ -2922,6 +3001,36 @@ void updateGeocacheData() {
   }
 }
 
+// ============== LVGL Environment Screen Builder (#111) ==============
+
+void buildEnvScreen() {
+  // Root container — full screen, hidden by default
+  envScr = lv_obj_create(lv_screen_active());
+  lv_obj_set_size(envScr, 480, 320);
+  lv_obj_set_pos(envScr, 0, 0);
+  lv_obj_set_style_bg_color(envScr, FC_COLOR_BG, 0);
+  lv_obj_set_style_border_width(envScr, 0, 0);
+  lv_obj_set_style_radius(envScr, 0, 0);
+  lv_obj_set_style_pad_all(envScr, 0, 0);
+  lv_obj_add_flag(envScr, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(envScr, LV_OBJ_FLAG_SCROLLABLE);
+}
+
+// ============== LVGL Telemetry Screen Builder (#111) ==============
+
+void buildTelemetryScreen() {
+  // Root container — full screen, hidden by default
+  telemetryScr = lv_obj_create(lv_screen_active());
+  lv_obj_set_size(telemetryScr, 480, 320);
+  lv_obj_set_pos(telemetryScr, 0, 0);
+  lv_obj_set_style_bg_color(telemetryScr, FC_COLOR_BG, 0);
+  lv_obj_set_style_border_width(telemetryScr, 0, 0);
+  lv_obj_set_style_radius(telemetryScr, 0, 0);
+  lv_obj_set_style_pad_all(telemetryScr, 0, 0);
+  lv_obj_add_flag(telemetryScr, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(telemetryScr, LV_OBJ_FLAG_SCROLLABLE);
+}
+
 // ============== LVGL Initialization (#105) ==============
 
 void initLVGL() {
@@ -3001,6 +3110,12 @@ void initLVGL() {
 
   // Build LVGL geocache screen (#110)
   buildGeocacheScreen();
+
+  // Build LVGL environment screen (#111)
+  buildEnvScreen();
+
+  // Build LVGL telemetry screen (#111)
+  buildTelemetryScreen();
 
   // Widget library demo screen (#108): all 6 widgets
   #if LVGL_TEST_MODE
