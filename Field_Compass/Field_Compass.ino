@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.36.4"
+#define FW_VERSION "0.37.0"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -60,7 +60,7 @@ const uint8_t bsec2_config[] = {
 
 // Set to 1 to enable LVGL test rendering (label in corner during boot).
 // Set to 0 for normal operation where sprite pipeline handles all rendering.
-#define LVGL_TEST_MODE 1
+#define LVGL_TEST_MODE 0
 
 // LVGL display object and draw buffers (PSRAM-backed for performance)
 static lv_display_t* lvglDisplay = NULL;
@@ -1222,6 +1222,13 @@ void loop() {
 
   // Check TFT health and perform preventive re-init if needed
   checkTFTHealth();
+
+  // LVGL timer handler — process animations, redraws, timers
+  #if LVGL_TEST_MODE
+  if (lvglAvailable && !tftSleeping) {
+    lv_timer_handler();
+  }
+  #endif
 
   // Update display based on current screen
   updateDisplay();
