@@ -2482,6 +2482,22 @@ void buildGeocacheScreen() {
   lv_obj_clear_flag(gcNavGraphicObj, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_event_cb(gcNavGraphicObj, geocacheNavDrawCb, LV_EVENT_DRAW_MAIN, NULL);
 
+  // Pulse animation for search zone circle
+  static lv_anim_t pulseAnim;
+  lv_anim_init(&pulseAnim);
+  lv_anim_set_var(&pulseAnim, gcNavGraphicObj);
+  lv_anim_set_values(&pulseAnim, 0, 8);
+  lv_anim_set_duration(&pulseAnim, 1000);
+  lv_anim_set_playback_duration(&pulseAnim, 1000);
+  lv_anim_set_repeat_count(&pulseAnim, LV_ANIM_REPEAT_INFINITE);
+  lv_anim_set_exec_cb(&pulseAnim, [](void* obj, int32_t val) {
+    gcNavPulseRadius = val;
+    if (geocacheSubScreen == 0 && gcNavLastInZone) {
+      lv_obj_invalidate((lv_obj_t*)obj);
+    }
+  });
+  lv_anim_start(&pulseAnim);
+
   // Accuracy
   gcNavLblAccuracy = lv_label_create(geocacheNavCtr);
   lv_obj_set_pos(gcNavLblAccuracy, 0, 200);
@@ -6719,20 +6735,33 @@ void updateDisplay() {
 
     // Show/hide LVGL compass screen based on currentScreen (#109)
     if (compassScr) {
-      if (currentScreen == SCREEN_COMPASS) {
+      if (currentScreen == SCREEN_COMPASS)
         lv_obj_clear_flag(compassScr, LV_OBJ_FLAG_HIDDEN);
-      } else {
+      else
         lv_obj_add_flag(compassScr, LV_OBJ_FLAG_HIDDEN);
-      }
     }
 
-    // LVGL-managed compass screen: update data, skip legacy sprite draw
-    if (currentScreen == SCREEN_COMPASS && compassScr) {
-      updateCompassData();
-      fcNavBarSetActive(compassNavBar, currentScreen);
+    // Show/hide LVGL geocache screen based on currentScreen (#110)
+    if (geocacheScr) {
+      if (currentScreen == SCREEN_GEOCACHE)
+        lv_obj_clear_flag(geocacheScr, LV_OBJ_FLAG_HIDDEN);
+      else
+        lv_obj_add_flag(geocacheScr, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // LVGL-managed screens: update data, skip legacy sprite draw
+    if ((currentScreen == SCREEN_COMPASS && compassScr) ||
+        (currentScreen == SCREEN_GEOCACHE && geocacheScr)) {
+
+      if (currentScreen == SCREEN_COMPASS) {
+        updateCompassData();
+        fcNavBarSetActive(compassNavBar, currentScreen);
+      } else if (currentScreen == SCREEN_GEOCACHE) {
+        updateGeocacheData();
+      }
 
       // Screen-change clear: wipe sprite framebuffer when transitioning
-      // from a legacy screen to the LVGL compass screen
+      // from a legacy screen to an LVGL screen
       static int lastLvglScreen = -1;
       if (currentScreen != lastLvglScreen) {
         if (spriteAvailable) {
@@ -6742,7 +6771,7 @@ void updateDisplay() {
         lastLvglScreen = currentScreen;
       }
     } else {
-      // Legacy sprite pipeline for all other screens
+      // Legacy sprite pipeline for remaining screens
       TFT_eSprite* c = &spr;
 
       // On screen change: clear sprite + push full black frame to TFT
