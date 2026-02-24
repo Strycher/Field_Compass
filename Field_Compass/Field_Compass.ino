@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.39.0"
+#define FW_VERSION "0.39.1"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -241,6 +241,13 @@ const char* NTP_SERVER = "pool.ntp.org";
 #define FC_FONT_XL    &lv_font_montserrat_24   // Section headers
 #define FC_FONT_XXL   &lv_font_montserrat_28   // Large headers
 #define FC_FONT_HERO  &lv_font_montserrat_32   // Hero values (heading, telemetry)
+
+// Widget-specific background colors — RGB888 from RGB565 (#108)
+#define FC_COLOR_W_BAR      lv_color_hex(0x181818)   // Nav/action bar bg (0x18C3)
+#define FC_COLOR_W_BTN      lv_color_hex(0x424242)   // Inactive button bg (0x4208)
+#define FC_COLOR_W_OK       lv_color_hex(0x007D00)   // OK/selected bg (0x03E0)
+#define FC_COLOR_W_INACTIVE lv_color_hex(0x212121)   // Unselected items (0x2104)
+#define FC_COLOR_W_OVERLAY  lv_color_hex(0x080808)   // Modal overlay bg (0x0841)
 
 // ============== Global Objects ==============
 
@@ -1440,6 +1447,116 @@ void initFCTheme() {
   lv_style_set_text_font(&fcStyleError, FC_FONT_MD);
 
   logPrintln("[LVGL] Field Compass theme initialized (7 styles)");
+}
+
+// ============== FC Widget Library (#108) ==============
+
+// --- Header Bar: 30px cyan bar with title + gear icon ---
+lv_obj_t* fcHeaderCreate(lv_obj_t* parent, const char* title) {
+  lv_obj_t* cont = lv_obj_create(parent);
+  lv_obj_remove_style_all(cont);
+  lv_obj_set_size(cont, SCREEN_W, 30);
+  lv_obj_set_pos(cont, 0, 0);
+  lv_obj_set_style_bg_color(cont, FC_COLOR_HEADER, 0);
+  lv_obj_set_style_bg_opa(cont, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Child [0]: title label — black on cyan
+  lv_obj_t* titleLbl = lv_label_create(cont);
+  lv_label_set_text(titleLbl, title);
+  lv_obj_set_style_text_color(titleLbl, FC_COLOR_BG, 0);
+  lv_obj_set_style_text_font(titleLbl, FC_FONT_SM, 0);
+  lv_obj_set_pos(titleLbl, 10, 7);
+
+  // Child [1]: gear button — tappable settings icon
+  lv_obj_t* gearBtn = lv_button_create(cont);
+  lv_obj_remove_style_all(gearBtn);
+  lv_obj_set_size(gearBtn, 30, 30);
+  lv_obj_align(gearBtn, LV_ALIGN_RIGHT_MID, -5, 0);
+  lv_obj_set_style_bg_opa(gearBtn, LV_OPA_TRANSP, 0);
+
+  lv_obj_t* gearLbl = lv_label_create(gearBtn);
+  lv_label_set_text(gearLbl, LV_SYMBOL_SETTINGS);
+  lv_obj_set_style_text_color(gearLbl, FC_COLOR_BG, 0);
+  lv_obj_set_style_text_font(gearLbl, FC_FONT_SM, 0);
+  lv_obj_center(gearLbl);
+
+  return cont;
+}
+
+void fcHeaderSetTitle(lv_obj_t* header, const char* title) {
+  lv_obj_t* titleLbl = lv_obj_get_child(header, 0);
+  if (titleLbl) lv_label_set_text(titleLbl, title);
+}
+
+// --- Nav Bar: 25px dark gray bar with numbered screen dots ---
+lv_obj_t* fcNavBarCreate(lv_obj_t* parent, uint8_t screenCount, uint8_t activeIdx) {
+  lv_obj_t* cont = lv_obj_create(parent);
+  lv_obj_remove_style_all(cont);
+  lv_obj_set_size(cont, SCREEN_W, 25);
+  lv_obj_set_pos(cont, 0, SCREEN_H - 25);
+  lv_obj_set_style_bg_color(cont, FC_COLOR_W_BAR, 0);
+  lv_obj_set_style_bg_opa(cont, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Child [0]: "A<" hint
+  lv_obj_t* hintL = lv_label_create(cont);
+  lv_label_set_text(hintL, "A<");
+  lv_obj_set_style_text_color(hintL, FC_COLOR_TEXT, 0);
+  lv_obj_set_style_text_font(hintL, FC_FONT_XS, 0);
+  lv_obj_set_pos(hintL, 10, 5);
+
+  // Children [1..N]: numbered dots
+  int startX = 80;
+  int spacing = 40;
+  for (uint8_t i = 0; i < screenCount; i++) {
+    lv_obj_t* dot = lv_obj_create(cont);
+    lv_obj_remove_style_all(dot);
+    lv_obj_set_size(dot, 28, 19);
+    lv_obj_set_pos(dot, startX + i * spacing, 3);
+    lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+
+    bool active = (i == activeIdx);
+    if (active) {
+      lv_obj_set_style_bg_color(dot, FC_COLOR_HEADER, 0);
+      lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+    }
+
+    lv_obj_t* numLbl = lv_label_create(dot);
+    char num[2] = { (char)('1' + i), '\0' };
+    lv_label_set_text(numLbl, num);
+    lv_obj_set_style_text_font(numLbl, FC_FONT_SM, 0);
+    lv_obj_set_style_text_color(numLbl, active ? FC_COLOR_BG : FC_COLOR_DIM, 0);
+    lv_obj_center(numLbl);
+  }
+
+  // Child [N+1]: ">B" hint
+  lv_obj_t* hintR = lv_label_create(cont);
+  lv_label_set_text(hintR, ">B");
+  lv_obj_set_style_text_color(hintR, FC_COLOR_TEXT, 0);
+  lv_obj_set_style_text_font(hintR, FC_FONT_XS, 0);
+  lv_obj_set_pos(hintR, SCREEN_W - 30, 5);
+
+  return cont;
+}
+
+void fcNavBarSetActive(lv_obj_t* navBar, uint8_t activeIdx) {
+  uint32_t count = lv_obj_get_child_count(navBar);
+  // Children: [0]=hintL, [1..N-2]=dots, [N-1]=hintR
+  for (uint32_t i = 1; i < count - 1; i++) {
+    lv_obj_t* dot = lv_obj_get_child(navBar, i);
+    bool active = ((i - 1) == activeIdx);
+
+    if (active) {
+      lv_obj_set_style_bg_color(dot, FC_COLOR_HEADER, 0);
+      lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+    } else {
+      lv_obj_set_style_bg_opa(dot, LV_OPA_TRANSP, 0);
+    }
+
+    lv_obj_t* numLbl = lv_obj_get_child(dot, 0);
+    lv_obj_set_style_text_color(numLbl, active ? FC_COLOR_BG : FC_COLOR_DIM, 0);
+  }
 }
 
 // ============== LVGL Initialization (#105) ==============
