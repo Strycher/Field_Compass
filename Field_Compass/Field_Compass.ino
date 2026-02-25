@@ -304,6 +304,14 @@ int  settingsSubScreen = 0;    // 0=menu, 1=compass cal, 2=diagnostics, ...
 int  previousScreen    = 0;    // Screen to return to when exiting settings
 int  settingsMenuIndex = 0;    // Currently highlighted menu item
 #define SETTINGS_MENU_COUNT 6  // Configuration, Display, Compass Cal, Diagnostics, About, Factory Reset (#104)
+static const char* settingsMenuItems[] = {
+  "Configuration",
+  "Display",
+  "Compass Cal",
+  "Diagnostics",
+  "About",
+  "Factory Reset"
+};
 
 // OLED Display
 Adafruit_SH1107 oled = Adafruit_SH1107(64, 128, &Wire);
@@ -2003,6 +2011,19 @@ static lv_obj_t* telLblAccelValue = NULL;
 // IMU error state
 static lv_obj_t* telLblNoImu = NULL;
 
+// ============== LVGL Settings Screen (#112) ==============
+
+// Root + sub-screen containers
+static lv_obj_t* settingsScr       = NULL;
+static lv_obj_t* settingsMenuCtr   = NULL;
+static lv_obj_t* settingsConfigCtr  = NULL;
+static lv_obj_t* settingsDisplayCtr = NULL;
+static lv_obj_t* settingsCalCtr     = NULL;
+static lv_obj_t* settingsDiagsCtr   = NULL;
+static lv_obj_t* settingsAboutCtr   = NULL;
+static lv_obj_t* settingsResetCtr   = NULL;
+static lv_obj_t* settingsMenuBtns[6];
+
 void buildCompassScreen() {
   // Root container — full screen, no scrolling, black background
   compassScr = lv_obj_create(lv_screen_active());
@@ -3459,6 +3480,106 @@ void updateTelemetryData() {
   }
 }
 
+// ============== LVGL Settings Screen Functions (#112) ==============
+
+// Settings menu button click — navigate to sub-screen
+static void settingsMenuBtnCb(lv_event_t* e) {
+  lv_obj_t* btn = (lv_obj_t*)lv_event_get_target(e);
+  int subScreen = (int)(intptr_t)lv_obj_get_user_data(btn);
+  settingsSubScreen = subScreen;
+  logPrintf("[SETTINGS/LVGL] Menu → sub-screen %d\n", subScreen);
+  forceDisplayUpdate = true;
+}
+
+// Settings Back button — return to previous screen
+static void settingsBackToScreenCb(lv_event_t* e) {
+  (void)e;
+  settingsSubScreen = 0;
+  settingsMenuIndex = 0;
+  currentScreen = previousScreen;
+  logPrintf("[SETTINGS/LVGL] Back → screen %d\n", currentScreen);
+  forceDisplayUpdate = true;
+}
+
+// Update settings sub-screen visibility
+void updateSettingsData() {
+  if (!settingsScr) return;
+
+  // Hide all containers first
+  if (settingsMenuCtr)   lv_obj_add_flag(settingsMenuCtr,   LV_OBJ_FLAG_HIDDEN);
+  if (settingsConfigCtr)  lv_obj_add_flag(settingsConfigCtr,  LV_OBJ_FLAG_HIDDEN);
+  if (settingsDisplayCtr) lv_obj_add_flag(settingsDisplayCtr, LV_OBJ_FLAG_HIDDEN);
+  if (settingsCalCtr)     lv_obj_add_flag(settingsCalCtr,     LV_OBJ_FLAG_HIDDEN);
+  if (settingsDiagsCtr)   lv_obj_add_flag(settingsDiagsCtr,   LV_OBJ_FLAG_HIDDEN);
+  if (settingsAboutCtr)   lv_obj_add_flag(settingsAboutCtr,   LV_OBJ_FLAG_HIDDEN);
+  if (settingsResetCtr)   lv_obj_add_flag(settingsResetCtr,   LV_OBJ_FLAG_HIDDEN);
+
+  // Show the active sub-screen
+  switch (settingsSubScreen) {
+    case 0: if (settingsMenuCtr)   lv_obj_clear_flag(settingsMenuCtr,   LV_OBJ_FLAG_HIDDEN); break;
+    case 1: if (settingsConfigCtr)  lv_obj_clear_flag(settingsConfigCtr,  LV_OBJ_FLAG_HIDDEN); break;
+    case 2: if (settingsDisplayCtr) lv_obj_clear_flag(settingsDisplayCtr, LV_OBJ_FLAG_HIDDEN); break;
+    case 3: if (settingsCalCtr)     lv_obj_clear_flag(settingsCalCtr,     LV_OBJ_FLAG_HIDDEN); break;
+    case 4: if (settingsDiagsCtr)   lv_obj_clear_flag(settingsDiagsCtr,   LV_OBJ_FLAG_HIDDEN); break;
+    case 5: if (settingsAboutCtr)   lv_obj_clear_flag(settingsAboutCtr,   LV_OBJ_FLAG_HIDDEN); break;
+    case 6: if (settingsResetCtr)   lv_obj_clear_flag(settingsResetCtr,   LV_OBJ_FLAG_HIDDEN); break;
+  }
+}
+
+void buildSettingsScreen() {
+  // Root container — full screen, hidden by default
+  settingsScr = lv_obj_create(lv_screen_active());
+  lv_obj_remove_style_all(settingsScr);
+  lv_obj_set_size(settingsScr, SCREEN_W, SCREEN_H);
+  lv_obj_set_pos(settingsScr, 0, 0);
+  lv_obj_set_style_bg_color(settingsScr, FC_COLOR_BG, 0);
+  lv_obj_set_style_bg_opa(settingsScr, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(settingsScr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(settingsScr, LV_OBJ_FLAG_HIDDEN);
+
+  // Menu container (sub-screen 0)
+  settingsMenuCtr = lv_obj_create(settingsScr);
+  lv_obj_remove_style_all(settingsMenuCtr);
+  lv_obj_set_size(settingsMenuCtr, SCREEN_W, SCREEN_H);
+  lv_obj_set_pos(settingsMenuCtr, 0, 0);
+  lv_obj_clear_flag(settingsMenuCtr, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Header
+  fcHeaderCreate(settingsMenuCtr, "SETTINGS");
+
+  // Flex container for menu buttons
+  lv_obj_t* menuList = lv_obj_create(settingsMenuCtr);
+  lv_obj_remove_style_all(menuList);
+  lv_obj_set_size(menuList, 460, 230);
+  lv_obj_set_pos(menuList, 10, 35);
+  lv_obj_set_style_pad_row(menuList, 4, 0);
+  lv_obj_set_flex_flow(menuList, LV_FLEX_FLOW_COLUMN);
+  lv_obj_clear_flag(menuList, LV_OBJ_FLAG_SCROLLABLE);
+
+  // 6 menu buttons
+  for (int i = 0; i < SETTINGS_MENU_COUNT; i++) {
+    lv_obj_t* btn = lv_button_create(menuList);
+    lv_obj_set_size(btn, 440, 34);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x424242), 0);
+    lv_obj_set_style_radius(btn, 6, 0);
+
+    lv_obj_t* lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, settingsMenuItems[i]);
+    lv_obj_set_style_text_font(lbl, FC_FONT_MD, 0);
+    lv_obj_set_style_text_color(lbl, FC_COLOR_TEXT, 0);
+    lv_obj_center(lbl);
+
+    lv_obj_set_user_data(btn, (void*)(intptr_t)(i + 1));
+    lv_obj_add_event_cb(btn, settingsMenuBtnCb, LV_EVENT_CLICKED, NULL);
+    settingsMenuBtns[i] = btn;
+  }
+
+  // Action bar with Back button only
+  lv_obj_t* actBar = fcActionBarCreate(settingsMenuCtr, true, false);
+  lv_obj_t* backBtn = lv_obj_get_child(actBar, 0);
+  lv_obj_add_event_cb(backBtn, settingsBackToScreenCb, LV_EVENT_CLICKED, NULL);
+}
+
 // ============== LVGL Initialization (#105) ==============
 
 void initLVGL() {
@@ -3544,6 +3665,9 @@ void initLVGL() {
 
   // Build LVGL telemetry screen (#111)
   buildTelemetryScreen();
+
+  // Build LVGL settings screen (#112)
+  buildSettingsScreen();
 
   // Widget library demo screen (#108): all 6 widgets
   #if LVGL_TEST_MODE
@@ -6392,16 +6516,6 @@ void handleGeocacheButtons(bool buttonA, bool buttonB) {
   else tft.fillScreen(COLOR_BG);
 }
 
-// Settings screen menu item labels
-static const char* settingsMenuItems[] = {
-  "Configuration",
-  "Display",
-  "Compass Cal",
-  "Diagnostics",
-  "About",
-  "Factory Reset"       // #104
-};
-
 // Timeout presets for Display settings (#91)
 static const uint32_t tftTimeoutPresets[]  = {0, 60000, 120000, 300000, 600000, 900000, 1800000};
 static const char*    tftTimeoutLabels[]   = {"Never", "1 min", "2 min", "5 min", "10 min", "15 min", "30 min"};
@@ -7417,11 +7531,20 @@ void updateDisplay() {
         lv_obj_add_flag(telemetryScr, LV_OBJ_FLAG_HIDDEN);
     }
 
+    // Show/hide LVGL settings screen based on currentScreen (#112)
+    if (settingsScr) {
+      if (currentScreen == SCREEN_SETTINGS)
+        lv_obj_clear_flag(settingsScr, LV_OBJ_FLAG_HIDDEN);
+      else
+        lv_obj_add_flag(settingsScr, LV_OBJ_FLAG_HIDDEN);
+    }
+
     // LVGL-managed screens: update data, skip legacy sprite draw
     if ((currentScreen == SCREEN_COMPASS && compassScr) ||
         (currentScreen == SCREEN_GEOCACHE && geocacheScr) ||
         (currentScreen == SCREEN_ENV && envScr) ||
-        (currentScreen == SCREEN_TELEMETRY && telemetryScr)) {
+        (currentScreen == SCREEN_TELEMETRY && telemetryScr) ||
+        (currentScreen == SCREEN_SETTINGS && settingsScr)) {
 
       if (currentScreen == SCREEN_COMPASS) {
         updateCompassData();
@@ -7432,6 +7555,8 @@ void updateDisplay() {
         updateEnvData();
       } else if (currentScreen == SCREEN_TELEMETRY) {
         updateTelemetryData();
+      } else if (currentScreen == SCREEN_SETTINGS) {
+        updateSettingsData();
       }
 
       // Screen-change clear: wipe sprite framebuffer when transitioning
