@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.44.0"
+#define FW_VERSION "0.44.1"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -3630,7 +3630,9 @@ void initOLED() {
 void initGPS() {
   logPrintf("Initializing GPS on RX=%d, TX=%d... ", GPS_RX, GPS_TX);
   Serial1.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
-  logPrintln("OK (9600 baud)");
+  delay(100);  // Let UART settle before sending command
+  Serial1.println("$PMTK101*32");  // Hot restart — ensures search is active (#115)
+  logPrintln("OK (9600 baud, PMTK101 sent)");
 }
 
 // BSEC2 callback - called when new sensor data is available
@@ -7028,6 +7030,10 @@ void readGPS() {
       #if DEBUG_GPS
       Serial.println(gpsBuffer);
       #endif
+      // Runtime NMEA logging: RMC+GGA only to avoid I2C starvation (#115)
+      if (gpsDebugEnabled && (strstr(gpsBuffer, "RMC,") || strstr(gpsBuffer, "GGA,"))) {
+        logPrintf("[GPS:RAW] %s\n", gpsBuffer);
+      }
       parseNMEA(gpsBuffer);
       gpsBufferIndex = 0;
     } else if (c != '\r' && gpsBufferIndex < sizeof(gpsBuffer) - 1) {
