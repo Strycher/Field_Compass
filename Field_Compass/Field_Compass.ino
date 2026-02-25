@@ -5246,6 +5246,52 @@ void handleWebGPS() {
   webServer.send(200, "text/html", html);
 }
 
+// GPS debug toggle (#115) — future: move to Settings LVGL screen (#112)
+void handleWebGpsDebug() {
+  gpsDebugEnabled = !gpsDebugEnabled;
+  logPrintf("[GPS] Runtime debug logging %s\n", gpsDebugEnabled ? "ENABLED" : "DISABLED");
+  String json = "{\"gpsDebug\":";
+  json += gpsDebugEnabled ? "true" : "false";
+  json += "}";
+  webServer.send(200, "application/json", json);
+}
+
+// GPS soft reset (#115)
+void handleWebGpsReset() {
+  logPrintf("[GPS] Soft reset triggered via web\n");
+
+  // Clear all GPS state
+  gpsData.valid = false;
+  gpsData.receiving = false;
+  gpsData.latitude = 0;
+  gpsData.longitude = 0;
+  gpsData.altitude = 0;
+  gpsData.hdop = 99.0;
+  gpsData.satellites = 0;
+  gpsData.speedKnots = 0;
+  gpsData.timeValid = false;
+  gpsData.dateValid = false;
+
+  // Reset tracking flags
+  gpsHadFirstReceive = false;
+  gpsHadFirstFix = false;
+  gpsFirstReceiveTime = 0;
+  gpsFirstFixTime = 0;
+  gpsSignalLostTime = 0;
+  gpsLastByteTime = 0;
+  gprmcFixThisCycle = false;
+  gnrmcFixThisCycle = false;
+  lastRmcCycleTime = 0;
+
+  // Flush Serial1 RX buffer
+  while (Serial1.available()) Serial1.read();
+
+  // Send hot-restart command (MediaTek MTK chipsets — ignored by others)
+  Serial1.println("$PMTK101*32");
+
+  webServer.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"GPS reset\"}");
+}
+
 void handleWebEnv() {
   String html = "<!DOCTYPE html><html><head><title>ENV</title>";
   html += "<meta http-equiv='refresh' content='2'>";
@@ -6095,6 +6141,9 @@ void initWebServer() {
   webServer.on("/diags", handleWebDiags);
   webServer.on("/serial", handleWebSerial);
   webServer.on("/serial-data", handleWebSerialData);
+  // GPS debug/reset endpoints (#115)
+  webServer.on("/gps/debug", HTTP_GET, handleWebGpsDebug);
+  webServer.on("/gps/reset", HTTP_GET, handleWebGpsReset);
   webServer.on("/json", handleWebJSON);
   webServer.on("/battlog", handleWebBattLog);
   webServer.on("/battlog/clear", handleWebBattLogClear);
