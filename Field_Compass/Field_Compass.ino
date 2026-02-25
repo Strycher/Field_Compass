@@ -3409,8 +3409,16 @@ void updateTelemetryData() {
     lv_obj_clear_flag(telLblGpsSkyHint, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(telLblGpsSatCount, LV_OBJ_FLAG_HIDDEN);
 
-    unsigned long elapsed = millis() / 1000;
-    snprintf(buf, sizeof(buf), "Elapsed: %lum %lus", elapsed / 60, elapsed % 60);
+    unsigned long elapsed;
+    if (gpsHadFirstFix && gpsSignalLostTime > 0) {
+      // Reacquiring after signal loss
+      elapsed = (millis() - gpsSignalLostTime) / 1000;
+      snprintf(buf, sizeof(buf), "Reacquire: %lum %lus", elapsed / 60, elapsed % 60);
+    } else {
+      // Never had fix — time since first NMEA data
+      elapsed = (millis() - gpsFirstReceiveTime) / 1000;
+      snprintf(buf, sizeof(buf), "Elapsed: %lum %lus", elapsed / 60, elapsed % 60);
+    }
     lv_label_set_text(telLblGpsElapsed, buf);
 
     snprintf(buf, sizeof(buf), "Sats: %d", gpsData.satellites);
