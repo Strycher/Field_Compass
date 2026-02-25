@@ -2024,6 +2024,13 @@ static lv_obj_t* settingsAboutCtr   = NULL;
 static lv_obj_t* settingsResetCtr   = NULL;
 static lv_obj_t* settingsMenuBtns[6];
 
+// Config sub-screen widget pointers (#112)
+static lv_obj_t* cfgTzDropdown   = NULL;
+static lv_obj_t* cfgTimeToggle   = NULL;
+static lv_obj_t* cfgTempToggle   = NULL;
+static lv_obj_t* cfgDistToggle   = NULL;
+static lv_obj_t* cfgPreviewLabel = NULL;
+
 void buildCompassScreen() {
   // Root container — full screen, no scrolling, black background
   compassScr = lv_obj_create(lv_screen_active());
@@ -3501,6 +3508,59 @@ static void settingsBackToScreenCb(lv_event_t* e) {
   forceDisplayUpdate = true;
 }
 
+// --- Configuration sub-screen callbacks (#112) ---
+
+// Timezone picker selection — fired by fcListPickerOpen via LV_EVENT_VALUE_CHANGED on cfgTzDropdown
+static void cfgTzSelectedCb(lv_event_t* e) {
+  int idx = (int)(intptr_t)lv_event_get_param(e);
+  if (idx < 0 || idx >= TZ_PRESET_COUNT) return;
+  tzSelectedIndex = idx;
+  strncpy(posixTZ, tzPresets[idx].posix, sizeof(posixTZ) - 1);
+  strncpy(tzDisplayName, tzPresets[idx].name, sizeof(tzDisplayName) - 1);
+  fcDropdownSetValue(cfgTzDropdown, idx, tzDisplayName);
+  logPrintf("[CONFIG/LVGL] TZ selected: %s\n", tzDisplayName);
+}
+
+// Timezone dropdown click — open list picker
+static void cfgTzDropdownCb(lv_event_t* e) {
+  (void)e;
+  static const char* tzNames[TZ_PRESET_COUNT];
+  for (int i = 0; i < TZ_PRESET_COUNT; i++) {
+    tzNames[i] = tzPresets[i].name;
+  }
+  fcListPickerOpen("Time Zone", tzNames, TZ_PRESET_COUNT, tzSelectedIndex, cfgTzDropdown);
+}
+
+// Toggle change — update globals immediately for live preview
+static void cfgToggleCb(lv_event_t* e) {
+  (void)e;
+  use12Hour      = (fcToggleGetValue(cfgTimeToggle) == 0);   // 0=12Hour
+  useFahrenheit  = (fcToggleGetValue(cfgTempToggle) == 0);   // 0=degF
+  useMetricUnits = (fcToggleGetValue(cfgDistToggle) == 1);   // 1=Metric
+}
+
+// Config Back — discard changes, reload from SD
+static void cfgBackCb(lv_event_t* e) {
+  (void)e;
+  loadSettings();  // Discard changes, reload from SD
+  // Reset toggle visuals to match reloaded values
+  fcToggleSetValue(cfgTimeToggle, use12Hour ? 0 : 1);
+  fcToggleSetValue(cfgTempToggle, useFahrenheit ? 0 : 1);
+  fcToggleSetValue(cfgDistToggle, useMetricUnits ? 1 : 0);
+  fcDropdownSetValue(cfgTzDropdown, tzSelectedIndex, tzDisplayName);
+  settingsSubScreen = 0;
+  forceDisplayUpdate = true;
+}
+
+// Config OK — apply and save
+static void cfgOKCb(lv_event_t* e) {
+  (void)e;
+  applyTimezone();
+  saveSettings();
+  settingsSubScreen = 0;
+  forceDisplayUpdate = true;
+}
+
 // Update settings sub-screen visibility
 void updateSettingsData() {
   if (!settingsScr) return;
@@ -3517,7 +3577,29 @@ void updateSettingsData() {
   // Show the active sub-screen
   switch (settingsSubScreen) {
     case 0: if (settingsMenuCtr)   lv_obj_clear_flag(settingsMenuCtr,   LV_OBJ_FLAG_HIDDEN); break;
-    case 1: if (settingsConfigCtr)  lv_obj_clear_flag(settingsConfigCtr,  LV_OBJ_FLAG_HIDDEN); break;
+    case 1:
+      if (settingsConfigCtr) {
+        lv_obj_clear_flag(settingsConfigCtr, LV_OBJ_FLAG_HIDDEN);
+        // Live preview: time | temp | distance (#112)
+        if (cfgPreviewLabel) {
+          char prev[80];
+          // Time preview using formatTimeStr (respects use12Hour)
+          struct tm timeinfo;
+          char timeBuf[16] = "--:--";
+          if (getLocalTime(&timeinfo, 10))
+            formatTimeStr(timeBuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, false);
+          // Temp preview
+          float tempC = shtAvailable ? shtData.temperature : envData.temperature;
+          float dispTemp = useFahrenheit ? (tempC * 9.0f / 5.0f + 32.0f) : tempC;
+          char tempBuf[16];
+          snprintf(tempBuf, sizeof(tempBuf), "%.1f\xC2\xB0%s", dispTemp, useFahrenheit ? "F" : "C");
+          // Distance preview
+          const char* distEx = useMetricUnits ? "1.0 km" : "0.6 mi";
+          snprintf(prev, sizeof(prev), "%s  |  %s  |  %s", timeBuf, tempBuf, distEx);
+          lv_label_set_text(cfgPreviewLabel, prev);
+        }
+      }
+      break;
     case 2: if (settingsDisplayCtr) lv_obj_clear_flag(settingsDisplayCtr, LV_OBJ_FLAG_HIDDEN); break;
     case 3: if (settingsCalCtr)     lv_obj_clear_flag(settingsCalCtr,     LV_OBJ_FLAG_HIDDEN); break;
     case 4: if (settingsDiagsCtr)   lv_obj_clear_flag(settingsDiagsCtr,   LV_OBJ_FLAG_HIDDEN); break;
@@ -3578,6 +3660,49 @@ void buildSettingsScreen() {
   lv_obj_t* actBar = fcActionBarCreate(settingsMenuCtr, true, false);
   lv_obj_t* backBtn = lv_obj_get_child(actBar, 0);
   lv_obj_add_event_cb(backBtn, settingsBackToScreenCb, LV_EVENT_CLICKED, NULL);
+
+  // --- Sub-screen 1: Configuration (#112) ---
+  settingsConfigCtr = lv_obj_create(settingsScr);
+  lv_obj_remove_style_all(settingsConfigCtr);
+  lv_obj_set_size(settingsConfigCtr, SCREEN_W, SCREEN_H);
+  lv_obj_set_style_bg_color(settingsConfigCtr, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_opa(settingsConfigCtr, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(settingsConfigCtr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(settingsConfigCtr, LV_OBJ_FLAG_HIDDEN);
+
+  fcHeaderCreate(settingsConfigCtr, "CONFIGURATION");
+
+  // Timezone dropdown
+  cfgTzDropdown = fcDropdownCreate(settingsConfigCtr, 45, "Time Zone", tzDisplayName);
+  lv_obj_t* tzBtn = lv_obj_get_child(cfgTzDropdown, 1);  // value button
+  lv_obj_add_event_cb(tzBtn, cfgTzDropdownCb, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_event_cb(cfgTzDropdown, cfgTzSelectedCb, LV_EVENT_VALUE_CHANGED, NULL);
+
+  // Time format toggle: 0=12Hour(left), 1=24Hour(right)
+  cfgTimeToggle = fcToggleCreate(settingsConfigCtr, 95, "Time", "12 Hour", "24 Hour", use12Hour ? 0 : 1);
+  lv_obj_add_event_cb(cfgTimeToggle, cfgToggleCb, LV_EVENT_VALUE_CHANGED, NULL);
+
+  // Temperature unit toggle: 0=degF(left), 1=degC(right)
+  cfgTempToggle = fcToggleCreate(settingsConfigCtr, 145, "Temp", "\xC2\xB0""F", "\xC2\xB0""C", useFahrenheit ? 0 : 1);
+  lv_obj_add_event_cb(cfgTempToggle, cfgToggleCb, LV_EVENT_VALUE_CHANGED, NULL);
+
+  // Distance unit toggle: 0=Imperial(left), 1=Metric(right)
+  cfgDistToggle = fcToggleCreate(settingsConfigCtr, 195, "Distance", "Imperial", "Metric", useMetricUnits ? 1 : 0);
+  lv_obj_add_event_cb(cfgDistToggle, cfgToggleCb, LV_EVENT_VALUE_CHANGED, NULL);
+
+  // Live preview label
+  cfgPreviewLabel = lv_label_create(settingsConfigCtr);
+  lv_obj_set_pos(cfgPreviewLabel, 20, 235);
+  lv_obj_set_style_text_font(cfgPreviewLabel, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(cfgPreviewLabel, lv_color_hex(0x808080), 0);
+  lv_label_set_text(cfgPreviewLabel, "");
+
+  // Action bar with Back and OK
+  lv_obj_t* cfgActBar = fcActionBarCreate(settingsConfigCtr, true, true);
+  lv_obj_t* cfgBack = lv_obj_get_child(cfgActBar, 0);
+  lv_obj_t* cfgOK   = lv_obj_get_child(cfgActBar, 1);
+  lv_obj_add_event_cb(cfgBack, cfgBackCb, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_event_cb(cfgOK,   cfgOKCb,   LV_EVENT_CLICKED, NULL);
 }
 
 // ============== LVGL Initialization (#105) ==============
