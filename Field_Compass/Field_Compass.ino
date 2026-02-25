@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.45.1"
+#define FW_VERSION "0.45.2"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -1131,7 +1131,8 @@ void loop() {
   handleButtons();
 
   // Handle touch input (interrupt-driven swipe detection)
-  if (touchDetected && touchAvailable) {
+  // On Settings screen, skip legacy handler — LVGL handles all touch (#112)
+  if (touchDetected && touchAvailable && currentScreen != SCREEN_SETTINGS) {
     touchDetected = false;
     if (ctp.touched()) {
       TS_Point p = ctp.getPoint();
@@ -1173,6 +1174,8 @@ void loop() {
   }
 
   // Swipe timeout / completion check — poll touch state each loop iteration
+  // Skip on Settings — LVGL handles all touch; cancel stale tracking (#112)
+  if (currentScreen == SCREEN_SETTINGS) swipeTracking = false;
   if (swipeTracking && touchAvailable) {
     if (ctp.touched()) {
       TS_Point p = ctp.getPoint();
@@ -1464,7 +1467,8 @@ lv_obj_t* fcHeaderCreate(lv_obj_t* parent, const char* title) {
   lv_obj_set_pos(cont, 0, 0);
   lv_obj_set_style_bg_color(cont, FC_COLOR_HEADER, 0);
   lv_obj_set_style_bg_opa(cont, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(cont, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
+                        | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
 
   // Child [0]: title label — black on cyan
   lv_obj_t* titleLbl = lv_label_create(cont);
@@ -1502,7 +1506,8 @@ lv_obj_t* fcNavBarCreate(lv_obj_t* parent, uint8_t screenCount, uint8_t activeId
   lv_obj_set_pos(cont, 0, SCREEN_H - 25);
   lv_obj_set_style_bg_color(cont, FC_COLOR_W_BAR, 0);
   lv_obj_set_style_bg_opa(cont, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(cont, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
+                        | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
 
   // Child [0]: "A<" hint
   lv_obj_t* hintL = lv_label_create(cont);
@@ -1519,7 +1524,8 @@ lv_obj_t* fcNavBarCreate(lv_obj_t* parent, uint8_t screenCount, uint8_t activeId
     lv_obj_remove_style_all(dot);
     lv_obj_set_size(dot, 28, 19);
     lv_obj_set_pos(dot, startX + i * spacing, 3);
-    lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(dot, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
+                          | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
 
     bool active = (i == activeIdx);
     if (active) {
@@ -1572,7 +1578,8 @@ lv_obj_t* fcActionBarCreate(lv_obj_t* parent, bool showBack, bool showOK) {
   lv_obj_set_pos(cont, 0, 270);
   lv_obj_set_style_bg_color(cont, FC_COLOR_W_BAR, 0);
   lv_obj_set_style_bg_opa(cont, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(cont, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
+                        | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
 
   // Child [0]: Back button
   lv_obj_t* backBtn = lv_button_create(cont);
@@ -1640,7 +1647,8 @@ lv_obj_t* fcToggleCreate(lv_obj_t* parent, int16_t y,
   lv_obj_remove_style_all(cont);
   lv_obj_set_size(cont, SCREEN_W - 20, 30);
   lv_obj_set_pos(cont, 10, y);
-  lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(cont, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
+                        | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
 
   // Child [0]: label
   lv_obj_t* lbl = lv_label_create(cont);
@@ -1698,7 +1706,8 @@ lv_obj_t* fcDropdownCreate(lv_obj_t* parent, int16_t y,
   lv_obj_remove_style_all(cont);
   lv_obj_set_size(cont, SCREEN_W - 20, 30);
   lv_obj_set_pos(cont, 10, y);
-  lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(cont, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
+                        | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
 
   // Child [0]: label
   lv_obj_t* lbl = lv_label_create(cont);
@@ -1767,8 +1776,8 @@ static void fcListPickerItemCb(lv_event_t* e) {
     lv_obj_send_event(caller, LV_EVENT_VALUE_CHANGED, (void*)(intptr_t)idx);
   }
 
-  // Close: delete overlay (removes everything)
-  lv_obj_delete(overlay);
+  // Close: async-delete overlay to avoid use-after-free during event callback (#112)
+  lv_obj_delete_async(overlay);
 }
 
 lv_obj_t* fcListPickerOpen(const char* title, const char** items,
@@ -3517,9 +3526,10 @@ static void settingsMenuBtnCb(lv_event_t* e) {
 // Settings Back button — return to previous screen
 static void settingsBackToScreenCb(lv_event_t* e) {
   (void)e;
+  saveSettings();  // Auto-save on exit — safety net against crash/power-loss (#112)
   settingsSubScreen = 0;
   currentScreen = previousScreen;
-  logPrintf("[SETTINGS/LVGL] Back → screen %d\n", currentScreen);
+  logPrintf("[SETTINGS/LVGL] Back → screen %d (saved)\n", currentScreen);
   forceDisplayUpdate = true;
 }
 
@@ -3820,6 +3830,18 @@ void updateSettingsData() {
           if (calOffsetsLabel) lv_obj_clear_flag(calOffsetsLabel, LV_OBJ_FLAG_HIDDEN);
           if (calStartBtn)     lv_obj_clear_flag(calStartBtn,     LV_OBJ_FLAG_HIDDEN);
           if (calIdleActBar)   lv_obj_clear_flag(calIdleActBar,   LV_OBJ_FLAG_HIDDEN);
+
+          // Update start button state — magAvailable may have changed since build time (#112)
+          if (calStartBtn) {
+            if (magAvailable) {
+              lv_obj_clear_state(calStartBtn, LV_STATE_DISABLED);
+              lv_obj_set_style_bg_color(calStartBtn, lv_color_hex(0x007D00), 0);
+            } else {
+              lv_obj_add_state(calStartBtn, LV_STATE_DISABLED);
+              lv_obj_set_style_bg_color(calStartBtn, lv_color_hex(0x424242), 0);
+            }
+          }
+
           // Hide active widgets
           if (calArc)            lv_obj_add_flag(calArc,            LV_OBJ_FLAG_HIDDEN);
           if (calCountdownLabel) lv_obj_add_flag(calCountdownLabel, LV_OBJ_FLAG_HIDDEN);
@@ -4031,7 +4053,8 @@ void buildSettingsScreen() {
   lv_obj_set_pos(settingsScr, 0, 0);
   lv_obj_set_style_bg_color(settingsScr, FC_COLOR_BG, 0);
   lv_obj_set_style_bg_opa(settingsScr, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(settingsScr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(settingsScr, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
+                        | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
   lv_obj_add_flag(settingsScr, LV_OBJ_FLAG_HIDDEN);
 
   // Menu container (sub-screen 0)
@@ -4041,7 +4064,8 @@ void buildSettingsScreen() {
   lv_obj_set_pos(settingsMenuCtr, 0, 0);
   lv_obj_set_style_bg_color(settingsMenuCtr, lv_color_hex(0x000000), 0);
   lv_obj_set_style_bg_opa(settingsMenuCtr, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(settingsMenuCtr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(settingsMenuCtr, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
+                        | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
 
   // Header
   fcHeaderCreate(settingsMenuCtr, "SETTINGS");
@@ -4053,7 +4077,8 @@ void buildSettingsScreen() {
   lv_obj_set_pos(menuList, 10, 35);
   lv_obj_set_style_pad_row(menuList, 4, 0);
   lv_obj_set_flex_flow(menuList, LV_FLEX_FLOW_COLUMN);
-  lv_obj_clear_flag(menuList, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(menuList, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
+                        | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
 
   // 6 menu buttons
   for (int i = 0; i < SETTINGS_MENU_COUNT; i++) {
@@ -4084,7 +4109,8 @@ void buildSettingsScreen() {
   lv_obj_set_size(settingsConfigCtr, SCREEN_W, SCREEN_H);
   lv_obj_set_style_bg_color(settingsConfigCtr, lv_color_hex(0x000000), 0);
   lv_obj_set_style_bg_opa(settingsConfigCtr, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(settingsConfigCtr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(settingsConfigCtr, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
+                        | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
   lv_obj_add_flag(settingsConfigCtr, LV_OBJ_FLAG_HIDDEN);
 
   fcHeaderCreate(settingsConfigCtr, "CONFIGURATION");
@@ -4127,7 +4153,8 @@ void buildSettingsScreen() {
   lv_obj_set_size(settingsDisplayCtr, SCREEN_W, SCREEN_H);
   lv_obj_set_style_bg_color(settingsDisplayCtr, lv_color_hex(0x000000), 0);
   lv_obj_set_style_bg_opa(settingsDisplayCtr, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(settingsDisplayCtr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(settingsDisplayCtr, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
+                        | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
   lv_obj_add_flag(settingsDisplayCtr, LV_OBJ_FLAG_HIDDEN);
 
   fcHeaderCreate(settingsDisplayCtr, "DISPLAY");
@@ -4141,15 +4168,15 @@ void buildSettingsScreen() {
 
   // Brightness slider: range 25-255, initial = tftBrightness
   dispBrightnessSlider = lv_slider_create(settingsDisplayCtr);
-  lv_obj_set_size(dispBrightnessSlider, 200, 20);
-  lv_obj_set_pos(dispBrightnessSlider, 160, 50);
+  lv_obj_set_size(dispBrightnessSlider, 250, 30);
+  lv_obj_set_pos(dispBrightnessSlider, 140, 47);
   lv_slider_set_range(dispBrightnessSlider, 25, 255);
   lv_slider_set_value(dispBrightnessSlider, tftBrightness, LV_ANIM_OFF);
   // Style: green indicator, dark gray track, white knob
   lv_obj_set_style_bg_color(dispBrightnessSlider, lv_color_hex(0x2A2A2A), 0);           // track bg
   lv_obj_set_style_bg_color(dispBrightnessSlider, lv_color_hex(0x007D00), LV_PART_INDICATOR); // green fill
   lv_obj_set_style_bg_color(dispBrightnessSlider, lv_color_hex(0xFFFFFF), LV_PART_KNOB);     // white knob
-  lv_obj_set_style_pad_all(dispBrightnessSlider, 4, LV_PART_KNOB);  // knob padding
+  lv_obj_set_style_pad_all(dispBrightnessSlider, 8, LV_PART_KNOB);  // bigger knob touch target
   lv_obj_add_event_cb(dispBrightnessSlider, dispBrightnessChangedCb, LV_EVENT_VALUE_CHANGED, NULL);
 
   // Brightness numeric readout (to the right of slider)
@@ -4186,7 +4213,8 @@ void buildSettingsScreen() {
   lv_obj_set_size(settingsCalCtr, SCREEN_W, SCREEN_H);
   lv_obj_set_style_bg_color(settingsCalCtr, lv_color_hex(0x000000), 0);
   lv_obj_set_style_bg_opa(settingsCalCtr, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(settingsCalCtr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(settingsCalCtr, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
+                        | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
   lv_obj_add_flag(settingsCalCtr, LV_OBJ_FLAG_HIDDEN);
 
   fcHeaderCreate(settingsCalCtr, "COMPASS CAL");
@@ -4276,7 +4304,8 @@ void buildSettingsScreen() {
   lv_obj_set_size(settingsDiagsCtr, SCREEN_W, SCREEN_H);
   lv_obj_set_style_bg_color(settingsDiagsCtr, lv_color_hex(0x000000), 0);
   lv_obj_set_style_bg_opa(settingsDiagsCtr, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(settingsDiagsCtr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(settingsDiagsCtr, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
+                        | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
   lv_obj_add_flag(settingsDiagsCtr, LV_OBJ_FLAG_HIDDEN);
 
   fcHeaderCreate(settingsDiagsCtr, "DIAGNOSTICS");
@@ -4316,7 +4345,8 @@ void buildSettingsScreen() {
   lv_obj_set_size(settingsAboutCtr, SCREEN_W, SCREEN_H);
   lv_obj_set_style_bg_color(settingsAboutCtr, lv_color_hex(0x000000), 0);
   lv_obj_set_style_bg_opa(settingsAboutCtr, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(settingsAboutCtr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(settingsAboutCtr, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
+                        | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
   lv_obj_add_flag(settingsAboutCtr, LV_OBJ_FLAG_HIDDEN);
 
   fcHeaderCreate(settingsAboutCtr, "ABOUT");
@@ -4356,7 +4386,8 @@ void buildSettingsScreen() {
   lv_obj_set_size(settingsResetCtr, SCREEN_W, SCREEN_H);
   lv_obj_set_style_bg_color(settingsResetCtr, lv_color_hex(0x000000), 0);
   lv_obj_set_style_bg_opa(settingsResetCtr, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(settingsResetCtr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(settingsResetCtr, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
+                        | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
   lv_obj_add_flag(settingsResetCtr, LV_OBJ_FLAG_HIDDEN);
 
   fcHeaderCreate(settingsResetCtr, "FACTORY RESET");
@@ -4467,6 +4498,10 @@ void initLVGL() {
 
   // Initialize Field Compass theme and named styles (#107)
   initFCTheme();
+
+  // Disable scrolling on root screen — LVGL's scroll chain walks up to this
+  // from any widget, triggering unwanted scroll-vs-click detection (#112)
+  lv_obj_clear_flag(lv_screen_active(), LV_OBJ_FLAG_SCROLLABLE);
 
   // Build LVGL compass screen (#109)
   buildCompassScreen();
