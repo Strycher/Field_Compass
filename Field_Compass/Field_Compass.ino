@@ -2031,6 +2031,12 @@ static lv_obj_t* cfgTempToggle   = NULL;
 static lv_obj_t* cfgDistToggle   = NULL;
 static lv_obj_t* cfgPreviewLabel = NULL;
 
+// Display sub-screen widget pointers (#112)
+static lv_obj_t* dispBrightnessSlider = NULL;
+static lv_obj_t* dispBrightnessLabel  = NULL;
+static lv_obj_t* dispTftDropdown      = NULL;
+static lv_obj_t* dispOledDropdown     = NULL;
+
 void buildCompassScreen() {
   // Root container — full screen, no scrolling, black background
   compassScr = lv_obj_create(lv_screen_active());
@@ -3561,6 +3567,79 @@ static void cfgOKCb(lv_event_t* e) {
   forceDisplayUpdate = true;
 }
 
+// Forward declarations for display callbacks (#112)
+extern const uint32_t tftTimeoutPresets[];
+extern const char*    tftTimeoutLabels[];
+extern const int      TFT_TIMEOUT_COUNT;
+extern const uint32_t oledTimeoutPresets[];
+extern const char*    oledTimeoutLabels[];
+extern const int      OLED_TIMEOUT_COUNT;
+int findTimeoutIndex(const uint32_t presets[], int count, uint32_t value);
+
+// Display sub-screen callbacks (#112)
+static void dispBrightnessChangedCb(lv_event_t* e) {
+  lv_obj_t* slider = (lv_obj_t*)lv_event_get_target(e);
+  int val = lv_slider_get_value(slider);
+  tftBrightness = (uint8_t)val;
+  analogWrite(TFT_BL, tftBrightness);
+  if (dispBrightnessLabel) lv_label_set_text_fmt(dispBrightnessLabel, "%d", val);
+}
+
+static void dispTftDropdownCb(lv_event_t* e) {
+  (void)e;
+  int idx = findTimeoutIndex(tftTimeoutPresets, TFT_TIMEOUT_COUNT, tftSleepMs);
+  fcListPickerOpen("TFT Sleep", tftTimeoutLabels, TFT_TIMEOUT_COUNT, idx, dispTftDropdown);
+}
+
+static void dispTftSelectedCb(lv_event_t* e) {
+  int idx = (int)(intptr_t)lv_event_get_param(e);
+  if (idx < 0 || idx >= TFT_TIMEOUT_COUNT) return;
+  tftSleepMs = tftTimeoutPresets[idx];
+  fcDropdownSetValue(dispTftDropdown, idx, tftTimeoutLabels[idx]);
+  logPrintf("[DISPLAY/LVGL] TFT sleep: %s\n", tftTimeoutLabels[idx]);
+}
+
+static void dispOledDropdownCb(lv_event_t* e) {
+  (void)e;
+  int idx = findTimeoutIndex(oledTimeoutPresets, OLED_TIMEOUT_COUNT, oledSleepMs);
+  fcListPickerOpen("OLED Sleep", oledTimeoutLabels, OLED_TIMEOUT_COUNT, idx, dispOledDropdown);
+}
+
+static void dispOledSelectedCb(lv_event_t* e) {
+  int idx = (int)(intptr_t)lv_event_get_param(e);
+  if (idx < 0 || idx >= OLED_TIMEOUT_COUNT) return;
+  oledSleepMs = oledTimeoutPresets[idx];
+  fcDropdownSetValue(dispOledDropdown, idx, oledTimeoutLabels[idx]);
+  logPrintf("[DISPLAY/LVGL] OLED sleep: %s\n", oledTimeoutLabels[idx]);
+}
+
+static void dispBackCb(lv_event_t* e) {
+  (void)e;
+  loadSettings();  // Restore saved values
+  analogWrite(TFT_BL, tftBrightness);  // Apply restored brightness
+  // Sync slider + label to restored values
+  if (dispBrightnessSlider) lv_slider_set_value(dispBrightnessSlider, tftBrightness, LV_ANIM_OFF);
+  if (dispBrightnessLabel)  lv_label_set_text_fmt(dispBrightnessLabel, "%d", tftBrightness);
+  // Sync dropdown labels
+  if (dispTftDropdown) {
+    int idx = findTimeoutIndex(tftTimeoutPresets, TFT_TIMEOUT_COUNT, tftSleepMs);
+    fcDropdownSetValue(dispTftDropdown, idx, tftTimeoutLabels[idx]);
+  }
+  if (dispOledDropdown) {
+    int idx = findTimeoutIndex(oledTimeoutPresets, OLED_TIMEOUT_COUNT, oledSleepMs);
+    fcDropdownSetValue(dispOledDropdown, idx, oledTimeoutLabels[idx]);
+  }
+  settingsSubScreen = 0;
+  forceDisplayUpdate = true;
+}
+
+static void dispOKCb(lv_event_t* e) {
+  (void)e;
+  saveSettings();
+  settingsSubScreen = 0;
+  forceDisplayUpdate = true;
+}
+
 // Update settings sub-screen visibility
 void updateSettingsData() {
   if (!settingsScr) return;
@@ -3600,7 +3679,14 @@ void updateSettingsData() {
         }
       }
       break;
-    case 2: if (settingsDisplayCtr) lv_obj_clear_flag(settingsDisplayCtr, LV_OBJ_FLAG_HIDDEN); break;
+    case 2:
+      if (settingsDisplayCtr) {
+        lv_obj_clear_flag(settingsDisplayCtr, LV_OBJ_FLAG_HIDDEN);
+        // Keep brightness widgets in sync if changed externally
+        if (dispBrightnessSlider) lv_slider_set_value(dispBrightnessSlider, tftBrightness, LV_ANIM_OFF);
+        if (dispBrightnessLabel) lv_label_set_text_fmt(dispBrightnessLabel, "%d", tftBrightness);
+      }
+      break;
     case 3: if (settingsCalCtr)     lv_obj_clear_flag(settingsCalCtr,     LV_OBJ_FLAG_HIDDEN); break;
     case 4: if (settingsDiagsCtr)   lv_obj_clear_flag(settingsDiagsCtr,   LV_OBJ_FLAG_HIDDEN); break;
     case 5: if (settingsAboutCtr)   lv_obj_clear_flag(settingsAboutCtr,   LV_OBJ_FLAG_HIDDEN); break;
@@ -3703,6 +3789,65 @@ void buildSettingsScreen() {
   lv_obj_t* cfgOK   = lv_obj_get_child(cfgActBar, 1);
   lv_obj_add_event_cb(cfgBack, cfgBackCb, LV_EVENT_CLICKED, NULL);
   lv_obj_add_event_cb(cfgOK,   cfgOKCb,   LV_EVENT_CLICKED, NULL);
+
+  // --- Sub-screen 2: Display (#112) ---
+  settingsDisplayCtr = lv_obj_create(settingsScr);
+  lv_obj_remove_style_all(settingsDisplayCtr);
+  lv_obj_set_size(settingsDisplayCtr, SCREEN_W, SCREEN_H);
+  lv_obj_set_style_bg_color(settingsDisplayCtr, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_opa(settingsDisplayCtr, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(settingsDisplayCtr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(settingsDisplayCtr, LV_OBJ_FLAG_HIDDEN);
+
+  fcHeaderCreate(settingsDisplayCtr, "DISPLAY");
+
+  // Brightness label
+  lv_obj_t* brightLbl = lv_label_create(settingsDisplayCtr);
+  lv_label_set_text(brightLbl, "Brightness");
+  lv_obj_set_style_text_color(brightLbl, FC_COLOR_DIM, 0);
+  lv_obj_set_style_text_font(brightLbl, FC_FONT_SM, 0);
+  lv_obj_set_pos(brightLbl, 20, 53);
+
+  // Brightness slider: range 25-255, initial = tftBrightness
+  dispBrightnessSlider = lv_slider_create(settingsDisplayCtr);
+  lv_obj_set_size(dispBrightnessSlider, 200, 20);
+  lv_obj_set_pos(dispBrightnessSlider, 160, 50);
+  lv_slider_set_range(dispBrightnessSlider, 25, 255);
+  lv_slider_set_value(dispBrightnessSlider, tftBrightness, LV_ANIM_OFF);
+  // Style: green indicator, dark gray track, white knob
+  lv_obj_set_style_bg_color(dispBrightnessSlider, lv_color_hex(0x2A2A2A), 0);           // track bg
+  lv_obj_set_style_bg_color(dispBrightnessSlider, lv_color_hex(0x007D00), LV_PART_INDICATOR); // green fill
+  lv_obj_set_style_bg_color(dispBrightnessSlider, lv_color_hex(0xFFFFFF), LV_PART_KNOB);     // white knob
+  lv_obj_set_style_pad_all(dispBrightnessSlider, 4, LV_PART_KNOB);  // knob padding
+  lv_obj_add_event_cb(dispBrightnessSlider, dispBrightnessChangedCb, LV_EVENT_VALUE_CHANGED, NULL);
+
+  // Brightness numeric readout (to the right of slider)
+  dispBrightnessLabel = lv_label_create(settingsDisplayCtr);
+  lv_obj_set_pos(dispBrightnessLabel, 375, 53);
+  lv_obj_set_style_text_color(dispBrightnessLabel, FC_COLOR_VALUE, 0);
+  lv_obj_set_style_text_font(dispBrightnessLabel, FC_FONT_SM, 0);
+  lv_label_set_text_fmt(dispBrightnessLabel, "%d", tftBrightness);
+
+  // TFT Sleep timeout dropdown
+  int tftIdx = findTimeoutIndex(tftTimeoutPresets, TFT_TIMEOUT_COUNT, tftSleepMs);
+  dispTftDropdown = fcDropdownCreate(settingsDisplayCtr, 105, "TFT Sleep", tftTimeoutLabels[tftIdx]);
+  lv_obj_t* tftBtn = lv_obj_get_child(dispTftDropdown, 1);  // value button
+  lv_obj_add_event_cb(tftBtn, dispTftDropdownCb, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_event_cb(dispTftDropdown, dispTftSelectedCb, LV_EVENT_VALUE_CHANGED, NULL);
+
+  // OLED Sleep timeout dropdown
+  int oledIdx = findTimeoutIndex(oledTimeoutPresets, OLED_TIMEOUT_COUNT, oledSleepMs);
+  dispOledDropdown = fcDropdownCreate(settingsDisplayCtr, 155, "OLED Sleep", oledTimeoutLabels[oledIdx]);
+  lv_obj_t* oledBtn = lv_obj_get_child(dispOledDropdown, 1);  // value button
+  lv_obj_add_event_cb(oledBtn, dispOledDropdownCb, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_event_cb(dispOledDropdown, dispOledSelectedCb, LV_EVENT_VALUE_CHANGED, NULL);
+
+  // Action bar with Back + OK
+  lv_obj_t* dispActBar = fcActionBarCreate(settingsDisplayCtr, true, true);
+  lv_obj_t* dispBack = lv_obj_get_child(dispActBar, 0);
+  lv_obj_t* dispOK   = lv_obj_get_child(dispActBar, 1);
+  lv_obj_add_event_cb(dispBack, dispBackCb, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_event_cb(dispOK,   dispOKCb,   LV_EVENT_CLICKED, NULL);
 }
 
 // ============== LVGL Initialization (#105) ==============
@@ -6642,13 +6787,13 @@ void handleGeocacheButtons(bool buttonA, bool buttonB) {
 }
 
 // Timeout presets for Display settings (#91)
-static const uint32_t tftTimeoutPresets[]  = {0, 60000, 120000, 300000, 600000, 900000, 1800000};
-static const char*    tftTimeoutLabels[]   = {"Never", "1 min", "2 min", "5 min", "10 min", "15 min", "30 min"};
-static const int      TFT_TIMEOUT_COUNT    = 7;
+const uint32_t tftTimeoutPresets[]  = {0, 60000, 120000, 300000, 600000, 900000, 1800000};
+const char*    tftTimeoutLabels[]   = {"Never", "1 min", "2 min", "5 min", "10 min", "15 min", "30 min"};
+const int      TFT_TIMEOUT_COUNT    = 7;
 
-static const uint32_t oledTimeoutPresets[] = {60000, 120000, 300000, 600000, 900000, 1800000};
-static const char*    oledTimeoutLabels[]  = {"1 min", "2 min", "5 min", "10 min", "15 min", "30 min"};
-static const int      OLED_TIMEOUT_COUNT   = 6;
+const uint32_t oledTimeoutPresets[] = {60000, 120000, 300000, 600000, 900000, 1800000};
+const char*    oledTimeoutLabels[]  = {"1 min", "2 min", "5 min", "10 min", "15 min", "30 min"};
+const int      OLED_TIMEOUT_COUNT   = 6;
 
 // Handle A/B buttons on Settings screen
 void handleSettingsButtons(bool buttonA, bool buttonB) {
