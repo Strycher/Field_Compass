@@ -2052,6 +2052,9 @@ static lv_obj_t* calMinMaxLabel    = NULL;
 // Diagnostics sub-screen widget pointers (#112)
 static lv_obj_t* diagValueLabels[10];  // 10 value labels updated each frame
 
+// About sub-screen widget pointers (#112)
+static lv_obj_t* aboutValueLabels[6];  // 6 value labels (some live-updating)
+
 void buildCompassScreen() {
   // Root container — full screen, no scrolling, black background
   compassScr = lv_obj_create(lv_screen_active());
@@ -3684,6 +3687,13 @@ static void diagsBackCb(lv_event_t* e) {
   forceDisplayUpdate = true;
 }
 
+// About sub-screen callback (#112)
+static void aboutBackCb(lv_event_t* e) {
+  (void)e;
+  settingsSubScreen = 0;
+  forceDisplayUpdate = true;
+}
+
 // Update settings sub-screen visibility
 void updateSettingsData() {
   if (!settingsScr) return;
@@ -3931,7 +3941,63 @@ void updateSettingsData() {
         lv_label_set_text(diagValueLabels[9], dBuf);
       }
       break;
-    case 5: if (settingsAboutCtr)   lv_obj_clear_flag(settingsAboutCtr,   LV_OBJ_FLAG_HIDDEN); break;
+    case 5:
+      if (settingsAboutCtr) {
+        lv_obj_clear_flag(settingsAboutCtr, LV_OBJ_FLAG_HIDDEN);
+        char aBuf[64];
+
+        // [0] Version — static, already set in build
+
+        // [1] Uptime
+        {
+          unsigned long uptimeSec = millis() / 1000;
+          int days = uptimeSec / 86400;
+          int hrs  = (uptimeSec % 86400) / 3600;
+          int mins = (uptimeSec % 3600) / 60;
+          int secs = uptimeSec % 60;
+          if (days > 0) snprintf(aBuf, sizeof(aBuf), "%dd %02d:%02d:%02d", days, hrs, mins, secs);
+          else          snprintf(aBuf, sizeof(aBuf), "%02d:%02d:%02d", hrs, mins, secs);
+          lv_label_set_text(aboutValueLabels[1], aBuf);
+        }
+
+        // [2] Heap
+        snprintf(aBuf, sizeof(aBuf), "%lu / %lu KB",
+          (unsigned long)(ESP.getFreeHeap() / 1024), (unsigned long)(ESP.getHeapSize() / 1024));
+        lv_label_set_text(aboutValueLabels[2], aBuf);
+
+        // [3] PSRAM
+        snprintf(aBuf, sizeof(aBuf), "%lu / %lu KB",
+          (unsigned long)(ESP.getFreePsram() / 1024), (unsigned long)(ESP.getPsramSize() / 1024));
+        lv_label_set_text(aboutValueLabels[3], aBuf);
+
+        // [4] Battery
+        {
+          bool battConn = batteryAvailable && isBatteryConnected();
+          if (battConn) {
+            float pct = battery.cellPercent();
+            float v   = battery.cellVoltage();
+            snprintf(aBuf, sizeof(aBuf), "%.0f%% (%.2fV)", pct, v);
+          } else if (batteryAvailable) {
+            snprintf(aBuf, sizeof(aBuf), "USB Only");
+          } else {
+            snprintf(aBuf, sizeof(aBuf), "N/A");
+          }
+          lv_label_set_text(aboutValueLabels[4], aBuf);
+        }
+
+        // [5] WiFi
+        {
+          bool wConn = (WiFi.status() == WL_CONNECTED);
+          if (wConn) {
+            snprintf(aBuf, sizeof(aBuf), "%s %s",
+              WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+          } else {
+            snprintf(aBuf, sizeof(aBuf), "Disconnected");
+          }
+          lv_label_set_text(aboutValueLabels[5], aBuf);
+        }
+      }
+      break;
     case 6: if (settingsResetCtr)   lv_obj_clear_flag(settingsResetCtr,   LV_OBJ_FLAG_HIDDEN); break;
   }
 }
@@ -4220,6 +4286,46 @@ void buildSettingsScreen() {
   lv_obj_t* diagsActBar = fcActionBarCreate(settingsDiagsCtr, true, false);
   lv_obj_t* diagsBack = lv_obj_get_child(diagsActBar, 0);
   lv_obj_add_event_cb(diagsBack, diagsBackCb, LV_EVENT_CLICKED, NULL);
+
+  // --- Sub-screen 5: About (#112) ---
+  settingsAboutCtr = lv_obj_create(settingsScr);
+  lv_obj_remove_style_all(settingsAboutCtr);
+  lv_obj_set_size(settingsAboutCtr, SCREEN_W, SCREEN_H);
+  lv_obj_set_style_bg_color(settingsAboutCtr, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_opa(settingsAboutCtr, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(settingsAboutCtr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(settingsAboutCtr, LV_OBJ_FLAG_HIDDEN);
+
+  fcHeaderCreate(settingsAboutCtr, "ABOUT");
+
+  // 6 label-value rows
+  static const char* aboutLabels[6] = {
+    "Version:", "Uptime:", "Heap:", "PSRAM:", "Battery:", "WiFi:"
+  };
+
+  int aboutY = 50;
+  int aboutLineH = 30;
+  for (int i = 0; i < 6; i++) {
+    lv_obj_t* lbl = lv_label_create(settingsAboutCtr);
+    lv_label_set_text(lbl, aboutLabels[i]);
+    lv_obj_set_pos(lbl, 20, aboutY + i * aboutLineH);
+    lv_obj_set_style_text_font(lbl, FC_FONT_MD, 0);
+    lv_obj_set_style_text_color(lbl, FC_COLOR_DIM, 0);
+
+    aboutValueLabels[i] = lv_label_create(settingsAboutCtr);
+    lv_label_set_text(aboutValueLabels[i], "---");
+    lv_obj_set_pos(aboutValueLabels[i], 160, aboutY + i * aboutLineH);
+    lv_obj_set_style_text_font(aboutValueLabels[i], FC_FONT_MD, 0);
+    lv_obj_set_style_text_color(aboutValueLabels[i], FC_COLOR_VALUE, 0);
+  }
+
+  // Set version (static, never changes)
+  lv_label_set_text(aboutValueLabels[0], FW_VERSION);
+
+  // Action bar with Back only
+  lv_obj_t* aboutActBar = fcActionBarCreate(settingsAboutCtr, true, false);
+  lv_obj_t* aboutBack = lv_obj_get_child(aboutActBar, 0);
+  lv_obj_add_event_cb(aboutBack, aboutBackCb, LV_EVENT_CLICKED, NULL);
 }
 
 // ============== LVGL Initialization (#105) ==============
