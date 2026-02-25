@@ -2049,6 +2049,9 @@ static lv_obj_t* calCountdownLabel = NULL;
 static lv_obj_t* calInstructLabel  = NULL;
 static lv_obj_t* calMinMaxLabel    = NULL;
 
+// Diagnostics sub-screen widget pointers (#112)
+static lv_obj_t* diagValueLabels[10];  // 10 value labels updated each frame
+
 void buildCompassScreen() {
   // Root container — full screen, no scrolling, black background
   compassScr = lv_obj_create(lv_screen_active());
@@ -3674,6 +3677,13 @@ static void calBackCb(lv_event_t* e) {
   forceDisplayUpdate = true;
 }
 
+// Diagnostics sub-screen callback (#112)
+static void diagsBackCb(lv_event_t* e) {
+  (void)e;
+  settingsSubScreen = 0;
+  forceDisplayUpdate = true;
+}
+
 // Update settings sub-screen visibility
 void updateSettingsData() {
   if (!settingsScr) return;
@@ -3810,7 +3820,117 @@ void updateSettingsData() {
         }
       }
       break;
-    case 4: if (settingsDiagsCtr)   lv_obj_clear_flag(settingsDiagsCtr,   LV_OBJ_FLAG_HIDDEN); break;
+    case 4:
+      if (settingsDiagsCtr) {
+        lv_obj_clear_flag(settingsDiagsCtr, LV_OBJ_FLAG_HIDDEN);
+        char dBuf[80];
+
+        // [0] BSEC
+        snprintf(dBuf, sizeof(dBuf), "Load:%s Save:%s Acc:%s",
+          bsecStateLoaded ? "Y" : "N", bsecStateSaved ? "Y" : "N",
+          getIaqAccuracyText(envData.iaqAccuracy));
+        lv_label_set_text(diagValueLabels[0], dBuf);
+        lv_obj_set_style_text_color(diagValueLabels[0], bsecStateLoaded ? FC_COLOR_VALUE : FC_COLOR_DIM, 0);
+
+        // [1] Weather
+        snprintf(dBuf, sizeof(dBuf), "Mem:%d Files:%d Tot:%d",
+          weatherHistoryCount, weatherLogFileCount, weatherLogEntryCount);
+        lv_label_set_text(diagValueLabels[1], dBuf);
+
+        // [2] Heap
+        snprintf(dBuf, sizeof(dBuf), "%luK / %luK",
+          (unsigned long)(ESP.getFreeHeap() / 1024), (unsigned long)(ESP.getHeapSize() / 1024));
+        lv_label_set_text(diagValueLabels[2], dBuf);
+
+        // [3] PSRAM
+        if (psramFound()) {
+          snprintf(dBuf, sizeof(dBuf), "%luK / %luK Spr:%s",
+            (unsigned long)(ESP.getFreePsram() / 1024), (unsigned long)(ESP.getPsramSize() / 1024),
+            spriteAvailable ? "Y" : "N");
+        } else {
+          snprintf(dBuf, sizeof(dBuf), "Not available");
+        }
+        lv_label_set_text(diagValueLabels[3], dBuf);
+        lv_obj_set_style_text_color(diagValueLabels[3], psramFound() ? FC_COLOR_VALUE : FC_COLOR_DIM, 0);
+
+        // [4] Sensors
+        snprintf(dBuf, sizeof(dBuf), "BME:%s SHT:%s IMU:%s Bat:%s FRAM:%s CTP:%s",
+          bmeAvailable ? "Y" : "N", shtAvailable ? "Y" : "N",
+          imuAvailable ? "Y" : "N", batteryAvailable ? "Y" : "N",
+          framAvailable ? "Y" : "N", touchAvailable ? "Y" : "N");
+        lv_label_set_text(diagValueLabels[4], dBuf);
+
+        // [5] Temps
+        if (shtAvailable && bmeAvailable) {
+          float shtT = useFahrenheit ? (shtData.temperature * 9.0f / 5.0f + 32.0f) : shtData.temperature;
+          float bmeT = useFahrenheit ? (envData.temperature * 9.0f / 5.0f + 32.0f) : envData.temperature;
+          snprintf(dBuf, sizeof(dBuf), "SHT:%.1f%s BME:%.1f%s (%+.1f)",
+            shtT, useFahrenheit ? "F" : "C", bmeT, useFahrenheit ? "F" : "C", shtT - bmeT);
+        } else if (shtAvailable) {
+          float t = useFahrenheit ? (shtData.temperature * 9.0f / 5.0f + 32.0f) : shtData.temperature;
+          snprintf(dBuf, sizeof(dBuf), "SHT:%.1f%s BME:N/A", t, useFahrenheit ? "F" : "C");
+        } else if (bmeAvailable) {
+          float t = useFahrenheit ? (envData.temperature * 9.0f / 5.0f + 32.0f) : envData.temperature;
+          snprintf(dBuf, sizeof(dBuf), "SHT:N/A BME:%.1f%s", t, useFahrenheit ? "F" : "C");
+        } else {
+          snprintf(dBuf, sizeof(dBuf), "No sensors");
+        }
+        lv_label_set_text(diagValueLabels[5], dBuf);
+
+        // [6] GPS
+        if (gpsHadFirstFix) {
+          snprintf(dBuf, sizeof(dBuf), "Fix in %lus", gpsFirstFixTime / 1000);
+          lv_obj_set_style_text_color(diagValueLabels[6], FC_COLOR_VALUE, 0);
+        } else if (gpsHadFirstReceive) {
+          unsigned long elapsed = millis() / 1000;
+          snprintf(dBuf, sizeof(dBuf), "Acquiring (%lum %lus)", elapsed / 60, elapsed % 60);
+          lv_obj_set_style_text_color(diagValueLabels[6], FC_COLOR_WARN, 0);
+        } else {
+          snprintf(dBuf, sizeof(dBuf), "No data");
+          lv_obj_set_style_text_color(diagValueLabels[6], FC_COLOR_DIM, 0);
+        }
+        lv_label_set_text(diagValueLabels[6], dBuf);
+
+        // [7] MagCal
+        if (magCalibrated) {
+          snprintf(dBuf, sizeof(dBuf), "%.1f, %.1f, %.1f", magOffsetX, magOffsetY, magOffsetZ);
+          lv_obj_set_style_text_color(diagValueLabels[7], FC_COLOR_VALUE, 0);
+        } else {
+          snprintf(dBuf, sizeof(dBuf), "None");
+          lv_obj_set_style_text_color(diagValueLabels[7], FC_COLOR_DIM, 0);
+        }
+        lv_label_set_text(diagValueLabels[7], dBuf);
+
+        // [8] Storage
+        if (sdHealth.available) {
+          unsigned long ageMin = (millis() - sdHealth.lastSuccess) / 60000;
+          if (sdHealth.errorCount == 0)
+            snprintf(dBuf, sizeof(dBuf), "SD:OK %lum OLED:%s", ageMin, oledAvailable ? "Y" : "N");
+          else {
+            snprintf(dBuf, sizeof(dBuf), "SD:WARN E:%d R:%d OLED:%s",
+              sdHealth.errorCount, sdHealth.reInitCount, oledAvailable ? "Y" : "N");
+            lv_obj_set_style_text_color(diagValueLabels[8], FC_COLOR_WARN, 0);
+          }
+        } else {
+          snprintf(dBuf, sizeof(dBuf), "SD:FAIL E:%d R:%d OLED:%s",
+            sdHealth.errorCount, sdHealth.reInitCount, oledAvailable ? "Y" : "N");
+          lv_obj_set_style_text_color(diagValueLabels[8], FC_COLOR_ERROR, 0);
+        }
+        if (sdHealth.available && sdHealth.errorCount == 0)
+          lv_obj_set_style_text_color(diagValueLabels[8], FC_COLOR_VALUE, 0);
+        lv_label_set_text(diagValueLabels[8], dBuf);
+
+        // [9] Web URL
+        if (wifiConnected) {
+          snprintf(dBuf, sizeof(dBuf), "http://fieldcompass.local/");
+          lv_obj_set_style_text_color(diagValueLabels[9], FC_COLOR_DIM, 0);
+        } else {
+          snprintf(dBuf, sizeof(dBuf), "Not connected");
+          lv_obj_set_style_text_color(diagValueLabels[9], FC_COLOR_DIM, 0);
+        }
+        lv_label_set_text(diagValueLabels[9], dBuf);
+      }
+      break;
     case 5: if (settingsAboutCtr)   lv_obj_clear_flag(settingsAboutCtr,   LV_OBJ_FLAG_HIDDEN); break;
     case 6: if (settingsResetCtr)   lv_obj_clear_flag(settingsResetCtr,   LV_OBJ_FLAG_HIDDEN); break;
   }
@@ -4060,6 +4180,46 @@ void buildSettingsScreen() {
   lv_obj_set_style_text_color(calMinMaxLabel, FC_COLOR_DIM, 0);
   lv_label_set_text(calMinMaxLabel, "");
   lv_obj_add_flag(calMinMaxLabel, LV_OBJ_FLAG_HIDDEN);
+
+  // --- Sub-screen 4: Diagnostics (#112) ---
+  settingsDiagsCtr = lv_obj_create(settingsScr);
+  lv_obj_remove_style_all(settingsDiagsCtr);
+  lv_obj_set_size(settingsDiagsCtr, SCREEN_W, SCREEN_H);
+  lv_obj_set_style_bg_color(settingsDiagsCtr, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_opa(settingsDiagsCtr, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(settingsDiagsCtr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(settingsDiagsCtr, LV_OBJ_FLAG_HIDDEN);
+
+  fcHeaderCreate(settingsDiagsCtr, "DIAGNOSTICS");
+
+  // 10 label-value rows
+  static const char* diagLabels[10] = {
+    "BSEC:", "Weather:", "Heap:", "PSRAM:", "Sensors:",
+    "Temps:", "GPS:", "MagCal:", "Storage:", "Web:"
+  };
+
+  int diagY = 38;
+  int diagLineH = 22;
+  for (int i = 0; i < 10; i++) {
+    // Cyan label
+    lv_obj_t* lbl = lv_label_create(settingsDiagsCtr);
+    lv_label_set_text(lbl, diagLabels[i]);
+    lv_obj_set_pos(lbl, 10, diagY + i * diagLineH);
+    lv_obj_set_style_text_font(lbl, FC_FONT_XS, 0);
+    lv_obj_set_style_text_color(lbl, FC_COLOR_HEADER, 0);
+
+    // Value label (updated each frame)
+    diagValueLabels[i] = lv_label_create(settingsDiagsCtr);
+    lv_label_set_text(diagValueLabels[i], "---");
+    lv_obj_set_pos(diagValueLabels[i], 70, diagY + i * diagLineH);
+    lv_obj_set_style_text_font(diagValueLabels[i], FC_FONT_XS, 0);
+    lv_obj_set_style_text_color(diagValueLabels[i], FC_COLOR_VALUE, 0);
+  }
+
+  // Action bar with Back only
+  lv_obj_t* diagsActBar = fcActionBarCreate(settingsDiagsCtr, true, false);
+  lv_obj_t* diagsBack = lv_obj_get_child(diagsActBar, 0);
+  lv_obj_add_event_cb(diagsBack, diagsBackCb, LV_EVENT_CLICKED, NULL);
 }
 
 // ============== LVGL Initialization (#105) ==============
