@@ -3694,6 +3694,36 @@ static void aboutBackCb(lv_event_t* e) {
   forceDisplayUpdate = true;
 }
 
+// Factory Reset sub-screen callbacks (#112)
+static void resetBackCb(lv_event_t* e) {
+  (void)e;
+  settingsSubScreen = 0;
+  forceDisplayUpdate = true;
+}
+
+static void resetBtnCb(lv_event_t* e) {
+  (void)e;
+  factoryReset();
+  // Sync all LVGL widgets to restored defaults
+  if (cfgTimeToggle)  fcToggleSetValue(cfgTimeToggle, use12Hour ? 0 : 1);
+  if (cfgTempToggle)  fcToggleSetValue(cfgTempToggle, useFahrenheit ? 0 : 1);
+  if (cfgDistToggle)  fcToggleSetValue(cfgDistToggle, useMetricUnits ? 1 : 0);
+  if (cfgTzDropdown)  fcDropdownSetValue(cfgTzDropdown, tzSelectedIndex, tzDisplayName);
+  if (dispBrightnessSlider) lv_slider_set_value(dispBrightnessSlider, tftBrightness, LV_ANIM_OFF);
+  if (dispBrightnessLabel)  lv_label_set_text_fmt(dispBrightnessLabel, "%d", tftBrightness);
+  if (dispTftDropdown) {
+    int idx = findTimeoutIndex(tftTimeoutPresets, TFT_TIMEOUT_COUNT, tftSleepMs);
+    fcDropdownSetValue(dispTftDropdown, idx, tftTimeoutLabels[idx]);
+  }
+  if (dispOledDropdown) {
+    int idx = findTimeoutIndex(oledTimeoutPresets, OLED_TIMEOUT_COUNT, oledSleepMs);
+    fcDropdownSetValue(dispOledDropdown, idx, oledTimeoutLabels[idx]);
+  }
+  settingsSubScreen = 0;
+  forceDisplayUpdate = true;
+  logPrintln("[SETTINGS/LVGL] Factory reset executed");
+}
+
 // Update settings sub-screen visibility
 void updateSettingsData() {
   if (!settingsScr) return;
@@ -4326,6 +4356,49 @@ void buildSettingsScreen() {
   lv_obj_t* aboutActBar = fcActionBarCreate(settingsAboutCtr, true, false);
   lv_obj_t* aboutBack = lv_obj_get_child(aboutActBar, 0);
   lv_obj_add_event_cb(aboutBack, aboutBackCb, LV_EVENT_CLICKED, NULL);
+
+  // --- Sub-screen 6: Factory Reset (#112) ---
+  settingsResetCtr = lv_obj_create(settingsScr);
+  lv_obj_remove_style_all(settingsResetCtr);
+  lv_obj_set_size(settingsResetCtr, SCREEN_W, SCREEN_H);
+  lv_obj_set_style_bg_color(settingsResetCtr, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_opa(settingsResetCtr, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(settingsResetCtr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(settingsResetCtr, LV_OBJ_FLAG_HIDDEN);
+
+  fcHeaderCreate(settingsResetCtr, "FACTORY RESET");
+
+  // Warning text (orange)
+  lv_obj_t* resetWarn = lv_label_create(settingsResetCtr);
+  lv_label_set_text(resetWarn, "Reset all settings to\nfactory defaults?");
+  lv_obj_set_pos(resetWarn, 20, 90);
+  lv_obj_set_style_text_font(resetWarn, FC_FONT_LG, 0);  // 20px
+  lv_obj_set_style_text_color(resetWarn, FC_COLOR_WARN, 0);  // Orange
+
+  // Info text (dim)
+  lv_obj_t* resetInfo = lv_label_create(settingsResetCtr);
+  lv_label_set_text(resetInfo, "Compass calibration will\nbe preserved.");
+  lv_obj_set_pos(resetInfo, 20, 155);
+  lv_obj_set_style_text_font(resetInfo, FC_FONT_SM, 0);  // 16px
+  lv_obj_set_style_text_color(resetInfo, FC_COLOR_DIM, 0);
+
+  // Action bar with Back only
+  lv_obj_t* resetActBar = fcActionBarCreate(settingsResetCtr, true, false);
+  lv_obj_t* resetBack = lv_obj_get_child(resetActBar, 0);
+  lv_obj_add_event_cb(resetBack, resetBackCb, LV_EVENT_CLICKED, NULL);
+
+  // Red "Reset" button at OK button position
+  lv_obj_t* resetBtn = lv_button_create(settingsResetCtr);
+  lv_obj_set_size(resetBtn, 100, 40);
+  lv_obj_set_pos(resetBtn, 360, 275);
+  lv_obj_set_style_bg_color(resetBtn, lv_color_hex(0xCC0000), 0);  // Red
+  lv_obj_set_style_radius(resetBtn, 8, 0);
+  lv_obj_add_event_cb(resetBtn, resetBtnCb, LV_EVENT_CLICKED, NULL);
+  lv_obj_t* resetBtnLbl = lv_label_create(resetBtn);
+  lv_label_set_text(resetBtnLbl, "Reset");
+  lv_obj_set_style_text_font(resetBtnLbl, FC_FONT_MD, 0);
+  lv_obj_set_style_text_color(resetBtnLbl, FC_COLOR_TEXT, 0);
+  lv_obj_center(resetBtnLbl);
 }
 
 // ============== LVGL Initialization (#105) ==============
