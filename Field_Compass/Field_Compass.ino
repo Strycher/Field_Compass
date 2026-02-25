@@ -6956,6 +6956,7 @@ void handleButtonCLongPress() {
 void readGPS() {
   while (Serial1.available()) {
     char c = Serial1.read();
+    gpsLastByteTime = millis();  // Track for staleness (#115)
     gpsData.receiving = true;
 
     // Track when GPS first starts receiving NMEA data (#68)
@@ -6975,6 +6976,16 @@ void readGPS() {
     } else if (c != '\r' && gpsBufferIndex < sizeof(gpsBuffer) - 1) {
       gpsBuffer[gpsBufferIndex++] = c;
     }
+  }
+
+  // Staleness check: no bytes for GPS_STALE_MS → clear state (#115)
+  if (gpsData.receiving && gpsLastByteTime > 0 &&
+      (millis() - gpsLastByteTime > GPS_STALE_MS)) {
+    if (gpsDebugEnabled) {
+      logPrintf("[GPS:DBG] Stale — no data for %lums\n", millis() - gpsLastByteTime);
+    }
+    gpsData.receiving = false;
+    gpsData.valid = false;
   }
 }
 
