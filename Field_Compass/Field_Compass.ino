@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.45.0"
+#define FW_VERSION "0.45.1"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -4039,6 +4039,8 @@ void buildSettingsScreen() {
   lv_obj_remove_style_all(settingsMenuCtr);
   lv_obj_set_size(settingsMenuCtr, SCREEN_W, SCREEN_H);
   lv_obj_set_pos(settingsMenuCtr, 0, 0);
+  lv_obj_set_style_bg_color(settingsMenuCtr, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_opa(settingsMenuCtr, LV_OPA_COVER, 0);
   lv_obj_clear_flag(settingsMenuCtr, LV_OBJ_FLAG_SCROLLABLE);
 
   // Header
@@ -7865,6 +7867,9 @@ void updateDisplay() {
           spr.fillSprite(COLOR_BG);
           spr.pushSprite(0, 0);
         }
+        // Force LVGL full repaint — the sprite push overwrote the TFT
+        // outside LVGL's knowledge, so its dirty tracking is stale (#112)
+        lv_obj_invalidate(lv_screen_active());
         lastLvglScreen = currentScreen;
       }
     } else {
