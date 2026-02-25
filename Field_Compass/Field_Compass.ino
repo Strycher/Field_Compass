@@ -6978,69 +6978,98 @@ void readGPS() {
   }
 }
 
-void parseNMEA(char* sentence) {
-  // Parse GPRMC or GNRMC for time and position
-  if (strstr(sentence, "RMC")) {
-    char* token = strtok(sentence, ",");
-    int field = 0;
-    char status = 'V';
-    float lat = 0, lon = 0;
-    char latDir = 'N', lonDir = 'W';
+// Parse NMEA sentence into field array, preserving empty fields (#115)
+// Replaces strtok which skips consecutive commas (empty fields)
+// Modifies sentence in-place (replaces commas and * with nulls)
+// Returns number of fields found
+#define NMEA_MAX_FIELDS 20
+int nmeaParse(char* sentence, char* fields[], int maxFields) {
+  // Strip checksum (*XX) if present
+  char* star = strchr(sentence, '*');
+  if (star) *star = '\0';
 
-    while (token != NULL) {
-      switch (field) {
-        case 1:  // Time HHMMSS.sss
-          if (strlen(token) >= 6) {
-            gpsData.hour = (token[0] - '0') * 10 + (token[1] - '0');
-            gpsData.minute = (token[2] - '0') * 10 + (token[3] - '0');
-            gpsData.second = (token[4] - '0') * 10 + (token[5] - '0');
-            gpsData.timeValid = true;
-          }
-          break;
-        case 2:  // Status A=valid, V=void
-          status = token[0];
-          break;
-        case 3:  // Latitude
-          lat = atof(token);
-          break;
-        case 4:  // N/S
-          latDir = token[0];
-          break;
-        case 5:  // Longitude
-          lon = atof(token);
-          break;
-        case 6:  // E/W
-          lonDir = token[0];
-          break;
-        case 7:  // Speed over ground (knots)
-          if (strlen(token) > 0) {
-            gpsData.speedKnots = atof(token);
-          }
-          break;
-        case 9:  // Date DDMMYY
-          if (strlen(token) >= 6) {
-            gpsData.day = (token[0] - '0') * 10 + (token[1] - '0');
-            gpsData.month = (token[2] - '0') * 10 + (token[3] - '0');
-            gpsData.year = 2000 + (token[4] - '0') * 10 + (token[5] - '0');
-            gpsData.dateValid = true;
-          }
-          break;
-      }
-      token = strtok(NULL, ",");
-      field++;
+  int count = 0;
+  fields[count++] = sentence;  // Field 0 starts at beginning
+
+  while (*sentence && count < maxFields) {
+    if (*sentence == ',') {
+      *sentence = '\0';         // Terminate previous field
+      fields[count++] = sentence + 1;  // Next field starts after comma
+    }
+    sentence++;
+  }
+  return count;
+}
+
+void parseNMEA(char* sentence) {
+  char* fields[NMEA_MAX_FIELDS];
+  int nFields = nmeaParse(sentence, fields, NMEA_MAX_FIELDS);
+
+  // Identify sentence type from field 0 (e.g., "$GNRMC", "$GPGGA")
+  const char* talker = fields[0];  // e.g., "$GNRMC"
+  bool isRMC = (nFields >= 3 && strstr(talker, "RMC") != NULL);
+  bool isGGA = (nFields >= 10 && strstr(talker, "GGA") != NULL);
+
+  // ---- RMC: Time, position, speed, date ----
+  if (isRMC) {
+    // Field 1: Time HHMMSS.sss
+    if (strlen(fields[1]) >= 6) {
+      gpsData.hour   = (fields[1][0] - '0') * 10 + (fields[1][1] - '0');
+      gpsData.minute = (fields[1][2] - '0') * 10 + (fields[1][3] - '0');
+      gpsData.second = (fields[1][4] - '0') * 10 + (fields[1][5] - '0');
+      gpsData.timeValid = true;
     }
 
+    // Field 2: Status A=valid, V=void
+    char status = (strlen(fields[2]) > 0) ? fields[2][0] : 'V';
+
+    // Determine talker: GP (GPS-only) or GN (multi-GNSS) (#115)
+    bool isGN = (talker[2] == 'N');  // $GN... vs $GP...
+
+    // Reset cycle tracking if >1.2s since last RMC
+    if (millis() - lastRmcCycleTime > 1200) {
+      gprmcFixThisCycle = false;
+      gnrmcFixThisCycle = false;
+    }
+    lastRmcCycleTime = millis();
+
     if (status == 'A') {
+      // Parse position
+      float lat = (strlen(fields[3]) > 0) ? atof(fields[3]) : 0;
+      char latDir = (strlen(fields[4]) > 0) ? fields[4][0] : 'N';
+      float lon = (strlen(fields[5]) > 0) ? atof(fields[5]) : 0;
+      char lonDir = (strlen(fields[6]) > 0) ? fields[6][0] : 'W';
+
       int latDeg = (int)(lat / 100);
       float latMin = lat - (latDeg * 100);
-      gpsData.latitude = latDeg + (latMin / 60.0);
+      gpsData.latitude = latDeg + (latMin / 60.0f);
       if (latDir == 'S') gpsData.latitude = -gpsData.latitude;
 
       int lonDeg = (int)(lon / 100);
       float lonMin = lon - (lonDeg * 100);
-      gpsData.longitude = lonDeg + (lonMin / 60.0);
+      gpsData.longitude = lonDeg + (lonMin / 60.0f);
       if (lonDir == 'W') gpsData.longitude = -gpsData.longitude;
 
+      // Speed (field 7)
+      if (strlen(fields[7]) > 0) gpsData.speedKnots = atof(fields[7]);
+
+      // Date (field 9)
+      if (nFields > 9 && strlen(fields[9]) >= 6) {
+        gpsData.day   = (fields[9][0] - '0') * 10 + (fields[9][1] - '0');
+        gpsData.month = (fields[9][2] - '0') * 10 + (fields[9][3] - '0');
+        gpsData.year  = 2000 + (fields[9][4] - '0') * 10 + (fields[9][5] - '0');
+        gpsData.dateValid = true;
+      }
+
+      // Track talker fix state
+      if (isGN) gnrmcFixThisCycle = true;
+      else      gprmcFixThisCycle = true;
+
+      // Set valid — runtime debug log on transition
+      if (!gpsData.valid && gpsDebugEnabled) {
+        logPrintf("[GPS:DBG] Fix gained — Talker:%s Sat:%d HDOP:%.1f\n",
+                  isGN ? "GN" : "GP", gpsData.satellites, gpsData.hdop);
+      }
       gpsData.valid = true;
 
       // Track time to first fix (#68)
@@ -7050,22 +7079,19 @@ void parseNMEA(char* sentence) {
         logPrintf("[GPS] First fix acquired in %lus (TTFF)\n", gpsFirstFixTime / 1000);
       }
 
-      // Sync RTC from GPS time (once per session, GPS is most accurate)
+      // Sync RTC from GPS time (once per session)
       if (gpsData.timeValid && gpsData.dateValid && !rtcSyncedFromGPS) {
-        // Set system time from GPS (UTC)
         struct tm gpsTime;
         gpsTime.tm_year = gpsData.year - 1900;
-        gpsTime.tm_mon = gpsData.month - 1;
+        gpsTime.tm_mon  = gpsData.month - 1;
         gpsTime.tm_mday = gpsData.day;
         gpsTime.tm_hour = gpsData.hour;
-        gpsTime.tm_min = gpsData.minute;
-        gpsTime.tm_sec = gpsData.second;
+        gpsTime.tm_min  = gpsData.minute;
+        gpsTime.tm_sec  = gpsData.second;
 
-        time_t t = mktimeUTC(&gpsTime);  // GPS provides UTC — use UTC-aware mktime (#98 bugfix)
+        time_t t = mktimeUTC(&gpsTime);
         struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
         settimeofday(&tv, NULL);
-
-        // Now sync RTC (stores UTC)
         syncRTCFromSystemTime("GPS");
         rtcSyncedFromGPS = true;
 
@@ -7073,34 +7099,51 @@ void parseNMEA(char* sentence) {
                   gpsData.year, gpsData.month, gpsData.day,
                   gpsData.hour, gpsData.minute, gpsData.second);
       }
+
     } else {
-      // Track when signal is lost (for reacquiring elapsed time) (#68)
+      // Status V — but check multi-constellation override (#115)
+      if (isGN) {
+        gnrmcFixThisCycle = false;
+        // If GPRMC said 'A' this cycle, keep GPS-only fix
+        if (gprmcFixThisCycle) {
+          if (gpsDebugEnabled) {
+            logPrintf("[GPS:DBG] Talker conflict — GPRMC:A but GNRMC:V, keeping GP fix\n");
+          }
+          // Don't invalidate — GPRMC fix is still good
+          return;
+        }
+      } else {
+        gprmcFixThisCycle = false;
+      }
+
+      // Track when signal is lost (#68)
       if (gpsData.valid && gpsHadFirstFix) {
         gpsSignalLostTime = millis();
-        logPrintf("[GPS] Signal lost at %lus\n", gpsSignalLostTime / 1000);
+        if (gpsDebugEnabled) {
+          unsigned long validFor = (gpsSignalLostTime - gpsFirstFixTime) / 1000;
+          logPrintf("[GPS:DBG] Fix lost — was valid for %lus\n", validFor);
+        } else {
+          logPrintf("[GPS] Signal lost at %lus\n", gpsSignalLostTime / 1000);
+        }
       }
       gpsData.valid = false;
     }
   }
 
-  // Parse GPGGA or GNGGA for altitude, satellites, HDOP (#70)
-  if (strstr(sentence, "GGA")) {
-    char* token = strtok(sentence, ",");
-    int field = 0;
-
-    while (token != NULL) {
-      if (field == 7 && strlen(token) > 0) {
-        gpsData.satellites = atoi(token);  // Number of satellites (#70)
+  // ---- GGA: Altitude, satellites, HDOP ----
+  if (isGGA) {
+    // Field 7: Number of satellites
+    if (strlen(fields[7]) > 0) {
+      int newSats = atoi(fields[7]);
+      if (gpsDebugEnabled && newSats != gpsData.satellites) {
+        logPrintf("[GPS:DBG] Sats: %d -> %d\n", gpsData.satellites, newSats);
       }
-      if (field == 8 && strlen(token) > 0) {
-        gpsData.hdop = atof(token);        // Horizontal DOP (#70)
-      }
-      if (field == 9 && strlen(token) > 0) {
-        gpsData.altitude = atof(token);
-      }
-      token = strtok(NULL, ",");
-      field++;
+      gpsData.satellites = newSats;
     }
+    // Field 8: HDOP
+    if (strlen(fields[8]) > 0) gpsData.hdop = atof(fields[8]);
+    // Field 9: Altitude (meters)
+    if (strlen(fields[9]) > 0) gpsData.altitude = atof(fields[9]);
   }
 }
 
