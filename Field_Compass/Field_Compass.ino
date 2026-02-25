@@ -2037,6 +2037,18 @@ static lv_obj_t* dispBrightnessLabel  = NULL;
 static lv_obj_t* dispTftDropdown      = NULL;
 static lv_obj_t* dispOledDropdown     = NULL;
 
+// Compass Cal sub-screen widget pointers (#112)
+// Idle state
+static lv_obj_t* calStatusLabel   = NULL;
+static lv_obj_t* calOffsetsLabel  = NULL;
+static lv_obj_t* calStartBtn      = NULL;
+static lv_obj_t* calIdleActBar    = NULL;
+// Active state (hidden during idle)
+static lv_obj_t* calArc            = NULL;
+static lv_obj_t* calCountdownLabel = NULL;
+static lv_obj_t* calInstructLabel  = NULL;
+static lv_obj_t* calMinMaxLabel    = NULL;
+
 void buildCompassScreen() {
   // Root container — full screen, no scrolling, black background
   compassScr = lv_obj_create(lv_screen_active());
@@ -3640,6 +3652,28 @@ static void dispOKCb(lv_event_t* e) {
   forceDisplayUpdate = true;
 }
 
+// Compass Cal sub-screen callbacks (#112)
+static void calStartBtnCb(lv_event_t* e) {
+  (void)e;
+  if (!magAvailable || magCalibrating) return;
+  magCalibrating = true;
+  magCalStartTime = millis();
+  magCalMinX = magCalMinY = magCalMinZ = 99999;
+  magCalMaxX = magCalMaxY = magCalMaxZ = -99999;
+  logPrintln("[MAG/LVGL] Calibration started");
+  forceDisplayUpdate = true;
+}
+
+static void calBackCb(lv_event_t* e) {
+  (void)e;
+  if (magCalibrating) {
+    magCalibrating = false;
+    logPrintln("[MAG/LVGL] Calibration cancelled");
+  }
+  settingsSubScreen = 0;
+  forceDisplayUpdate = true;
+}
+
 // Update settings sub-screen visibility
 void updateSettingsData() {
   if (!settingsScr) return;
@@ -3687,7 +3721,95 @@ void updateSettingsData() {
         if (dispBrightnessLabel) lv_label_set_text_fmt(dispBrightnessLabel, "%d", tftBrightness);
       }
       break;
-    case 3: if (settingsCalCtr)     lv_obj_clear_flag(settingsCalCtr,     LV_OBJ_FLAG_HIDDEN); break;
+    case 3:
+      if (settingsCalCtr) {
+        lv_obj_clear_flag(settingsCalCtr, LV_OBJ_FLAG_HIDDEN);
+
+        if (magCalibrating) {
+          // === ACTIVE CALIBRATION STATE ===
+          // Hide idle widgets
+          if (calStatusLabel)  lv_obj_add_flag(calStatusLabel,  LV_OBJ_FLAG_HIDDEN);
+          if (calOffsetsLabel) lv_obj_add_flag(calOffsetsLabel, LV_OBJ_FLAG_HIDDEN);
+          if (calStartBtn)     lv_obj_add_flag(calStartBtn,     LV_OBJ_FLAG_HIDDEN);
+          if (calIdleActBar)   lv_obj_add_flag(calIdleActBar,   LV_OBJ_FLAG_HIDDEN);
+          // Show active widgets
+          if (calArc)            lv_obj_clear_flag(calArc,            LV_OBJ_FLAG_HIDDEN);
+          if (calCountdownLabel) lv_obj_clear_flag(calCountdownLabel, LV_OBJ_FLAG_HIDDEN);
+          if (calInstructLabel)  lv_obj_clear_flag(calInstructLabel,  LV_OBJ_FLAG_HIDDEN);
+          if (calMinMaxLabel)    lv_obj_clear_flag(calMinMaxLabel,    LV_OBJ_FLAG_HIDDEN);
+
+          unsigned long elapsed = millis() - magCalStartTime;
+          int pct = (int)((elapsed * 100UL) / MAG_CAL_DURATION_MS);
+          if (pct > 100) pct = 100;
+          int remaining = ((int)MAG_CAL_DURATION_MS - (int)elapsed) / 1000;
+          if (remaining < 0) remaining = 0;
+
+          // Update arc progress
+          if (calArc) lv_arc_set_value(calArc, pct);
+          // Update countdown
+          if (calCountdownLabel) lv_label_set_text_fmt(calCountdownLabel, "%d", remaining);
+          // Update min/max
+          if (calMinMaxLabel) {
+            char mmBuf[128];
+            snprintf(mmBuf, sizeof(mmBuf),
+              "X: %.1f to %.1f\nY: %.1f to %.1f\nZ: %.1f to %.1f",
+              magCalMinX < 99998 ? magCalMinX : 0.0f, magCalMaxX > -99998 ? magCalMaxX : 0.0f,
+              magCalMinY < 99998 ? magCalMinY : 0.0f, magCalMaxY > -99998 ? magCalMaxY : 0.0f,
+              magCalMinZ < 99998 ? magCalMinZ : 0.0f, magCalMaxZ > -99998 ? magCalMaxZ : 0.0f);
+            lv_label_set_text(calMinMaxLabel, mmBuf);
+          }
+
+          // Check completion
+          if (elapsed >= MAG_CAL_DURATION_MS) {
+            // Compute hard-iron offsets
+            magOffsetX = (magCalMaxX + magCalMinX) / 2.0f;
+            magOffsetY = (magCalMaxY + magCalMinY) / 2.0f;
+            magOffsetZ = (magCalMaxZ + magCalMinZ) / 2.0f;
+            magCalibrated = true;
+            magCalibrating = false;
+            saveMagCal();
+            logPrintf("[MAG/LVGL] Cal complete: X=%.2f Y=%.2f Z=%.2f\n", magOffsetX, magOffsetY, magOffsetZ);
+            // Show completion briefly — idle widgets will show on next frame
+          }
+
+        } else {
+          // === IDLE STATE ===
+          // Show idle widgets
+          if (calStatusLabel)  lv_obj_clear_flag(calStatusLabel,  LV_OBJ_FLAG_HIDDEN);
+          if (calOffsetsLabel) lv_obj_clear_flag(calOffsetsLabel, LV_OBJ_FLAG_HIDDEN);
+          if (calStartBtn)     lv_obj_clear_flag(calStartBtn,     LV_OBJ_FLAG_HIDDEN);
+          if (calIdleActBar)   lv_obj_clear_flag(calIdleActBar,   LV_OBJ_FLAG_HIDDEN);
+          // Hide active widgets
+          if (calArc)            lv_obj_add_flag(calArc,            LV_OBJ_FLAG_HIDDEN);
+          if (calCountdownLabel) lv_obj_add_flag(calCountdownLabel, LV_OBJ_FLAG_HIDDEN);
+          if (calInstructLabel)  lv_obj_add_flag(calInstructLabel,  LV_OBJ_FLAG_HIDDEN);
+          if (calMinMaxLabel)    lv_obj_add_flag(calMinMaxLabel,    LV_OBJ_FLAG_HIDDEN);
+
+          // Update status
+          if (calStatusLabel) {
+            if (magCalibrated) {
+              lv_label_set_text(calStatusLabel, "Status: Calibrated");
+              lv_obj_set_style_text_color(calStatusLabel, FC_COLOR_VALUE, 0);  // Green
+            } else {
+              lv_label_set_text(calStatusLabel, "Status: Not calibrated");
+              lv_obj_set_style_text_color(calStatusLabel, FC_COLOR_DIM, 0);
+            }
+          }
+          // Update offsets
+          if (calOffsetsLabel) {
+            if (magCalibrated) {
+              char offBuf[64];
+              snprintf(offBuf, sizeof(offBuf), "X: %.2f  Y: %.2f  Z: %.2f", magOffsetX, magOffsetY, magOffsetZ);
+              lv_label_set_text(calOffsetsLabel, offBuf);
+              lv_obj_set_style_text_color(calOffsetsLabel, FC_COLOR_VALUE, 0);
+            } else {
+              lv_label_set_text(calOffsetsLabel, "Offsets: ---");
+              lv_obj_set_style_text_color(calOffsetsLabel, FC_COLOR_DIM, 0);
+            }
+          }
+        }
+      }
+      break;
     case 4: if (settingsDiagsCtr)   lv_obj_clear_flag(settingsDiagsCtr,   LV_OBJ_FLAG_HIDDEN); break;
     case 5: if (settingsAboutCtr)   lv_obj_clear_flag(settingsAboutCtr,   LV_OBJ_FLAG_HIDDEN); break;
     case 6: if (settingsResetCtr)   lv_obj_clear_flag(settingsResetCtr,   LV_OBJ_FLAG_HIDDEN); break;
@@ -3848,6 +3970,96 @@ void buildSettingsScreen() {
   lv_obj_t* dispOK   = lv_obj_get_child(dispActBar, 1);
   lv_obj_add_event_cb(dispBack, dispBackCb, LV_EVENT_CLICKED, NULL);
   lv_obj_add_event_cb(dispOK,   dispOKCb,   LV_EVENT_CLICKED, NULL);
+
+  // --- Sub-screen 3: Compass Calibration (#112) ---
+  settingsCalCtr = lv_obj_create(settingsScr);
+  lv_obj_remove_style_all(settingsCalCtr);
+  lv_obj_set_size(settingsCalCtr, SCREEN_W, SCREEN_H);
+  lv_obj_set_style_bg_color(settingsCalCtr, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_opa(settingsCalCtr, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(settingsCalCtr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(settingsCalCtr, LV_OBJ_FLAG_HIDDEN);
+
+  fcHeaderCreate(settingsCalCtr, "COMPASS CAL");
+
+  // === Idle state widgets ===
+
+  // Status label
+  calStatusLabel = lv_label_create(settingsCalCtr);
+  lv_obj_set_pos(calStatusLabel, 20, 50);
+  lv_obj_set_style_text_font(calStatusLabel, FC_FONT_MD, 0);
+  lv_label_set_text(calStatusLabel, "Status: ---");
+
+  // Offsets label
+  calOffsetsLabel = lv_label_create(settingsCalCtr);
+  lv_obj_set_pos(calOffsetsLabel, 20, 80);
+  lv_obj_set_style_text_font(calOffsetsLabel, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(calOffsetsLabel, FC_COLOR_DIM, 0);
+  lv_label_set_text(calOffsetsLabel, "Offsets: ---");
+
+  // Start Calibration button
+  calStartBtn = lv_button_create(settingsCalCtr);
+  lv_obj_set_size(calStartBtn, 220, 40);
+  lv_obj_set_pos(calStartBtn, 130, 130);
+  lv_obj_set_style_radius(calStartBtn, 6, 0);
+  if (magAvailable) {
+    lv_obj_set_style_bg_color(calStartBtn, lv_color_hex(0x007D00), 0);  // Green
+  } else {
+    lv_obj_set_style_bg_color(calStartBtn, lv_color_hex(0x424242), 0);  // Gray disabled
+    lv_obj_add_state(calStartBtn, LV_STATE_DISABLED);
+  }
+  lv_obj_add_event_cb(calStartBtn, calStartBtnCb, LV_EVENT_CLICKED, NULL);
+  lv_obj_t* calBtnLbl = lv_label_create(calStartBtn);
+  lv_label_set_text(calBtnLbl, "Start Calibration");
+  lv_obj_set_style_text_font(calBtnLbl, FC_FONT_MD, 0);
+  lv_obj_set_style_text_color(calBtnLbl, FC_COLOR_TEXT, 0);
+  lv_obj_center(calBtnLbl);
+
+  // Idle action bar with Back only
+  calIdleActBar = fcActionBarCreate(settingsCalCtr, true, false);
+  lv_obj_t* calBack = lv_obj_get_child(calIdleActBar, 0);
+  lv_obj_add_event_cb(calBack, calBackCb, LV_EVENT_CLICKED, NULL);
+
+  // === Active calibration widgets (hidden initially) ===
+
+  // Progress arc
+  calArc = lv_arc_create(settingsCalCtr);
+  lv_obj_set_size(calArc, 140, 140);
+  lv_obj_set_pos(calArc, 170, 55);
+  lv_arc_set_range(calArc, 0, 100);
+  lv_arc_set_value(calArc, 0);
+  lv_arc_set_bg_angles(calArc, 0, 360);
+  lv_obj_remove_style(calArc, NULL, LV_PART_KNOB);  // Hide knob
+  lv_obj_clear_flag(calArc, LV_OBJ_FLAG_CLICKABLE);  // Not interactive
+  lv_obj_set_style_arc_color(calArc, lv_color_hex(0x2A2A2A), LV_PART_MAIN);      // Background arc
+  lv_obj_set_style_arc_color(calArc, lv_color_hex(0x007D00), LV_PART_INDICATOR);  // Green progress
+  lv_obj_set_style_arc_width(calArc, 12, LV_PART_MAIN);
+  lv_obj_set_style_arc_width(calArc, 12, LV_PART_INDICATOR);
+  lv_obj_add_flag(calArc, LV_OBJ_FLAG_HIDDEN);
+
+  // Countdown label (centered in arc)
+  calCountdownLabel = lv_label_create(settingsCalCtr);
+  lv_obj_set_pos(calCountdownLabel, 225, 105);  // Centered in arc area
+  lv_obj_set_style_text_font(calCountdownLabel, FC_FONT_HERO, 0);  // 32px
+  lv_obj_set_style_text_color(calCountdownLabel, FC_COLOR_TEXT, 0);
+  lv_label_set_text(calCountdownLabel, "15");
+  lv_obj_add_flag(calCountdownLabel, LV_OBJ_FLAG_HIDDEN);
+
+  // Instruction label
+  calInstructLabel = lv_label_create(settingsCalCtr);
+  lv_obj_set_pos(calInstructLabel, 80, 210);
+  lv_obj_set_style_text_font(calInstructLabel, FC_FONT_MD, 0);
+  lv_obj_set_style_text_color(calInstructLabel, FC_COLOR_WARN, 0);  // Orange
+  lv_label_set_text(calInstructLabel, "Rotate device slowly 360\xC2\xB0");
+  lv_obj_add_flag(calInstructLabel, LV_OBJ_FLAG_HIDDEN);
+
+  // Min/max label
+  calMinMaxLabel = lv_label_create(settingsCalCtr);
+  lv_obj_set_pos(calMinMaxLabel, 20, 245);
+  lv_obj_set_style_text_font(calMinMaxLabel, FC_FONT_XS, 0);  // 14px
+  lv_obj_set_style_text_color(calMinMaxLabel, FC_COLOR_DIM, 0);
+  lv_label_set_text(calMinMaxLabel, "");
+  lv_obj_add_flag(calMinMaxLabel, LV_OBJ_FLAG_HIDDEN);
 }
 
 // ============== LVGL Initialization (#105) ==============
