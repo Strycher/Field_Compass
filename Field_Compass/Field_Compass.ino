@@ -148,6 +148,7 @@ const char* NTP_SERVER = "pool.ntp.org";
 
 // Debug flags (set to 1 to enable)
 #define DEBUG_GPS   0  // GPS NMEA sentence logging
+#define GPS_STALE_MS  5000   // No bytes for 5s → clear receiving/valid (#115)
 #define DEBUG_BSEC  0  // BSEC2 readings logging
 #define DEBUG_SLEEP 0  // Display sleep/wake logging
 #define DEBUG_TFT   1  // TFT display state logging (P1 blank bug debug)
@@ -474,6 +475,12 @@ static unsigned long gpsFirstFixTime = 0;       // When first valid fix acquired
 static unsigned long gpsSignalLostTime = 0;    // When signal was lost (for reacquire timing)
 static bool gpsHadFirstReceive = false;         // Tracks if we ever received data
 static bool gpsHadFirstFix = false;             // Tracks if we ever had a fix
+static unsigned long gpsLastByteTime = 0;    // Timestamp of last serial byte (#115)
+static bool gpsDebugEnabled = false;          // Runtime GPS debug logging (#115)
+// Multi-constellation RMC cycle tracking (#115)
+static bool gprmcFixThisCycle = false;
+static bool gnrmcFixThisCycle = false;
+static unsigned long lastRmcCycleTime = 0;
 
 // IMU data
 struct {
