@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.46.0"
+#define FW_VERSION "0.46.1"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -632,8 +632,8 @@ static SDHealth sdHealth = {false, 0, 0, 0, 0, 0, SD_ERR_NONE, 0};
 static bool settingsLoadedFromSD = false;  // Deferred load flag (#118)
 
 #define SD_MAX_CONSECUTIVE_FAILURES 3
-#define SD_MAX_REINIT_ATTEMPTS 5
-#define SD_REINIT_COOLDOWN 60000  // Wait 60s between re-init attempts
+#define SD_MAX_REINIT_ATTEMPTS 10
+#define SD_REINIT_COOLDOWN 15000  // Wait 15s between re-init attempts (#116)
 
 // Forward declarations for SD health functions (defined after initSD)
 void recordSDSuccess();
@@ -1701,6 +1701,7 @@ lv_obj_t* fcToggleCreate(lv_obj_t* parent, int16_t y,
   lv_obj_set_size(btnA, 130, 30);
   lv_obj_set_pos(btnA, ax, 0);
   lv_obj_set_style_radius(btnA, 6, 0);
+  lv_obj_set_ext_click_area(btnA, 8);  // +8px invisible hit padding (#117)
   lv_obj_add_event_cb(btnA, fcToggleClickCb, LV_EVENT_CLICKED, NULL);
 
   lv_obj_t* lblA = lv_label_create(btnA);
@@ -1714,6 +1715,7 @@ lv_obj_t* fcToggleCreate(lv_obj_t* parent, int16_t y,
   lv_obj_set_size(btnB, 130, 30);
   lv_obj_set_pos(btnB, bx, 0);
   lv_obj_set_style_radius(btnB, 6, 0);
+  lv_obj_set_ext_click_area(btnB, 8);  // +8px invisible hit padding (#117)
   lv_obj_add_event_cb(btnB, fcToggleClickCb, LV_EVENT_CLICKED, NULL);
 
   lv_obj_t* lblB = lv_label_create(btnB);
@@ -1762,6 +1764,7 @@ lv_obj_t* fcDropdownCreate(lv_obj_t* parent, int16_t y,
   lv_obj_set_pos(valBtn, vx, 0);
   lv_obj_set_style_bg_color(valBtn, FC_COLOR_W_INACTIVE, 0);
   lv_obj_set_style_radius(valBtn, 6, 0);
+  lv_obj_set_ext_click_area(valBtn, 8);  // +8px invisible hit padding (#117/#119)
 
   // Value text (child [0] of valBtn)
   lv_obj_t* valLbl = lv_label_create(valBtn);
@@ -1796,6 +1799,9 @@ void fcDropdownSetValue(lv_obj_t* dropdown, int idx, const char* text) {
 
 // --- List Picker: modal scrollable selection overlay ---
 
+// Track active list picker overlay — prevents stacking (#119)
+static lv_obj_t* fcListPickerActiveOverlay = NULL;
+
 // Internal: list item click handler — select and close
 static void fcListPickerItemCb(lv_event_t* e) {
   lv_obj_t* itemBtn = (lv_obj_t*)lv_event_get_target(e);
@@ -1815,11 +1821,20 @@ static void fcListPickerItemCb(lv_event_t* e) {
   }
 
   // Close: async-delete overlay to avoid use-after-free during event callback (#112)
+  fcListPickerActiveOverlay = NULL;  // Clear tracker before delete (#119)
   lv_obj_delete_async(overlay);
 }
 
 lv_obj_t* fcListPickerOpen(const char* title, const char** items,
                             int count, int selectedIdx, lv_obj_t* caller) {
+  // Guard: destroy any existing overlay before creating a new one (#119)
+  // Prevents stacked overlays from accumulating → heap exhaustion → crash
+  if (fcListPickerActiveOverlay != NULL) {
+    logPrintln("[LVGL/MEM] Closing stale list picker overlay before opening new one");
+    lv_obj_delete(fcListPickerActiveOverlay);  // Immediate delete (not async)
+    fcListPickerActiveOverlay = NULL;
+  }
+
   // Safety check: ensure enough LVGL heap for overlay (~count*2 objects) (#119)
   lv_mem_monitor_t mon;
   lv_mem_monitor(&mon);
@@ -1892,6 +1907,7 @@ lv_obj_t* fcListPickerOpen(const char* title, const char** items,
     lv_obj_scroll_to_view(selBtn, LV_ANIM_OFF);
   }
 
+  fcListPickerActiveOverlay = overlay;  // Track for duplicate guard (#119)
   return overlay;
 }
 
@@ -4147,14 +4163,15 @@ void buildSettingsScreen() {
   lv_obj_clear_flag(menuList, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
                         | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
 
-  // 6 menu buttons — 38px tall with 8px ext_click_area for reliable
-  // finger targeting on 3.5" capacitive display (#117)
+  // 6 menu buttons — 34px visible + 10px ext_click_area for reliable
+  // finger targeting without overflowing 230px container (#117)
+  // Math: 6×34 + 5×4 = 224px fits in 230px; ext_click_area is invisible
   for (int i = 0; i < SETTINGS_MENU_COUNT; i++) {
     lv_obj_t* btn = lv_button_create(menuList);
-    lv_obj_set_size(btn, 440, 38);
+    lv_obj_set_size(btn, 440, 34);
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x424242), 0);
     lv_obj_set_style_radius(btn, 6, 0);
-    lv_obj_set_ext_click_area(btn, 8);  // +8px invisible hit padding all sides
+    lv_obj_set_ext_click_area(btn, 10);  // +10px invisible hit padding all sides
 
     lv_obj_t* lbl = lv_label_create(btn);
     lv_label_set_text(lbl, settingsMenuItems[i]);
@@ -5020,9 +5037,9 @@ bool isBatteryConnected() {
 void initSD() {
   logPrint("Initializing SD card... ");
 
-  // Use explicit SPI instance and 10MHz clock to avoid bus speed conflicts
-  // with TFT_eSPI running at 80MHz on the same FSPI bus (#116)
-  const int SD_SPI_FREQ = 10000000;  // 10MHz — reliable for shared bus
+  // Use explicit SPI instance and conservative 4MHz clock to avoid bus
+  // speed conflicts with TFT_eSPI running at 80MHz on same FSPI bus (#116)
+  const int SD_SPI_FREQ = 4000000;  // 4MHz — maximum reliability on shared bus
   const int SD_INIT_RETRIES = 3;
 
   bool mounted = false;
@@ -5161,12 +5178,16 @@ bool trySDReInit() {
 
   logPrintf("[SD] Attempting re-init #%d...\n", sdHealth.reInitCount);
 
-  // End current SD session
+  // Full SPI bus reset: end SD, end SPI, re-init SPI, then re-mount SD (#116)
+  // This clears any stale bus state from TFT_eSPI's 80MHz DMA transfers
   SD.end();
-  delay(200);  // Allow bus to settle after release (#116)
+  SPI.end();
+  delay(100);
+  SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
+  delay(100);  // Allow bus + card to settle
 
-  // Try to re-initialize with explicit frequency (matching initSD)
-  if (SD.begin(SD_CS, SPI, 10000000)) {
+  // Try to re-initialize with conservative 4MHz clock (#116)
+  if (SD.begin(SD_CS, SPI, 4000000)) {
     sdAvailable = true;
     sdHealth.available = true;
     sdHealth.consecutiveFailures = 0;
@@ -5190,15 +5211,20 @@ File sdOpenSafe(const char* path, const char* mode, bool silent) {
 
   sdHealth.lastAttempt = millis();
 
+  // Try open with one retry on failure (bus contention mitigation #116)
   File f;
-  if (strcmp(mode, "r") == 0 || strcmp(mode, FILE_READ) == 0) {
-    f = SD.open(path, FILE_READ);
-  } else if (strcmp(mode, "w") == 0 || strcmp(mode, FILE_WRITE) == 0) {
-    f = SD.open(path, FILE_WRITE);
-  } else if (strcmp(mode, "a") == 0) {
-    f = SD.open(path, FILE_APPEND);
-  } else {
-    f = SD.open(path);  // Default mode
+  for (int attempt = 0; attempt < 2; attempt++) {
+    if (strcmp(mode, "r") == 0 || strcmp(mode, FILE_READ) == 0) {
+      f = SD.open(path, FILE_READ);
+    } else if (strcmp(mode, "w") == 0 || strcmp(mode, FILE_WRITE) == 0) {
+      f = SD.open(path, FILE_WRITE);
+    } else if (strcmp(mode, "a") == 0) {
+      f = SD.open(path, FILE_APPEND);
+    } else {
+      f = SD.open(path);  // Default mode
+    }
+    if (f) break;  // Success
+    if (attempt == 0) delay(50);  // Brief settle before retry
   }
 
   if (!f) {
@@ -5891,8 +5917,12 @@ void loadSettings() {
 // data loss if write fails (FILE_WRITE truncates BEFORE writing).
 void saveSettings() {
   if (!sdHealth.available) {
-    logPrintln("[SETTINGS] SD unavailable, cannot save");
-    return;
+    logPrintln("[SETTINGS] SD unavailable, attempting re-init before save...");
+    trySDReInit();  // Try to recover SD before giving up (#118)
+    if (!sdHealth.available) {
+      logPrintln("[SETTINGS] SD still unavailable after re-init, cannot save");
+      return;
+    }
   }
   if (!SD.exists("/config")) SD.mkdir("/config");
 
