@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.45.3"
+#define FW_VERSION "0.46.0"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -629,6 +629,7 @@ struct SDHealth {
 };
 
 static SDHealth sdHealth = {false, 0, 0, 0, 0, 0, SD_ERR_NONE, 0};
+static bool settingsLoadedFromSD = false;  // Deferred load flag (#118)
 
 #define SD_MAX_CONSECUTIVE_FAILURES 3
 #define SD_MAX_REINIT_ATTEMPTS 5
@@ -1285,6 +1286,14 @@ void loop() {
     lastBattLog = millis();
   }
 
+  // Deferred settings load: if SD wasn't available at boot but recovered
+  // via re-init, load settings now so user prefs aren't lost (#118)
+  if (sdAvailable && !settingsLoadedFromSD) {
+    logPrintln("[SETTINGS] SD recovered — loading deferred settings");
+    loadSettings();
+    analogWrite(TFT_BL, tftBrightness);  // Apply restored brightness
+  }
+
   // FRAM flush to SD (hybrid: every 5 minutes)
   if (framAvailable && sdAvailable && (millis() - lastFramFlush > FRAM_FLUSH_INTERVAL)) {
     framFlushToSD();
@@ -1811,6 +1820,16 @@ static void fcListPickerItemCb(lv_event_t* e) {
 
 lv_obj_t* fcListPickerOpen(const char* title, const char** items,
                             int count, int selectedIdx, lv_obj_t* caller) {
+  // Safety check: ensure enough LVGL heap for overlay (~count*2 objects) (#119)
+  lv_mem_monitor_t mon;
+  lv_mem_monitor(&mon);
+  logPrintf("[LVGL/MEM] ListPicker open '%s' (%d items): free=%lu frag=%d%%\n",
+            title, count, (unsigned long)mon.free_size, mon.frag_pct);
+  if (mon.free_size < 4096) {
+    logPrintf("[LVGL/MEM] ABORT: insufficient heap for picker!\n");
+    return NULL;  // Refuse to create overlay — prevents OOM crash
+  }
+
   // Full-screen semi-transparent overlay
   lv_obj_t* overlay = lv_obj_create(lv_screen_active());
   lv_obj_remove_style_all(overlay);
@@ -3543,18 +3562,33 @@ void updateTelemetryData() {
 
 // ============== LVGL Settings Screen Functions (#112) ==============
 
+// LVGL heap diagnostic — log memory state on Settings interactions (#119)
+static void logLvglHeap(const char* context) {
+  lv_mem_monitor_t mon;
+  lv_mem_monitor(&mon);
+  logPrintf("[LVGL/MEM] %s: free=%lu used=%d%% frag=%d%%\n",
+            context, (unsigned long)mon.free_size,
+            mon.used_pct, mon.frag_pct);
+  // Warn if dangerously low
+  if (mon.free_size < 8192) {
+    logPrintf("[LVGL/MEM] WARNING: <8KB free! Alloc may fail.\n");
+  }
+}
+
 // Settings menu button click — navigate to sub-screen
 static void settingsMenuBtnCb(lv_event_t* e) {
   lv_obj_t* btn = (lv_obj_t*)lv_event_get_target(e);
   int subScreen = (int)(intptr_t)lv_obj_get_user_data(btn);
   settingsSubScreen = subScreen;
   logPrintf("[SETTINGS/LVGL] Menu → sub-screen %d\n", subScreen);
+  logLvglHeap("menu→sub");  // Track heap on every navigation (#119)
   forceDisplayUpdate = true;
 }
 
 // Settings Back button — return to previous screen
 static void settingsBackToScreenCb(lv_event_t* e) {
   (void)e;
+  logLvglHeap("settings→exit");  // Log heap BEFORE save+exit (#119)
   saveSettings();  // Auto-save on exit — safety net against crash/power-loss (#112)
   settingsSubScreen = 0;
   currentScreen = previousScreen;
@@ -3596,6 +3630,7 @@ static void cfgToggleCb(lv_event_t* e) {
 // Config Back — discard changes, reload from SD
 static void cfgBackCb(lv_event_t* e) {
   (void)e;
+  logLvglHeap("cfg←back");  // (#119)
   loadSettings();  // Discard changes, reload from SD
   // Reset toggle visuals to match reloaded values
   fcToggleSetValue(cfgTimeToggle, use12Hour ? 0 : 1);
@@ -3609,6 +3644,7 @@ static void cfgBackCb(lv_event_t* e) {
 // Config OK — apply and save
 static void cfgOKCb(lv_event_t* e) {
   (void)e;
+  logLvglHeap("cfg←ok");  // (#119)
   applyTimezone();
   saveSettings();
   settingsSubScreen = 0;
@@ -3663,6 +3699,7 @@ static void dispOledSelectedCb(lv_event_t* e) {
 
 static void dispBackCb(lv_event_t* e) {
   (void)e;
+  logLvglHeap("disp←back");  // (#119)
   loadSettings();  // Restore saved values
   analogWrite(TFT_BL, tftBrightness);  // Apply restored brightness
   // Sync slider + label to restored values
@@ -3683,6 +3720,7 @@ static void dispBackCb(lv_event_t* e) {
 
 static void dispOKCb(lv_event_t* e) {
   (void)e;
+  logLvglHeap("disp←ok");  // (#119)
   saveSettings();
   settingsSubScreen = 0;
   forceDisplayUpdate = true;
@@ -4109,12 +4147,14 @@ void buildSettingsScreen() {
   lv_obj_clear_flag(menuList, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
                         | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
 
-  // 6 menu buttons
+  // 6 menu buttons — 38px tall with 8px ext_click_area for reliable
+  // finger targeting on 3.5" capacitive display (#117)
   for (int i = 0; i < SETTINGS_MENU_COUNT; i++) {
     lv_obj_t* btn = lv_button_create(menuList);
-    lv_obj_set_size(btn, 440, 34);
+    lv_obj_set_size(btn, 440, 38);
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x424242), 0);
     lv_obj_set_style_radius(btn, 6, 0);
+    lv_obj_set_ext_click_area(btn, 8);  // +8px invisible hit padding all sides
 
     lv_obj_t* lbl = lv_label_create(btn);
     lv_label_set_text(lbl, settingsMenuItems[i]);
@@ -4980,8 +5020,25 @@ bool isBatteryConnected() {
 void initSD() {
   logPrint("Initializing SD card... ");
 
-  if (!SD.begin(SD_CS)) {
-    logPrintln("NOT FOUND");
+  // Use explicit SPI instance and 10MHz clock to avoid bus speed conflicts
+  // with TFT_eSPI running at 80MHz on the same FSPI bus (#116)
+  const int SD_SPI_FREQ = 10000000;  // 10MHz — reliable for shared bus
+  const int SD_INIT_RETRIES = 3;
+
+  bool mounted = false;
+  for (int attempt = 1; attempt <= SD_INIT_RETRIES; attempt++) {
+    if (SD.begin(SD_CS, SPI, SD_SPI_FREQ)) {
+      mounted = true;
+      break;
+    }
+    if (attempt < SD_INIT_RETRIES) {
+      logPrintf("retry %d/%d... ", attempt, SD_INIT_RETRIES);
+      delay(200);
+    }
+  }
+
+  if (!mounted) {
+    logPrintln("NOT FOUND (after retries)");
     sdHealth.available = false;
     return;
   }
@@ -5106,10 +5163,10 @@ bool trySDReInit() {
 
   // End current SD session
   SD.end();
-  delay(100);
+  delay(200);  // Allow bus to settle after release (#116)
 
-  // Try to re-initialize
-  if (SD.begin(SD_CS)) {
+  // Try to re-initialize with explicit frequency (matching initSD)
+  if (SD.begin(SD_CS, SPI, 10000000)) {
     sdAvailable = true;
     sdHealth.available = true;
     sdHealth.consecutiveFailures = 0;
@@ -5780,13 +5837,18 @@ int formatTimeStr(char* buf, int hour, int minute, int second, bool includeSecon
   }
 }
 
-// Load user settings from SD (#98)
+// Load user settings from SD (#98, #118)
 void loadSettings() {
-  if (!sdHealth.available) return;
-  File f = SD.open("/config/settings.txt", FILE_READ);
+  if (!sdHealth.available) {
+    logPrintln("[SETTINGS] SD unavailable, using defaults");
+    applyTimezone();
+    return;
+  }
+
+  File f = sdOpenSafe("/config/settings.txt", "r", true);  // silent — normal on first boot
   if (!f) {
     logPrintln("[SETTINGS] No settings file, using defaults");
-    applyTimezone();  // Apply default TZ
+    applyTimezone();
     return;
   }
 
@@ -5818,17 +5880,30 @@ void loadSettings() {
     else if (strcmp(key, "oledSleepMs") == 0)    oledSleepMs = strtoul(val, NULL, 10);
   }
   f.close();
+  settingsLoadedFromSD = true;
   applyTimezone();
-  logPrintf("[SETTINGS] Loaded: 12h=%d F=%d metric=%d tz=%s\n",
-            use12Hour, useFahrenheit, useMetricUnits, tzDisplayName);
+  logPrintf("[SETTINGS] Loaded: 12h=%d F=%d metric=%d tz=%s bright=%d\n",
+            use12Hour, useFahrenheit, useMetricUnits, tzDisplayName, tftBrightness);
 }
 
-// Save user settings to SD (#98)
+// Save user settings to SD — atomic write via temp file (#98, #118)
+// Writes to .tmp first, then removes original + renames, to prevent
+// data loss if write fails (FILE_WRITE truncates BEFORE writing).
 void saveSettings() {
-  if (!sdHealth.available) return;
+  if (!sdHealth.available) {
+    logPrintln("[SETTINGS] SD unavailable, cannot save");
+    return;
+  }
   if (!SD.exists("/config")) SD.mkdir("/config");
-  File f = SD.open("/config/settings.txt", FILE_WRITE);
-  if (!f) { logPrintln("[SETTINGS] Failed to save settings"); return; }
+
+  const char* tmpPath = "/config/settings.tmp";
+  const char* finalPath = "/config/settings.txt";
+
+  File f = sdOpenSafe(tmpPath, "w");
+  if (!f) {
+    logPrintln("[SETTINGS] Failed to open temp file for save");
+    return;
+  }
 
   f.printf("use12Hour=%d\n", use12Hour ? 1 : 0);
   f.printf("useFahrenheit=%d\n", useFahrenheit ? 1 : 0);
@@ -5839,7 +5914,12 @@ void saveSettings() {
   f.printf("tftBrightness=%d\n", tftBrightness);
   f.printf("tftSleepMs=%lu\n", tftSleepMs);
   f.printf("oledSleepMs=%lu\n", oledSleepMs);
+  f.flush();
   f.close();
+
+  // Atomic swap: remove old, rename temp to final
+  if (SD.exists(finalPath)) SD.remove(finalPath);
+  SD.rename(tmpPath, finalPath);
   logPrintln("[SETTINGS] Settings saved to SD");
 }
 
