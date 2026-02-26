@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.47.0"
+#define FW_VERSION "0.47.1"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -1045,6 +1045,15 @@ void setup() {
   snprintf(banner, sizeof(banner), "=================================\nField Compass Dual %s\n=================================\n\n", FW_VERSION);
   logPrintf("%s", banner);
 
+  // Deselect ALL SPI slave CS pins BEFORE any SPI bus activity (#116)
+  // Without this, SD_CS (GPIO 10) and FRAM_CS (GPIO 15) float during TFT init,
+  // allowing 80MHz TFT traffic to corrupt idle SPI slaves on the shared bus.
+  pinMode(SD_CS, OUTPUT);
+  digitalWrite(SD_CS, HIGH);
+  pinMode(FRAM_CS, OUTPUT);
+  digitalWrite(FRAM_CS, HIGH);
+  logPrintln("[SPI] CS pins pre-set HIGH: SD_CS=10, FRAM_CS=15");
+
   LOG_DEBUG("About to init TFT...");
   Serial.flush();
 
@@ -1090,7 +1099,10 @@ void setup() {
   initTouch();   // FT6336U capacitive touch (I2C 0x38)
 
   // Initialize hardware SPI for SD card (Adalogger uses different CS pin)
+  // CS pins already set HIGH at top of setup() — SPI.begin() re-confirms SD_CS
   SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
+  logPrintf("[SPI] Bus started: SCK=%d MISO=%d MOSI=%d SS=%d\n",
+            SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
   initSD();
   initFRAM();   // SPI FRAM 256KB (shared bus with TFT/SD)
   initRTC();    // Adalogger RTC - sets system time if RTC has valid time
@@ -5071,21 +5083,26 @@ bool isBatteryConnected() {
 void initSD() {
   logPrint("Initializing SD card... ");
 
+  // Ensure SD_CS is HIGH before init (defense-in-depth — also set at top of setup)
+  digitalWrite(SD_CS, HIGH);
+
   // Use explicit SPI instance and conservative 4MHz clock to avoid bus
   // speed conflicts with TFT_eSPI running at 80MHz on same FSPI bus (#116)
   const int SD_SPI_FREQ = 4000000;  // 4MHz — maximum reliability on shared bus
-  const int SD_INIT_RETRIES = 3;
+  const int SD_INIT_RETRIES = 5;    // Increased from 3 → 5 (#116)
 
   bool mounted = false;
   for (int attempt = 1; attempt <= SD_INIT_RETRIES; attempt++) {
+    if (attempt > 1) {
+      // Progressive backoff: end previous attempt cleanly, wait longer each retry
+      SD.end();
+      delay(100 * attempt);  // 200ms, 300ms, 400ms, 500ms
+    }
     if (SD.begin(SD_CS, SPI, SD_SPI_FREQ)) {
       mounted = true;
       break;
     }
-    if (attempt < SD_INIT_RETRIES) {
-      logPrintf("retry %d/%d... ", attempt, SD_INIT_RETRIES);
-      delay(200);
-    }
+    logPrintf("retry %d/%d... ", attempt, SD_INIT_RETRIES);
   }
 
   if (!mounted) {
