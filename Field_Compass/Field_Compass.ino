@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.47.1"
+#define FW_VERSION "0.47.2"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -629,6 +629,7 @@ struct SDHealth {
 };
 
 static SDHealth sdHealth = {false, 0, 0, 0, 0, 0, SD_ERR_NONE, 0};
+enum SDIndicatorState { SD_IND_OK, SD_IND_ERROR, SD_IND_MISSING };  // (#120)
 static bool settingsLoadedFromSD = false;  // Deferred load flag (#118)
 
 #define SD_MAX_CONSECUTIVE_FAILURES 3
@@ -1546,12 +1547,37 @@ lv_obj_t* fcHeaderCreate(lv_obj_t* parent, const char* title) {
   lv_obj_set_style_text_font(gearLbl, FC_FONT_SM, 0);
   lv_obj_center(gearLbl);
 
+  // Child [2]: SD status indicator — hidden when healthy (#120)
+  lv_obj_t* sdLbl = lv_label_create(cont);
+  lv_label_set_text(sdLbl, LV_SYMBOL_SD_CARD);
+  lv_obj_set_style_text_font(sdLbl, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(sdLbl, lv_color_hex(0x808080), 0);  // default gray
+  lv_obj_align(sdLbl, LV_ALIGN_RIGHT_MID, -38, 0);
+  // Starts visible — updateSDIndicators() sets color per state (#120)
+
   return cont;
 }
 
 void fcHeaderSetTitle(lv_obj_t* header, const char* title) {
   lv_obj_t* titleLbl = lv_obj_get_child(header, 0);
   if (titleLbl) lv_label_set_text(titleLbl, title);
+}
+
+void fcHeaderSetSDStatus(lv_obj_t* header, SDIndicatorState state) {
+  if (!header) return;
+  lv_obj_t* sdLbl = lv_obj_get_child(header, 2);  // child[2] = SD indicator
+  if (!sdLbl) return;
+  lv_obj_clear_flag(sdLbl, LV_OBJ_FLAG_HIDDEN);
+  if (state == SD_IND_OK) {
+    lv_obj_set_style_text_color(sdLbl, lv_color_hex(0x2E7D32), 0); // dim green
+    lv_label_set_text(sdLbl, LV_SYMBOL_SD_CARD);
+  } else if (state == SD_IND_ERROR) {
+    lv_obj_set_style_text_color(sdLbl, FC_COLOR_ERROR, 0);         // red
+    lv_label_set_text(sdLbl, LV_SYMBOL_SD_CARD " " LV_SYMBOL_CLOSE);
+  } else {  // SD_IND_MISSING
+    lv_obj_set_style_text_color(sdLbl, lv_color_hex(0x808080), 0); // gray
+    lv_label_set_text(sdLbl, LV_SYMBOL_SD_CARD);
+  }
 }
 
 // --- Nav Bar: 25px dark gray bar with numbered screen dots ---
@@ -8014,6 +8040,22 @@ void zonePushDirty() {
   zonePrevCount = zoneCurCount;
 }
 
+// Update SD card status indicator on all screen headers (#120)
+void updateSDIndicators() {
+  SDIndicatorState state;
+  if (sdAvailable && sdHealth.consecutiveFailures == 0) {
+    state = SD_IND_OK;
+  } else if (sdAvailable) {
+    state = SD_IND_ERROR;  // mounted but experiencing errors
+  } else {
+    state = SD_IND_MISSING; // never mounted or fully failed
+  }
+  fcHeaderSetSDStatus(compassHeader, state);
+  fcHeaderSetSDStatus(gcNavHeader, state);
+  fcHeaderSetSDStatus(envHeader, state);
+  fcHeaderSetSDStatus(telHeader, state);
+}
+
 void updateDisplay() {
   static unsigned long lastUpdate = 0;
 
@@ -8067,6 +8109,9 @@ void updateDisplay() {
       else
         lv_obj_add_flag(settingsScr, LV_OBJ_FLAG_HIDDEN);
     }
+
+    // Update SD card status indicator on all screen headers (#120)
+    updateSDIndicators();
 
     // LVGL-managed screens: update data, skip legacy sprite draw
     if ((currentScreen == SCREEN_COMPASS && compassScr) ||
