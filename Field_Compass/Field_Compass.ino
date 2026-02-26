@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.45.2"
+#define FW_VERSION "0.45.3"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -957,6 +957,11 @@ void lvglLogCb(lv_log_level_t level, const char* buf) {
 
 // Called by LVGL's indev timer (~33ms). Polls FT6336U over I2C.
 // I2C reads are non-destructive — both legacy and LVGL read the same hardware.
+// Touch diagnostics: track press/release transitions for debugging (#112)
+static uint32_t touchPressCount = 0;
+static uint32_t touchReleaseCount = 0;
+static bool     touchWasPressed = false;
+
 void lvglTouchReadCb(lv_indev_t* indev, lv_indev_data_t* data) {
   (void)indev;
 
@@ -971,8 +976,18 @@ void lvglTouchReadCb(lv_indev_t* indev, lv_indev_data_t* data) {
     data->point.x = (int32_t)(480 - p.y);  // horizontal 0-479
     data->point.y = (int32_t)(p.x);        // vertical   0-319
     data->state   = LV_INDEV_STATE_PRESSED;
+    if (!touchWasPressed) {
+      touchPressCount++;
+      touchWasPressed = true;
+      logPrintf("[TOUCH] PRESS @(%ld,%ld)\n", data->point.x, data->point.y);
+    }
   } else {
     data->state = LV_INDEV_STATE_RELEASED;
+    if (touchWasPressed) {
+      touchReleaseCount++;
+      touchWasPressed = false;
+      logPrintf("[TOUCH] RELEASE (press#%lu)\n", touchPressCount);
+    }
   }
 }
 
@@ -1126,7 +1141,11 @@ void setup() {
 
 // ============== Main Loop ==============
 
+static unsigned long loopCount = 0;  // Loop frequency counter (#112)
+
 void loop() {
+  loopCount++;
+
   // Handle button navigation
   handleButtons();
 
@@ -1306,6 +1325,13 @@ void loop() {
              gpsHadFirstFix ? gpsFirstFixTime / 1000 : 0,
              battV, battP, battR);
     logPrintf("%s", buf);
+
+    // Loop speed + touch diagnostics (#112)
+    static unsigned long loopCountLast = 0;
+    unsigned long loopHz = (loopCount - loopCountLast);  // loops in last 10s
+    loopCountLast = loopCount;
+    logPrintf("[LOOP] %luHz touch:%lu/%lu (press/release)\n",
+             loopHz / 10, touchPressCount, touchReleaseCount);
 
     // TFT debug logging (P1 blank bug investigation)
     #if DEBUG_TFT
@@ -1581,12 +1607,14 @@ lv_obj_t* fcActionBarCreate(lv_obj_t* parent, bool showBack, bool showOK) {
   lv_obj_clear_flag(cont, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
                         | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
 
-  // Child [0]: Back button
+  // Child [0]: Back button — 40px tall with 15px extended hit area for reliable
+  // finger targeting on 3.5" capacitive display (touches land ~5-14px above visual)
   lv_obj_t* backBtn = lv_button_create(cont);
-  lv_obj_set_size(backBtn, 110, 34);
-  lv_obj_set_pos(backBtn, 10, 8);
+  lv_obj_set_size(backBtn, 120, 40);
+  lv_obj_set_pos(backBtn, 5, 5);
   lv_obj_set_style_bg_color(backBtn, FC_COLOR_W_BTN, 0);
   lv_obj_set_style_radius(backBtn, 6, 0);
+  lv_obj_set_ext_click_area(backBtn, 15);  // +15px invisible hit padding all sides
   if (!showBack) lv_obj_add_flag(backBtn, LV_OBJ_FLAG_HIDDEN);
 
   lv_obj_t* backLbl = lv_label_create(backBtn);
@@ -1595,12 +1623,13 @@ lv_obj_t* fcActionBarCreate(lv_obj_t* parent, bool showBack, bool showOK) {
   lv_obj_set_style_text_font(backLbl, FC_FONT_SM, 0);
   lv_obj_center(backLbl);
 
-  // Child [1]: OK button
+  // Child [1]: OK button — same enlarged sizing + extended hit area
   lv_obj_t* okBtn = lv_button_create(cont);
-  lv_obj_set_size(okBtn, 110, 34);
-  lv_obj_set_pos(okBtn, 360, 8);
+  lv_obj_set_size(okBtn, 120, 40);
+  lv_obj_set_pos(okBtn, 355, 5);
   lv_obj_set_style_bg_color(okBtn, FC_COLOR_W_OK, 0);
   lv_obj_set_style_radius(okBtn, 6, 0);
+  lv_obj_set_ext_click_area(okBtn, 15);  // +15px invisible hit padding all sides
   if (!showOK) lv_obj_add_flag(okBtn, LV_OBJ_FLAG_HIDDEN);
 
   lv_obj_t* okLbl = lv_label_create(okBtn);
@@ -4477,7 +4506,11 @@ void initLVGL() {
     lv_indev_set_type(lvglTouchIndev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(lvglTouchIndev, lvglTouchReadCb);
     lv_indev_set_display(lvglTouchIndev, lvglDisplay);
-    logPrintln("[LVGL] Touch indev created (pointer)");
+    // Increase scroll threshold: default 10px is too sensitive for capacitive touch
+    // jitter — finger movement during tap is typically 5-15px. 50px ensures taps
+    // aren't misinterpreted as scroll gestures on non-scrollable containers. (#112)
+    lv_indev_set_scroll_limit(lvglTouchIndev, 50);
+    logPrintln("[LVGL] Touch indev created (pointer, scroll_limit=50)");
   }
 
   // Create encoder input device (buttons A/B/C → encoder) (#106)
