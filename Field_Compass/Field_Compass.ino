@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.46.1"
+#define FW_VERSION "0.46.2"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -962,6 +962,8 @@ void lvglLogCb(lv_log_level_t level, const char* buf) {
 static uint32_t touchPressCount = 0;
 static uint32_t touchReleaseCount = 0;
 static bool     touchWasPressed = false;
+static int32_t  lastTouchX = -1;          // Last LVGL-space touch X (for diagnostics)
+static int32_t  lastTouchY = -1;          // Last LVGL-space touch Y (for diagnostics)
 
 void lvglTouchReadCb(lv_indev_t* indev, lv_indev_data_t* data) {
   (void)indev;
@@ -977,6 +979,8 @@ void lvglTouchReadCb(lv_indev_t* indev, lv_indev_data_t* data) {
     data->point.x = (int32_t)(480 - p.y);  // horizontal 0-479
     data->point.y = (int32_t)(p.x);        // vertical   0-319
     data->state   = LV_INDEV_STATE_PRESSED;
+    lastTouchX = data->point.x;
+    lastTouchY = data->point.y;
     if (!touchWasPressed) {
       touchPressCount++;
       touchWasPressed = true;
@@ -1695,13 +1699,12 @@ lv_obj_t* fcToggleCreate(lv_obj_t* parent, int16_t y,
   lv_obj_set_style_text_font(lbl, FC_FONT_SM, 0);
   lv_obj_set_pos(lbl, 10, 7);
 
-  // Child [1]: option A button
+  // Child [1]: option A button (130px wide — no ext_click_area needed)
   int ax = 140;
   lv_obj_t* btnA = lv_button_create(cont);
   lv_obj_set_size(btnA, 130, 30);
   lv_obj_set_pos(btnA, ax, 0);
   lv_obj_set_style_radius(btnA, 6, 0);
-  lv_obj_set_ext_click_area(btnA, 8);  // +8px invisible hit padding (#117)
   lv_obj_add_event_cb(btnA, fcToggleClickCb, LV_EVENT_CLICKED, NULL);
 
   lv_obj_t* lblA = lv_label_create(btnA);
@@ -1709,13 +1712,12 @@ lv_obj_t* fcToggleCreate(lv_obj_t* parent, int16_t y,
   lv_obj_set_style_text_font(lblA, FC_FONT_SM, 0);
   lv_obj_center(lblA);
 
-  // Child [2]: option B button
+  // Child [2]: option B button (130px wide — no ext_click_area needed)
   int bx = ax + 130 + 10;
   lv_obj_t* btnB = lv_button_create(cont);
   lv_obj_set_size(btnB, 130, 30);
   lv_obj_set_pos(btnB, bx, 0);
   lv_obj_set_style_radius(btnB, 6, 0);
-  lv_obj_set_ext_click_area(btnB, 8);  // +8px invisible hit padding (#117)
   lv_obj_add_event_cb(btnB, fcToggleClickCb, LV_EVENT_CLICKED, NULL);
 
   lv_obj_t* lblB = lv_label_create(btnB);
@@ -1746,8 +1748,11 @@ lv_obj_t* fcDropdownCreate(lv_obj_t* parent, int16_t y,
   lv_obj_remove_style_all(cont);
   lv_obj_set_size(cont, SCREEN_W - 20, 30);
   lv_obj_set_pos(cont, 10, y);
-  lv_obj_clear_flag(cont, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
+  // Container is CLICKABLE — entire row is the tap target (#117/#119)
+  // Fixes dead zone where "Time Zone" label text was not clickable
+  lv_obj_clear_flag(cont, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE
                         | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
+  lv_obj_set_ext_click_area(cont, 8);  // +8px hit padding on entire row
 
   // Child [0]: label
   lv_obj_t* lbl = lv_label_create(cont);
@@ -1756,7 +1761,7 @@ lv_obj_t* fcDropdownCreate(lv_obj_t* parent, int16_t y,
   lv_obj_set_style_text_font(lbl, FC_FONT_SM, 0);
   lv_obj_set_pos(lbl, 10, 7);
 
-  // Child [1]: value button (clickable trigger)
+  // Child [1]: value display (visual only, not the click target)
   int vx = 140;
   int vw = SCREEN_W - 20 - vx;
   lv_obj_t* valBtn = lv_button_create(cont);
@@ -1764,7 +1769,7 @@ lv_obj_t* fcDropdownCreate(lv_obj_t* parent, int16_t y,
   lv_obj_set_pos(valBtn, vx, 0);
   lv_obj_set_style_bg_color(valBtn, FC_COLOR_W_INACTIVE, 0);
   lv_obj_set_style_radius(valBtn, 6, 0);
-  lv_obj_set_ext_click_area(valBtn, 8);  // +8px invisible hit padding (#117/#119)
+  lv_obj_clear_flag(valBtn, LV_OBJ_FLAG_CLICKABLE);  // Clicks pass through to container
 
   // Value text (child [0] of valBtn)
   lv_obj_t* valLbl = lv_label_create(valBtn);
@@ -2115,7 +2120,7 @@ static lv_obj_t* calInstructLabel  = NULL;
 static lv_obj_t* calMinMaxLabel    = NULL;
 
 // Diagnostics sub-screen widget pointers (#112)
-static lv_obj_t* diagValueLabels[10];  // 10 value labels updated each frame
+static lv_obj_t* diagValueLabels[11];  // 11 value labels updated each frame
 
 // About sub-screen widget pointers (#112)
 static lv_obj_t* aboutValueLabels[6];  // 6 value labels (some live-updating)
@@ -4065,6 +4070,17 @@ void updateSettingsData() {
           lv_obj_set_style_text_color(diagValueLabels[9], FC_COLOR_DIM, 0);
         }
         lv_label_set_text(diagValueLabels[9], dBuf);
+
+        // [10] Touch — last press coordinates + count (for debugging #117)
+        if (lastTouchX >= 0) {
+          snprintf(dBuf, sizeof(dBuf), "(%ld,%ld) #%lu",
+            lastTouchX, lastTouchY, (unsigned long)touchPressCount);
+        } else {
+          snprintf(dBuf, sizeof(dBuf), "No press yet");
+        }
+        lv_label_set_text(diagValueLabels[10], dBuf);
+        lv_obj_set_style_text_color(diagValueLabels[10],
+          lastTouchX >= 0 ? FC_COLOR_VALUE : FC_COLOR_DIM, 0);
       }
       break;
     case 5:
@@ -4156,22 +4172,24 @@ void buildSettingsScreen() {
   // Flex container for menu buttons
   lv_obj_t* menuList = lv_obj_create(settingsMenuCtr);
   lv_obj_remove_style_all(menuList);
-  lv_obj_set_size(menuList, 460, 230);
+  lv_obj_set_size(menuList, 460, 235);
   lv_obj_set_pos(menuList, 10, 35);
-  lv_obj_set_style_pad_row(menuList, 4, 0);
+  lv_obj_set_style_pad_row(menuList, 1, 0);
   lv_obj_set_flex_flow(menuList, LV_FLEX_FLOW_COLUMN);
   lv_obj_clear_flag(menuList, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
                         | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
 
-  // 6 menu buttons — 34px visible + 10px ext_click_area for reliable
-  // finger targeting without overflowing 230px container (#117)
-  // Math: 6×34 + 5×4 = 224px fits in 230px; ext_click_area is invisible
+  // 6 menu buttons — 38px tall with NO ext_click_area (#117)
+  // Root cause: ext_click_area on adjacent buttons creates OVERLAPPING hit
+  // zones (16px overlap with 4px gap + 10px ext), causing LVGL to pick the
+  // lower button. Fix: tall buttons, minimal gap, zero ext_click_area.
+  // Math: 6×38 + 5×1 = 233px fits in 235px container
   for (int i = 0; i < SETTINGS_MENU_COUNT; i++) {
     lv_obj_t* btn = lv_button_create(menuList);
-    lv_obj_set_size(btn, 440, 34);
+    lv_obj_set_size(btn, 440, 38);
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x424242), 0);
     lv_obj_set_style_radius(btn, 6, 0);
-    lv_obj_set_ext_click_area(btn, 10);  // +10px invisible hit padding all sides
+    // NO ext_click_area — prevents overlap with adjacent buttons
 
     lv_obj_t* lbl = lv_label_create(btn);
     lv_label_set_text(lbl, settingsMenuItems[i]);
@@ -4201,10 +4219,9 @@ void buildSettingsScreen() {
 
   fcHeaderCreate(settingsConfigCtr, "CONFIGURATION");
 
-  // Timezone dropdown
+  // Timezone dropdown — click on ENTIRE row opens picker (#117/#119)
   cfgTzDropdown = fcDropdownCreate(settingsConfigCtr, 45, "Time Zone", tzDisplayName);
-  lv_obj_t* tzBtn = lv_obj_get_child(cfgTzDropdown, 1);  // value button
-  lv_obj_add_event_cb(tzBtn, cfgTzDropdownCb, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_event_cb(cfgTzDropdown, cfgTzDropdownCb, LV_EVENT_CLICKED, NULL);
   lv_obj_add_event_cb(cfgTzDropdown, cfgTzSelectedCb, LV_EVENT_VALUE_CHANGED, NULL);
 
   // Time format toggle: 0=12Hour(left), 1=24Hour(right)
@@ -4272,18 +4289,16 @@ void buildSettingsScreen() {
   lv_obj_set_style_text_font(dispBrightnessLabel, FC_FONT_SM, 0);
   lv_label_set_text_fmt(dispBrightnessLabel, "%d", tftBrightness);
 
-  // TFT Sleep timeout dropdown
+  // TFT Sleep timeout dropdown — click on entire row (#117)
   int tftIdx = findTimeoutIndex(tftTimeoutPresets, TFT_TIMEOUT_COUNT, tftSleepMs);
   dispTftDropdown = fcDropdownCreate(settingsDisplayCtr, 105, "TFT Sleep", tftTimeoutLabels[tftIdx]);
-  lv_obj_t* tftBtn = lv_obj_get_child(dispTftDropdown, 1);  // value button
-  lv_obj_add_event_cb(tftBtn, dispTftDropdownCb, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_event_cb(dispTftDropdown, dispTftDropdownCb, LV_EVENT_CLICKED, NULL);
   lv_obj_add_event_cb(dispTftDropdown, dispTftSelectedCb, LV_EVENT_VALUE_CHANGED, NULL);
 
-  // OLED Sleep timeout dropdown
+  // OLED Sleep timeout dropdown — click on entire row (#117)
   int oledIdx = findTimeoutIndex(oledTimeoutPresets, OLED_TIMEOUT_COUNT, oledSleepMs);
   dispOledDropdown = fcDropdownCreate(settingsDisplayCtr, 155, "OLED Sleep", oledTimeoutLabels[oledIdx]);
-  lv_obj_t* oledBtn = lv_obj_get_child(dispOledDropdown, 1);  // value button
-  lv_obj_add_event_cb(oledBtn, dispOledDropdownCb, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_event_cb(dispOledDropdown, dispOledDropdownCb, LV_EVENT_CLICKED, NULL);
   lv_obj_add_event_cb(dispOledDropdown, dispOledSelectedCb, LV_EVENT_VALUE_CHANGED, NULL);
 
   // Action bar with Back + OK
@@ -4396,15 +4411,15 @@ void buildSettingsScreen() {
 
   fcHeaderCreate(settingsDiagsCtr, "DIAGNOSTICS");
 
-  // 10 label-value rows
-  static const char* diagLabels[10] = {
+  // 11 label-value rows
+  static const char* diagLabels[11] = {
     "BSEC:", "Weather:", "Heap:", "PSRAM:", "Sensors:",
-    "Temps:", "GPS:", "MagCal:", "Storage:", "Web:"
+    "Temps:", "GPS:", "MagCal:", "Storage:", "Web:", "Touch:"
   };
 
   int diagY = 38;
-  int diagLineH = 22;
-  for (int i = 0; i < 10; i++) {
+  int diagLineH = 21;
+  for (int i = 0; i < 11; i++) {
     // Cyan label
     lv_obj_t* lbl = lv_label_create(settingsDiagsCtr);
     lv_label_set_text(lbl, diagLabels[i]);
