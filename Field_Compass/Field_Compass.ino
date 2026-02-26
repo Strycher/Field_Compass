@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.46.3"
+#define FW_VERSION "0.47.0"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -981,17 +981,22 @@ void lvglTouchReadCb(lv_indev_t* indev, lv_indev_data_t* data) {
     data->state   = LV_INDEV_STATE_PRESSED;
     lastTouchX = data->point.x;
     lastTouchY = data->point.y;
+    lastActivityTime = millis();  // DIAG: keep TFT awake on LVGL screens too
     if (!touchWasPressed) {
       touchPressCount++;
       touchWasPressed = true;
-      logPrintf("[TOUCH] PRESS @(%ld,%ld)\n", data->point.x, data->point.y);
+      logPrintf("[TOUCH] PRESS @(%ld,%ld) scr=%d sub=%d\n",
+                data->point.x, data->point.y, currentScreen, settingsSubScreen);
     }
   } else {
     data->state = LV_INDEV_STATE_RELEASED;
     if (touchWasPressed) {
       touchReleaseCount++;
       touchWasPressed = false;
-      logPrintf("[TOUCH] RELEASE (press#%lu)\n", touchPressCount);
+      // DIAG: log what LVGL thinks is pressed at touch coordinates
+      lv_obj_t* hit = lv_indev_search_obj(lv_screen_active(), &data->point);
+      logPrintf("[TOUCH] RELEASE #%lu → hit_obj=%p (scr=%d sub=%d)\n",
+                touchPressCount, (void*)hit, currentScreen, settingsSubScreen);
     }
   }
 }
@@ -1824,25 +1829,26 @@ static void fcListPickerItemCb(lv_event_t* e) {
 lv_obj_t* fcListPickerOpen(const char* title, const char** items,
                             int count, int selectedIdx, lv_obj_t* caller) {
   // Guard: destroy any existing overlay before creating a new one (#119)
-  // Prevents stacked overlays from accumulating → heap exhaustion → crash
   if (fcListPickerActiveOverlay != NULL) {
     logPrintln("[LVGL/MEM] Closing stale list picker overlay before opening new one");
-    lv_obj_delete(fcListPickerActiveOverlay);  // Immediate delete (not async)
+    lv_obj_delete(fcListPickerActiveOverlay);
     fcListPickerActiveOverlay = NULL;
   }
 
-  // Safety check: ensure enough LVGL heap for overlay (~count*2 objects) (#119)
+  // Safety check: ensure enough LVGL heap for overlay (~count*2+4 objects) (#119)
   lv_mem_monitor_t mon;
   lv_mem_monitor(&mon);
   logPrintf("[LVGL/MEM] ListPicker open '%s' (%d items): free=%lu frag=%d%%\n",
             title, count, (unsigned long)mon.free_size, mon.frag_pct);
-  if (mon.free_size < 4096) {
-    logPrintf("[LVGL/MEM] ABORT: insufficient heap for picker!\n");
-    return NULL;  // Refuse to create overlay — prevents OOM crash
+  if (mon.free_size < 8192) {  // 8KB minimum — raised from 4KB after OOM crash (#119)
+    logPrintf("[LVGL/MEM] ABORT: insufficient heap (%lu < 8192) for picker!\n",
+              (unsigned long)mon.free_size);
+    return NULL;
   }
 
   // Full-screen semi-transparent overlay
   lv_obj_t* overlay = lv_obj_create(lv_screen_active());
+  if (!overlay) { logPrintln("[LVGL/MEM] ListPicker overlay alloc failed"); return NULL; }
   lv_obj_remove_style_all(overlay);
   lv_obj_set_size(overlay, SCREEN_W, SCREEN_H);
   lv_obj_set_pos(overlay, 0, 0);
@@ -1853,6 +1859,7 @@ lv_obj_t* fcListPickerOpen(const char* title, const char** items,
 
   // Modal container: 420x220, centered
   lv_obj_t* box = lv_obj_create(overlay);
+  if (!box) { logPrintln("[LVGL/MEM] ListPicker box alloc failed"); lv_obj_delete(overlay); return NULL; }
   lv_obj_remove_style_all(box);
   lv_obj_set_size(box, 420, 220);
   lv_obj_center(box);
@@ -1865,6 +1872,7 @@ lv_obj_t* fcListPickerOpen(const char* title, const char** items,
 
   // Title label
   lv_obj_t* titleLbl = lv_label_create(box);
+  if (!titleLbl) { lv_obj_delete(overlay); return NULL; }
   lv_label_set_text(titleLbl, title);
   lv_obj_set_style_text_color(titleLbl, FC_COLOR_HEADER, 0);
   lv_obj_set_style_text_font(titleLbl, FC_FONT_SM, 0);
@@ -1872,6 +1880,7 @@ lv_obj_t* fcListPickerOpen(const char* title, const char** items,
 
   // Scrollable list area
   lv_obj_t* listArea = lv_obj_create(box);
+  if (!listArea) { lv_obj_delete(overlay); return NULL; }
   lv_obj_remove_style_all(listArea);
   lv_obj_set_size(listArea, 410, 180);
   lv_obj_set_pos(listArea, 5, 32);
@@ -1882,6 +1891,7 @@ lv_obj_t* fcListPickerOpen(const char* title, const char** items,
   // List items
   for (int i = 0; i < count; i++) {
     lv_obj_t* itemBtn = lv_button_create(listArea);
+    if (!itemBtn) break;  // OOM mid-loop — stop gracefully
     lv_obj_set_size(itemBtn, 400, 32);
     lv_obj_set_style_bg_color(itemBtn,
       (i == selectedIdx) ? FC_COLOR_W_OK : FC_COLOR_W_OVERLAY, 0);
@@ -1891,6 +1901,7 @@ lv_obj_t* fcListPickerOpen(const char* title, const char** items,
     lv_obj_add_event_cb(itemBtn, fcListPickerItemCb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t* itemLbl = lv_label_create(itemBtn);
+    if (!itemLbl) break;
     lv_label_set_text(itemLbl, items[i]);
     lv_obj_set_style_text_color(itemLbl, FC_COLOR_TEXT, 0);
     lv_obj_set_style_text_font(itemLbl, FC_FONT_SM, 0);
@@ -1900,10 +1911,10 @@ lv_obj_t* fcListPickerOpen(const char* title, const char** items,
   // Scroll to selected item
   if (selectedIdx > 0 && selectedIdx < count) {
     lv_obj_t* selBtn = lv_obj_get_child(listArea, selectedIdx);
-    lv_obj_scroll_to_view(selBtn, LV_ANIM_OFF);
+    if (selBtn) lv_obj_scroll_to_view(selBtn, LV_ANIM_OFF);
   }
 
-  fcListPickerActiveOverlay = overlay;  // Track for duplicate guard (#119)
+  fcListPickerActiveOverlay = overlay;
   return overlay;
 }
 
@@ -3621,16 +3632,16 @@ static void cfgTzSelectedCb(lv_event_t* e) {
   logPrintf("[CONFIG/LVGL] TZ selected: %s\n", tzDisplayName);
 }
 
-// Timezone dropdown click — open list picker
+// Timezone dropdown click — opens list picker for TZ selection (#117/#119)
 static void cfgTzDropdownCb(lv_event_t* e) {
   (void)e;
   logPrintf("[CONFIG/LVGL] TZ dropdown CLICKED — opening picker\n");
-  logLvglHeap("tz-click");  // Track heap before picker creation
   static const char* tzNames[TZ_PRESET_COUNT];
   for (int i = 0; i < TZ_PRESET_COUNT; i++) {
     tzNames[i] = tzPresets[i].name;
   }
-  lv_obj_t* picker = fcListPickerOpen("Time Zone", tzNames, TZ_PRESET_COUNT, tzSelectedIndex, cfgTzDropdown);
+  lv_obj_t* picker = fcListPickerOpen("Time Zone", tzNames, TZ_PRESET_COUNT,
+                                       tzSelectedIndex, cfgTzDropdown);
   if (!picker) {
     logPrintf("[CONFIG/LVGL] TZ picker FAILED to open (OOM?)\n");
   }
@@ -3815,21 +3826,38 @@ static void resetBtnCb(lv_event_t* e) {
 void updateSettingsData() {
   if (!settingsScr) return;
 
-  // Hide all containers first
-  if (settingsMenuCtr)   lv_obj_add_flag(settingsMenuCtr,   LV_OBJ_FLAG_HIDDEN);
-  if (settingsConfigCtr)  lv_obj_add_flag(settingsConfigCtr,  LV_OBJ_FLAG_HIDDEN);
-  if (settingsDisplayCtr) lv_obj_add_flag(settingsDisplayCtr, LV_OBJ_FLAG_HIDDEN);
-  if (settingsCalCtr)     lv_obj_add_flag(settingsCalCtr,     LV_OBJ_FLAG_HIDDEN);
-  if (settingsDiagsCtr)   lv_obj_add_flag(settingsDiagsCtr,   LV_OBJ_FLAG_HIDDEN);
-  if (settingsAboutCtr)   lv_obj_add_flag(settingsAboutCtr,   LV_OBJ_FLAG_HIDDEN);
-  if (settingsResetCtr)   lv_obj_add_flag(settingsResetCtr,   LV_OBJ_FLAG_HIDDEN);
+  // Only toggle container visibility when the sub-screen CHANGES (#117)
+  // Hiding+re-showing the active container every 500ms cancels LVGL's
+  // press tracking on child buttons, preventing CLICKED events.
+  static int prevSubScreen = -1;  // force first-run update
+  if (settingsSubScreen != prevSubScreen) {
+    // Hide all containers
+    if (settingsMenuCtr)   lv_obj_add_flag(settingsMenuCtr,   LV_OBJ_FLAG_HIDDEN);
+    if (settingsConfigCtr)  lv_obj_add_flag(settingsConfigCtr,  LV_OBJ_FLAG_HIDDEN);
+    if (settingsDisplayCtr) lv_obj_add_flag(settingsDisplayCtr, LV_OBJ_FLAG_HIDDEN);
+    if (settingsCalCtr)     lv_obj_add_flag(settingsCalCtr,     LV_OBJ_FLAG_HIDDEN);
+    if (settingsDiagsCtr)   lv_obj_add_flag(settingsDiagsCtr,   LV_OBJ_FLAG_HIDDEN);
+    if (settingsAboutCtr)   lv_obj_add_flag(settingsAboutCtr,   LV_OBJ_FLAG_HIDDEN);
+    if (settingsResetCtr)   lv_obj_add_flag(settingsResetCtr,   LV_OBJ_FLAG_HIDDEN);
 
-  // Show the active sub-screen
+    // Show the active sub-screen container
+    switch (settingsSubScreen) {
+      case 0: if (settingsMenuCtr)    lv_obj_clear_flag(settingsMenuCtr,    LV_OBJ_FLAG_HIDDEN); break;
+      case 1: if (settingsConfigCtr)  lv_obj_clear_flag(settingsConfigCtr,  LV_OBJ_FLAG_HIDDEN); break;
+      case 2: if (settingsDisplayCtr) lv_obj_clear_flag(settingsDisplayCtr, LV_OBJ_FLAG_HIDDEN); break;
+      case 3: if (settingsCalCtr)     lv_obj_clear_flag(settingsCalCtr,     LV_OBJ_FLAG_HIDDEN); break;
+      case 4: if (settingsDiagsCtr)   lv_obj_clear_flag(settingsDiagsCtr,   LV_OBJ_FLAG_HIDDEN); break;
+      case 5: if (settingsAboutCtr)   lv_obj_clear_flag(settingsAboutCtr,   LV_OBJ_FLAG_HIDDEN); break;
+      case 6: if (settingsResetCtr)   lv_obj_clear_flag(settingsResetCtr,   LV_OBJ_FLAG_HIDDEN); break;
+    }
+    prevSubScreen = settingsSubScreen;
+    logPrintf("[SETTINGS] Sub-screen changed to %d\n", settingsSubScreen);
+  }
+
+  // --- Live data updates (run every 500ms regardless of visibility) ---
   switch (settingsSubScreen) {
-    case 0: if (settingsMenuCtr)   lv_obj_clear_flag(settingsMenuCtr,   LV_OBJ_FLAG_HIDDEN); break;
     case 1:
       if (settingsConfigCtr) {
-        lv_obj_clear_flag(settingsConfigCtr, LV_OBJ_FLAG_HIDDEN);
         // Live preview: time | temp | distance (#112)
         if (cfgPreviewLabel) {
           char prev[80];
@@ -3852,7 +3880,6 @@ void updateSettingsData() {
       break;
     case 2:
       if (settingsDisplayCtr) {
-        lv_obj_clear_flag(settingsDisplayCtr, LV_OBJ_FLAG_HIDDEN);
         // Keep brightness widgets in sync if changed externally
         if (dispBrightnessSlider) lv_slider_set_value(dispBrightnessSlider, tftBrightness, LV_ANIM_OFF);
         if (dispBrightnessLabel) lv_label_set_text_fmt(dispBrightnessLabel, "%d", tftBrightness);
@@ -3860,8 +3887,6 @@ void updateSettingsData() {
       break;
     case 3:
       if (settingsCalCtr) {
-        lv_obj_clear_flag(settingsCalCtr, LV_OBJ_FLAG_HIDDEN);
-
         if (magCalibrating) {
           // === ACTIVE CALIBRATION STATE ===
           // Hide idle widgets
@@ -3961,7 +3986,6 @@ void updateSettingsData() {
       break;
     case 4:
       if (settingsDiagsCtr) {
-        lv_obj_clear_flag(settingsDiagsCtr, LV_OBJ_FLAG_HIDDEN);
         char dBuf[80];
 
         // [0] BSEC
@@ -4083,7 +4107,6 @@ void updateSettingsData() {
       break;
     case 5:
       if (settingsAboutCtr) {
-        lv_obj_clear_flag(settingsAboutCtr, LV_OBJ_FLAG_HIDDEN);
         char aBuf[64];
 
         // [0] Version — static, already set in build
@@ -4138,7 +4161,6 @@ void updateSettingsData() {
         }
       }
       break;
-    case 6: if (settingsResetCtr)   lv_obj_clear_flag(settingsResetCtr,   LV_OBJ_FLAG_HIDDEN); break;
   }
 }
 
@@ -4221,7 +4243,6 @@ void buildSettingsScreen() {
   cfgTzDropdown = fcDropdownCreate(settingsConfigCtr, 45, "Time Zone", tzDisplayName);
   lv_obj_add_event_cb(cfgTzDropdown, cfgTzDropdownCb, LV_EVENT_CLICKED, NULL);
   lv_obj_add_event_cb(cfgTzDropdown, cfgTzSelectedCb, LV_EVENT_VALUE_CHANGED, NULL);
-
   // Time format toggle: 0=12Hour(left), 1=24Hour(right)
   cfgTimeToggle = fcToggleCreate(settingsConfigCtr, 95, "Time", "12 Hour", "24 Hour", use12Hour ? 0 : 1);
   lv_obj_add_event_cb(cfgTimeToggle, cfgToggleCb, LV_EVENT_VALUE_CHANGED, NULL);
