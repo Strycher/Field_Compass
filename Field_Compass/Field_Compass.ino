@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.46.2"
+#define FW_VERSION "0.46.3"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -1741,54 +1741,45 @@ void fcToggleSetValue(lv_obj_t* toggle, bool value) {
   fcToggleUpdateVisuals(toggle, value);
 }
 
-// --- Dropdown: label + value button + down arrow ---
+// --- Dropdown: single button covering full row (#117 rewrite v0.46.3) ---
+// Uses lv_button_create (not lv_obj_create) to match the proven click pattern
+// used by menu buttons, toggles, and action bar — eliminates hit-test ambiguity.
+// Children: [0]=label, [1]=value text, [2]=arrow
 lv_obj_t* fcDropdownCreate(lv_obj_t* parent, int16_t y,
                             const char* label, const char* initialValue) {
-  lv_obj_t* cont = lv_obj_create(parent);
-  lv_obj_remove_style_all(cont);
-  lv_obj_set_size(cont, SCREEN_W - 20, 30);
-  lv_obj_set_pos(cont, 10, y);
-  // Container is CLICKABLE — entire row is the tap target (#117/#119)
-  // Fixes dead zone where "Time Zone" label text was not clickable
-  lv_obj_clear_flag(cont, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE
+  lv_obj_t* btn = lv_button_create(parent);
+  lv_obj_set_size(btn, SCREEN_W - 20, 36);
+  lv_obj_set_pos(btn, 10, y);
+  lv_obj_set_style_bg_color(btn, FC_COLOR_W_INACTIVE, 0);
+  lv_obj_set_style_radius(btn, 6, 0);
+  lv_obj_clear_flag(btn, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE
                         | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
-  lv_obj_set_ext_click_area(cont, 8);  // +8px hit padding on entire row
 
-  // Child [0]: label
-  lv_obj_t* lbl = lv_label_create(cont);
+  // Child [0]: label text (left side)
+  lv_obj_t* lbl = lv_label_create(btn);
   lv_label_set_text(lbl, label);
   lv_obj_set_style_text_color(lbl, FC_COLOR_DIM, 0);
   lv_obj_set_style_text_font(lbl, FC_FONT_SM, 0);
-  lv_obj_set_pos(lbl, 10, 7);
+  lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 10, 0);
 
-  // Child [1]: value display (visual only, not the click target)
-  int vx = 140;
-  int vw = SCREEN_W - 20 - vx;
-  lv_obj_t* valBtn = lv_button_create(cont);
-  lv_obj_set_size(valBtn, vw, 30);
-  lv_obj_set_pos(valBtn, vx, 0);
-  lv_obj_set_style_bg_color(valBtn, FC_COLOR_W_INACTIVE, 0);
-  lv_obj_set_style_radius(valBtn, 6, 0);
-  lv_obj_clear_flag(valBtn, LV_OBJ_FLAG_CLICKABLE);  // Clicks pass through to container
-
-  // Value text (child [0] of valBtn)
-  lv_obj_t* valLbl = lv_label_create(valBtn);
+  // Child [1]: value text (center-right)
+  lv_obj_t* valLbl = lv_label_create(btn);
   lv_label_set_text(valLbl, initialValue);
   lv_obj_set_style_text_color(valLbl, FC_COLOR_VALUE, 0);
   lv_obj_set_style_text_font(valLbl, FC_FONT_SM, 0);
-  lv_obj_align(valLbl, LV_ALIGN_LEFT_MID, 10, 0);
+  lv_obj_set_pos(valLbl, 150, 10);
 
-  // Arrow indicator (child [1] of valBtn)
-  lv_obj_t* arrowLbl = lv_label_create(valBtn);
+  // Child [2]: down arrow (far right)
+  lv_obj_t* arrowLbl = lv_label_create(btn);
   lv_label_set_text(arrowLbl, LV_SYMBOL_DOWN);
   lv_obj_set_style_text_color(arrowLbl, FC_COLOR_DIM, 0);
   lv_obj_set_style_text_font(arrowLbl, FC_FONT_XS, 0);
   lv_obj_align(arrowLbl, LV_ALIGN_RIGHT_MID, -5, 0);
 
-  // Store index in user_data (default 0)
-  lv_obj_set_user_data(cont, (void*)(intptr_t)0);
+  // Store selected index in user_data (default 0)
+  lv_obj_set_user_data(btn, (void*)(intptr_t)0);
 
-  return cont;
+  return btn;
 }
 
 int fcDropdownGetIndex(lv_obj_t* dropdown) {
@@ -1797,8 +1788,8 @@ int fcDropdownGetIndex(lv_obj_t* dropdown) {
 
 void fcDropdownSetValue(lv_obj_t* dropdown, int idx, const char* text) {
   lv_obj_set_user_data(dropdown, (void*)(intptr_t)idx);
-  lv_obj_t* valBtn = lv_obj_get_child(dropdown, 1);
-  lv_obj_t* valLbl = lv_obj_get_child(valBtn, 0);
+  // Child [1] is the value label directly (flat structure, no nested button)
+  lv_obj_t* valLbl = lv_obj_get_child(dropdown, 1);
   lv_label_set_text(valLbl, text);
 }
 
@@ -3633,11 +3624,16 @@ static void cfgTzSelectedCb(lv_event_t* e) {
 // Timezone dropdown click — open list picker
 static void cfgTzDropdownCb(lv_event_t* e) {
   (void)e;
+  logPrintf("[CONFIG/LVGL] TZ dropdown CLICKED — opening picker\n");
+  logLvglHeap("tz-click");  // Track heap before picker creation
   static const char* tzNames[TZ_PRESET_COUNT];
   for (int i = 0; i < TZ_PRESET_COUNT; i++) {
     tzNames[i] = tzPresets[i].name;
   }
-  fcListPickerOpen("Time Zone", tzNames, TZ_PRESET_COUNT, tzSelectedIndex, cfgTzDropdown);
+  lv_obj_t* picker = fcListPickerOpen("Time Zone", tzNames, TZ_PRESET_COUNT, tzSelectedIndex, cfgTzDropdown);
+  if (!picker) {
+    logPrintf("[CONFIG/LVGL] TZ picker FAILED to open (OOM?)\n");
+  }
 }
 
 // Toggle change — update globals immediately for live preview
@@ -3692,6 +3688,7 @@ static void dispBrightnessChangedCb(lv_event_t* e) {
 
 static void dispTftDropdownCb(lv_event_t* e) {
   (void)e;
+  logPrintf("[DISPLAY/LVGL] TFT dropdown CLICKED\n");
   int idx = findTimeoutIndex(tftTimeoutPresets, TFT_TIMEOUT_COUNT, tftSleepMs);
   fcListPickerOpen("TFT Sleep", tftTimeoutLabels, TFT_TIMEOUT_COUNT, idx, dispTftDropdown);
 }
@@ -3706,6 +3703,7 @@ static void dispTftSelectedCb(lv_event_t* e) {
 
 static void dispOledDropdownCb(lv_event_t* e) {
   (void)e;
+  logPrintf("[DISPLAY/LVGL] OLED dropdown CLICKED\n");
   int idx = findTimeoutIndex(oledTimeoutPresets, OLED_TIMEOUT_COUNT, oledSleepMs);
   fcListPickerOpen("OLED Sleep", oledTimeoutLabels, OLED_TIMEOUT_COUNT, idx, dispOledDropdown);
 }
