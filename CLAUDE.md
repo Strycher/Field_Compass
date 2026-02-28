@@ -26,11 +26,25 @@ All backlog items MUST be created as GitHub Issues with the following **mandator
 | **Status** | Current state (see Status Labels below) | Yes |
 | **Priority** | Importance level (see Priority Labels below) | Yes |
 
-#### Status (GitHub Project Field)
-- `Todo` - Not yet started
-- `In Progress` - Currently being worked on
-- `Testing` - Ready for review/testing
-- `Done` - Completed
+#### Status (GitHub Project Field — Board Columns)
+
+| Status | Meaning | Who Moves Here |
+|--------|---------|----------------|
+| **Backlog** | Ungroomed idea — no spec, no acceptance criteria yet. Parking lot for future work. | Anyone — this is the "idea dump" |
+| **Todo** | Groomed — has description, acceptance criteria, and design (if needed). Ready for sprint consideration. | Ben (PM) moves from Backlog after grooming |
+| **Ready** | Approved for development, fully specified, all blockers resolved. Agents pick up work from here. | Ben, or auto-promote Action when dependencies close |
+| **In Progress** | Actively being worked on by an agent or Ben. | Agent/Ben when starting work |
+| **Testing** | PR created or code ready for review/QA. | Agent when work is ready for verification |
+| **On Hold** | Deliberately paused by human decision — deprioritized, waiting on external input, scope changed. | Ben — manual decision to freeze work |
+| **Done** | Acceptance criteria met, issue closed. | Auto on issue close, or manual |
+
+```
+Backlog → Todo → Ready → In Progress → Testing → Done
+ (idea)  (groomed) (approved) (coding)   (review)  (shipped)
+                                  ↕
+                               On Hold
+                          (frozen by decision)
+```
 
 #### Priority (GitHub Project Field)
 - `P0 - Critical` - Must be addressed immediately
@@ -39,22 +53,32 @@ All backlog items MUST be created as GitHub Issues with the following **mandator
 - `P3 - Low/Cosmetic` - Nice to have, cosmetic issues
 - `P4 - Deferred` - Postponed for future consideration
 
-#### Issue Types
-- `type:enhancement` - New feature or improvement
-- `type:bug` - Defect or unexpected behavior
-- `type:documentation` - Documentation updates
-- `type:refactor` - Code improvement without behavior change
+#### Issue Types (Labels)
+- `type:epic` — Parent issue with sub-issues
+- `enhancement` — New feature or improvement
+- `bug` — Defect or unexpected behavior
+- `documentation` — Documentation updates
+- `refactor` — Code improvement without behavior change
 
 ### Issue Lifecycle
 
-1. **Creation:** Automatically create Issues when enhancements, bugs, or documentation needs are identified
-2. **Updates:** Add comments to Issues for each significant update including:
-   - Progress notes
-   - Decisions made
-   - Blockers encountered
-3. **Specifications:** Document technical specifications in the Issue body
-4. **Acceptance Criteria:** Define clear, testable acceptance criteria
-5. **Completion:** Update Status to `Done` when all acceptance criteria are met
+1. **Create** issues when identifying work — enhancements, bugs, docs gaps
+2. **Backlog** — new ideas and ungroomed work start here
+3. **Groom** — Ben adds description, acceptance criteria, design reference. Moves to Todo.
+4. **Ready** — Ben moves groomed issues to Ready, OR the auto-promote Action moves them when dependencies resolve
+5. **In Progress** — agent or Ben picks up a Ready issue and begins work
+6. **Update** with comments for significant progress
+7. **Reference** in commit messages: `feat(#12): add compass widget`
+8. **Testing** — code ready for Ben to review/verify on device
+9. **On Hold** — if work must be paused (deprioritized, waiting on input, scope change), move here with a comment explaining why
+10. **Close** when acceptance criteria met: `gh issue close <number>`
+11. All issues must exist in GitHub Project — no local-only issues
+
+### Dependency Automation
+- Issues with `<!-- depends-on: #X, #Y -->` tags in their body are tracked by the **auto-promote GitHub Action** (`.github/workflows/auto-promote-ready.yml`).
+- When a dependency closes, the Action checks if all deps are resolved. If yes, it auto-promotes the issue from **Todo → Ready**.
+- The Action only promotes from Todo. It never touches Backlog, On Hold, or other statuses.
+- When creating issues with dependencies, always include the tag: `<!-- depends-on: #123, #456 -->`
 
 ### Version Control
 
@@ -149,21 +173,69 @@ Field_Compass/
 - [ ] Commit message references Issue number(s)
 - [ ] Version tag created if milestone reached
 
+## Agent Workflow
+
+### Task Management (Beads)
+- Use `bd` (Beads) for structured task tracking during development sessions.
+- Before starting work, run `bd ready` to see what tasks are unblocked.
+- When picking up a task, run `bd update <task-id> --status=in_progress`.
+- When completing a task, run `bd close <task-id> --reason "description"`.
+- For complex features, decompose into subtasks with dependencies:
+  `bd create --title="Subtask name" -t task -p 2 --parent <epic-id>`
+- Issue prefix is `FC` — IDs look like `FC-abc`.
+
+### GitHub Board Sync
+- The GitHub Project board is the source of truth for project status.
+- When creating a Beads task from a GitHub Issue, include the issue number in the title: `"Feature name (#22)"`.
+- Include the Beads ID (e.g., FC-abc) in a GitHub Issue comment for cross-reference.
+- When moving a Beads task to in_progress, comment on the GitHub Issue with the status change.
+- When closing a Beads task, close or update the corresponding GitHub Issue.
+- Never let Beads and GitHub get out of sync — update both in the same workflow step.
+
+### Multi-Agent Coordination (Agent Mail)
+- If agent-mail MCP is available, register with a descriptive agent name (e.g., "fc-firmware-agent").
+- Before editing files, check for file reservations via agent-mail.
+- Reserve files you're working on to prevent conflicts with other agents.
+- When done with a file, release the reservation.
+
+### Autonomous Operation Rules
+- **Only pick up issues from the "Ready" column on the GitHub Project board.** Never pull from Backlog, Todo, or On Hold — Ben decides what is ready for development.
+- You may operate autonomously without human approval for:
+  - Implementing features from GitHub Issues in the "Ready" column
+  - Writing and running tests (compile checks)
+  - Updating Beads tasks and GitHub Issues
+  - Committing code that compiles successfully (per commit convention above)
+- If unsure about a design decision, create a GitHub Issue tagged "question" rather than guessing.
+- If a task is blocked by unclear requirements, move it to On Hold and comment on the GitHub Issue explaining what's needed.
+- When creating sub-issues with dependencies, always include `<!-- depends-on: #NNN -->` in the issue body so the auto-promote Action can chain them.
+
 ## Quick Reference Commands
 
 ```bash
-# Create a new Issue (Status and Priority are set via GitHub Project fields)
-gh issue create --title "Title" --body "Description" --label "type:enhancement"
-
-# Add comment to Issue
-gh issue comment <number> --body "Update comment"
-
-# Create version tag
-git tag -a v1.0.0 -m "Release version 1.0.0"
-git push origin v1.0.0
-
-# List Issues
+# Issues
+gh issue create --title "Title" --body "Description" --label "enhancement"
+gh issue comment <number> --body "Progress update"
+gh issue close <number>
 gh issue list
+
+# Project
+gh project item-add 3 --owner Strycher --url <issue-url>
+
+# Versioning
+git tag -a v0.48.0 -m "Description"
+git push origin main --tags
+
+# Arduino CLI
+arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3 Field_Compass/
+arduino-cli upload --fqbn esp32:esp32:adafruit_feather_esp32s3 --port COM19 Field_Compass/
+
+# Beads
+bd ready                              # Show unblocked tasks
+bd list                               # Show all tasks
+bd create --title="Name" -t task -p 2 # Create task
+bd update <id> --status=in_progress   # Claim task
+bd close <id> --reason "done"         # Complete task
+bd dep tree <epic-id>                 # View dependency tree
 ```
 
 **Note:** Status and Priority are managed through the GitHub Project board fields, not labels.
