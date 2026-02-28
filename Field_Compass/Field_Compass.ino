@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.47.2"
+#define FW_VERSION "0.48.0"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -255,49 +255,15 @@ const char* NTP_SERVER = "pool.ntp.org";
 // TFT Display (ST7796U via TFT_eSPI — pins configured in User_Setup.h)
 TFT_eSPI tft = TFT_eSPI();
 
-// Sprite for flicker-free double-buffering (PSRAM-backed, 480x320x16bpp = 307KB)
-TFT_eSprite spr = TFT_eSprite(&tft);
-bool spriteAvailable = false;
-bool forceDisplayUpdate = false;  // Skip 500ms throttle on next frame (screen change)
+// TFT_eSprite removed — LVGL handles all TFT rendering (#114)
 
-// Zone-based partial push system: only push changed screen regions to TFT.
-// Full-frame pushSprite (~78ms SPI) causes visible flash on ST7796U mid-scan.
-// Partial pushSprite of small zones (1-9ms) is invisible.
-#define MAX_ZONES 20
-#define ZONE_KEY_LEN 48
-
-struct DisplayZone {
-  int16_t x, y, w, h;          // Bounding rectangle on screen
-  char key[ZONE_KEY_LEN];      // Formatted content string for change detection
-};
-
-static DisplayZone zonesCur[MAX_ZONES];
-static DisplayZone zonesPrev[MAX_ZONES];
-static uint8_t zoneCurCount = 0;
-static uint8_t zonePrevCount = 0;
-
-// Zone helper functions defined below (near display functions) to avoid
-// Arduino auto-prototype ordering issues with struct types
-void zoneBegin();
-bool zoneMark(int16_t x, int16_t y, int16_t w, int16_t h, const char* key);
-void zonePushDirty();
+// Zone-based partial push system removed — LVGL handles dirty tracking (#114)
 
 // Capacitive touch controller (FT6336U on I2C at 0x38)
 Adafruit_FT6206 ctp = Adafruit_FT6206();
 volatile bool touchDetected = false;
 
-// Swipe gesture detection
-#define SWIPE_MIN_DISTANCE  20   // Minimum px to qualify as a swipe (~4% of 480px width)
-#define SWIPE_MAX_TIME_MS   600  // Maximum ms from touch-down to release
-bool     swipeTracking  = false; // Currently tracking a potential swipe
-int16_t  swipeStartX    = 0;     // Screen-X at touch-down (mapped from touch Y)
-int16_t  swipeStartY    = 0;     // Screen-Y at touch-down (mapped from touch X)
-uint32_t swipeStartTime = 0;     // millis() at touch-down
-
-// Tap detection (for gear icon, future touch targets)
-#define TAP_MAX_DISTANCE  15   // Max px movement to still count as a tap
-#define TAP_MAX_TIME_MS   300  // Max ms for a tap
-bool     tapFiredOnContact = false;  // Guard: true if tap already fired on touch-down
+// Legacy swipe/tap detection removed — LVGL gesture + click callbacks (#113)
 
 // Settings screen state
 int  settingsSubScreen = 0;    // 0=menu, 1=compass cal, 2=diagnostics, ...
@@ -1172,104 +1138,7 @@ void loop() {
   // Handle button navigation
   handleButtons();
 
-  // Handle touch input (interrupt-driven swipe detection)
-  // On Settings screen, skip legacy handler — LVGL handles all touch (#112)
-  if (touchDetected && touchAvailable && currentScreen != SCREEN_SETTINGS) {
-    touchDetected = false;
-    if (ctp.touched()) {
-      TS_Point p = ctp.getPoint();
-      // FT6336U reports in native portrait coords (320×480).
-      // With TFT rotation=1 (landscape) + 180° panel mount:
-      //   touchY (0-480) = long axis = screen horizontal
-      //   touchX (0-320) = short axis = screen vertical
-      int16_t screenX = 480 - p.y;  // horizontal (0-479)
-      int16_t screenY = p.x;        // vertical   (0-319)
-
-      lastActivityTime = millis();  // Reset sleep timer on touch
-
-      if (!swipeTracking) {
-        // Touch-down: start tracking
-        swipeTracking  = true;
-        swipeStartX    = screenX;
-        swipeStartY    = screenY;
-        swipeStartTime = millis();
-        tapFiredOnContact = false;  // Reset guard for new touch
-
-        // Fire-on-contact: gear icon tap (small corner hitbox — safe for immediate action)
-        if (!tftSleeping && screenX >= 440 && screenY <= 34 && currentScreen != SCREEN_SETTINGS) {
-          handleTap(screenX, screenY);
-          tapFiredOnContact = true;
-          swipeTracking = false;  // Consume gesture — don't also detect as swipe
-        }
-      }
-    } else {
-      // No touch — finger lifted (CHANGE interrupt fires on RISING edge too)
-      if (swipeTracking) {
-        uint32_t elapsed = millis() - swipeStartTime;
-        swipeTracking = false;
-        // Check for tap on release (backup path — fire-on-contact handles gear icon)
-        if (!tapFiredOnContact && elapsed < TAP_MAX_TIME_MS) {
-          handleTap(swipeStartX, swipeStartY);
-        }
-      }
-    }
-  }
-
-  // Swipe timeout / completion check — poll touch state each loop iteration
-  // Skip on Settings — LVGL handles all touch; cancel stale tracking (#112)
-  if (currentScreen == SCREEN_SETTINGS) swipeTracking = false;
-  if (swipeTracking && touchAvailable) {
-    if (ctp.touched()) {
-      TS_Point p = ctp.getPoint();
-      int16_t screenX = 480 - p.y;
-      int16_t screenY = p.x;
-
-      int16_t deltaX = screenX - swipeStartX;
-      int16_t deltaY = screenY - swipeStartY;
-      uint32_t elapsed = millis() - swipeStartTime;
-
-      // Normalize deltaY for 480:320 (3:2) aspect ratio so physical angles are accurate
-      // Then require 1.5:1 ratio (rejects physical angles > ~34° off horizontal)
-      int16_t normDY = abs(deltaY) * 3 / 2;  // Scale 320-range up to match 480-range
-      if (elapsed < SWIPE_MAX_TIME_MS && abs(deltaX) >= SWIPE_MIN_DISTANCE
-          && abs(deltaX) * 2 > normDY * 3) {
-        swipeTracking = false;  // Consume the gesture
-
-        // Swipe cycling is disabled on the Settings modal screen
-        if (currentScreen != SCREEN_SETTINGS) {
-          if (deltaX < 0) {
-            // Left swipe → next screen
-            logPrintf("[SWIPE] LEFT → next screen\n");
-            currentScreen++;
-            if (currentScreen >= NUM_SCREENS) currentScreen = 0;
-          } else {
-            // Right swipe → previous screen
-            logPrintf("[SWIPE] RIGHT → prev screen\n");
-            currentScreen--;
-            if (currentScreen < 0) currentScreen = NUM_SCREENS - 1;
-          }
-          geocacheSubScreen = 0;  // Reset sub-screen when swiping away
-          if (spriteAvailable) forceDisplayUpdate = true;
-          else tft.fillScreen(COLOR_BG);
-        }
-
-        // Debounce: wait for finger to lift before allowing next swipe
-        delay(150);
-        touchDetected = false;
-      } else if (elapsed >= SWIPE_MAX_TIME_MS) {
-        // Took too long — not a swipe (maybe a long press or tap)
-        swipeTracking = false;
-      }
-    } else {
-      // Finger lifted before swipe threshold — check if it's a tap
-      swipeTracking = false;
-      uint32_t elapsed = millis() - swipeStartTime;
-      if (!tapFiredOnContact && elapsed < TAP_MAX_TIME_MS) {
-        // Short touch with no significant movement → tap
-        handleTap(swipeStartX, swipeStartY);
-      }
-    }
-  }
+  // Touch input handled by LVGL indev (lvglTouchReadCb) — no manual polling needed (#113)
 
   // Check display sleep timeout
   checkDisplaySleep();
@@ -1451,20 +1320,8 @@ void initTFT() {
 
   lastTFTReinit = millis();  // Track init time
 
-  // Create PSRAM-backed sprite for flicker-free double-buffering
-  if (psramFound()) {
-    void* ptr = spr.createSprite(SCREEN_W, SCREEN_H);
-    if (ptr) {
-      spriteAvailable = true;
-      spr.fillSprite(COLOR_BG);
-      logPrintf("OK (480x320) + Sprite (%dKB PSRAM, %dKB free)\n",
-                (SCREEN_W * SCREEN_H * 2) / 1024, ESP.getFreePsram() / 1024);
-    } else {
-      logPrintln("OK (480x320) — sprite alloc failed, direct draw");
-    }
-  } else {
-    logPrintln("OK (480x320) — no PSRAM, direct draw");
-  }
+  // TFT_eSprite removed — PSRAM now used for LVGL draw buffers only (#114)
+  logPrintf("OK (480x320, PSRAM: %dKB free)\n", ESP.getFreePsram() / 1024);
 }
 
 // ============== Field Compass LVGL Theme (#107) ==============
@@ -1516,6 +1373,10 @@ void initFCTheme() {
 
 // ============== FC Widget Library (#108) ==============
 
+// Forward declarations for callbacks used in widgets (#113)
+static void gearIconClickCb(lv_event_t* e);
+static void screenGestureCb(lv_event_t* e);
+
 // --- Header Bar: 30px cyan bar with title + gear icon ---
 lv_obj_t* fcHeaderCreate(lv_obj_t* parent, const char* title) {
   lv_obj_t* cont = lv_obj_create(parent);
@@ -1546,6 +1407,9 @@ lv_obj_t* fcHeaderCreate(lv_obj_t* parent, const char* title) {
   lv_obj_set_style_text_color(gearLbl, FC_COLOR_BG, 0);
   lv_obj_set_style_text_font(gearLbl, FC_FONT_SM, 0);
   lv_obj_center(gearLbl);
+
+  // Gear icon click → Settings (#113) — callback defined in navigation section
+  lv_obj_add_event_cb(gearBtn, gearIconClickCb, LV_EVENT_CLICKED, NULL);
 
   // Child [2]: SD status indicator — hidden when healthy (#120)
   lv_obj_t* sdLbl = lv_label_create(cont);
@@ -2166,14 +2030,14 @@ static lv_obj_t* diagValueLabels[11];  // 11 value labels updated each frame
 static lv_obj_t* aboutValueLabels[6];  // 6 value labels (some live-updating)
 
 void buildCompassScreen() {
-  // Root container — full screen, no scrolling, black background
-  compassScr = lv_obj_create(lv_screen_active());
+  // Root screen — independent LVGL screen, loaded via lv_screen_load_anim()
+  compassScr = lv_obj_create(NULL);
   lv_obj_remove_style_all(compassScr);
   lv_obj_set_size(compassScr, SCREEN_W, SCREEN_H);
-  lv_obj_set_pos(compassScr, 0, 0);
   lv_obj_set_style_bg_color(compassScr, FC_COLOR_BG, 0);
   lv_obj_set_style_bg_opa(compassScr, LV_OPA_COVER, 0);
   lv_obj_clear_flag(compassScr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(compassScr, screenGestureCb, LV_EVENT_GESTURE, NULL);
 
   // Header bar (reuse #108 widget)
   compassHeader = fcHeaderCreate(compassScr, "COMPASS");
@@ -2673,14 +2537,14 @@ static void geocacheNavDrawCb(lv_event_t* e) {
 // ============== LVGL Geocache Screen Builder (#110) ==============
 
 void buildGeocacheScreen() {
-  // Root container — full screen, hidden by default
-  geocacheScr = lv_obj_create(lv_screen_active());
+  // Root screen — independent LVGL screen, loaded via lv_screen_load_anim()
+  geocacheScr = lv_obj_create(NULL);
   lv_obj_remove_style_all(geocacheScr);
   lv_obj_set_size(geocacheScr, SCREEN_W, SCREEN_H);
-  lv_obj_set_pos(geocacheScr, 0, 0);
   lv_obj_set_style_bg_color(geocacheScr, FC_COLOR_BG, 0);
   lv_obj_set_style_bg_opa(geocacheScr, LV_OPA_COVER, 0);
   lv_obj_clear_flag(geocacheScr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(geocacheScr, screenGestureCb, LV_EVENT_GESTURE, NULL);
 
   // Nav sub-screen container (sub 0)
   geocacheNavCtr = lv_obj_create(geocacheScr);
@@ -3173,16 +3037,15 @@ void updateGeocacheData() {
 // ============== LVGL Environment Screen Builder (#111) ==============
 
 void buildEnvScreen() {
-  // Root container — full screen, hidden by default
-  envScr = lv_obj_create(lv_screen_active());
+  // Root screen — independent LVGL screen, loaded via lv_screen_load_anim()
+  envScr = lv_obj_create(NULL);
   lv_obj_set_size(envScr, 480, 320);
-  lv_obj_set_pos(envScr, 0, 0);
   lv_obj_set_style_bg_color(envScr, FC_COLOR_BG, 0);
   lv_obj_set_style_border_width(envScr, 0, 0);
   lv_obj_set_style_radius(envScr, 0, 0);
   lv_obj_set_style_pad_all(envScr, 0, 0);
-  lv_obj_add_flag(envScr, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clear_flag(envScr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(envScr, screenGestureCb, LV_EVENT_GESTURE, NULL);
 
   // Header
   envHeader = fcHeaderCreate(envScr, "ENVIRONMENT");
@@ -3232,16 +3095,15 @@ void buildEnvScreen() {
 // ============== LVGL Telemetry Screen Builder (#111) ==============
 
 void buildTelemetryScreen() {
-  // Root container — full screen, hidden by default
-  telemetryScr = lv_obj_create(lv_screen_active());
+  // Root screen — independent LVGL screen, loaded via lv_screen_load_anim()
+  telemetryScr = lv_obj_create(NULL);
   lv_obj_set_size(telemetryScr, 480, 320);
-  lv_obj_set_pos(telemetryScr, 0, 0);
   lv_obj_set_style_bg_color(telemetryScr, FC_COLOR_BG, 0);
   lv_obj_set_style_border_width(telemetryScr, 0, 0);
   lv_obj_set_style_radius(telemetryScr, 0, 0);
   lv_obj_set_style_pad_all(telemetryScr, 0, 0);
-  lv_obj_add_flag(telemetryScr, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clear_flag(telemetryScr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(telemetryScr, screenGestureCb, LV_EVENT_GESTURE, NULL);
 
   // Header
   telHeader = fcHeaderCreate(telemetryScr, "TELEMETRY");
@@ -3643,18 +3505,13 @@ static void settingsMenuBtnCb(lv_event_t* e) {
   settingsSubScreen = subScreen;
   logPrintf("[SETTINGS/LVGL] Menu → sub-screen %d\n", subScreen);
   logLvglHeap("menu→sub");  // Track heap on every navigation (#119)
-  forceDisplayUpdate = true;
 }
 
 // Settings Back button — return to previous screen
 static void settingsBackToScreenCb(lv_event_t* e) {
   (void)e;
   logLvglHeap("settings→exit");  // Log heap BEFORE save+exit (#119)
-  saveSettings();  // Auto-save on exit — safety net against crash/power-loss (#112)
-  settingsSubScreen = 0;
-  currentScreen = previousScreen;
-  logPrintf("[SETTINGS/LVGL] Back → screen %d (saved)\n", currentScreen);
-  forceDisplayUpdate = true;
+  navigateFromSettings();
 }
 
 // --- Configuration sub-screen callbacks (#112) ---
@@ -3704,7 +3561,6 @@ static void cfgBackCb(lv_event_t* e) {
   fcToggleSetValue(cfgDistToggle, useMetricUnits ? 1 : 0);
   fcDropdownSetValue(cfgTzDropdown, tzSelectedIndex, tzDisplayName);
   settingsSubScreen = 0;
-  forceDisplayUpdate = true;
 }
 
 // Config OK — apply and save
@@ -3714,7 +3570,6 @@ static void cfgOKCb(lv_event_t* e) {
   applyTimezone();
   saveSettings();
   settingsSubScreen = 0;
-  forceDisplayUpdate = true;
 }
 
 // Forward declarations for display callbacks (#112)
@@ -3783,7 +3638,6 @@ static void dispBackCb(lv_event_t* e) {
     fcDropdownSetValue(dispOledDropdown, idx, oledTimeoutLabels[idx]);
   }
   settingsSubScreen = 0;
-  forceDisplayUpdate = true;
 }
 
 static void dispOKCb(lv_event_t* e) {
@@ -3791,7 +3645,6 @@ static void dispOKCb(lv_event_t* e) {
   logLvglHeap("disp←ok");  // (#119)
   saveSettings();
   settingsSubScreen = 0;
-  forceDisplayUpdate = true;
 }
 
 // Compass Cal sub-screen callbacks (#112)
@@ -3803,7 +3656,6 @@ static void calStartBtnCb(lv_event_t* e) {
   magCalMinX = magCalMinY = magCalMinZ = 99999;
   magCalMaxX = magCalMaxY = magCalMaxZ = -99999;
   logPrintln("[MAG/LVGL] Calibration started");
-  forceDisplayUpdate = true;
 }
 
 static void calBackCb(lv_event_t* e) {
@@ -3813,28 +3665,24 @@ static void calBackCb(lv_event_t* e) {
     logPrintln("[MAG/LVGL] Calibration cancelled");
   }
   settingsSubScreen = 0;
-  forceDisplayUpdate = true;
 }
 
 // Diagnostics sub-screen callback (#112)
 static void diagsBackCb(lv_event_t* e) {
   (void)e;
   settingsSubScreen = 0;
-  forceDisplayUpdate = true;
 }
 
 // About sub-screen callback (#112)
 static void aboutBackCb(lv_event_t* e) {
   (void)e;
   settingsSubScreen = 0;
-  forceDisplayUpdate = true;
 }
 
 // Factory Reset sub-screen callbacks (#112)
 static void resetBackCb(lv_event_t* e) {
   (void)e;
   settingsSubScreen = 0;
-  forceDisplayUpdate = true;
 }
 
 static void resetBtnCb(lv_event_t* e) {
@@ -3856,7 +3704,6 @@ static void resetBtnCb(lv_event_t* e) {
     fcDropdownSetValue(dispOledDropdown, idx, oledTimeoutLabels[idx]);
   }
   settingsSubScreen = 0;
-  forceDisplayUpdate = true;
   logPrintln("[SETTINGS/LVGL] Factory reset executed");
 }
 
@@ -4045,9 +3892,8 @@ void updateSettingsData() {
 
         // [3] PSRAM
         if (psramFound()) {
-          snprintf(dBuf, sizeof(dBuf), "%luK / %luK Spr:%s",
-            (unsigned long)(ESP.getFreePsram() / 1024), (unsigned long)(ESP.getPsramSize() / 1024),
-            spriteAvailable ? "Y" : "N");
+          snprintf(dBuf, sizeof(dBuf), "%luK / %luK",
+            (unsigned long)(ESP.getFreePsram() / 1024), (unsigned long)(ESP.getPsramSize() / 1024));
         } else {
           snprintf(dBuf, sizeof(dBuf), "Not available");
         }
@@ -4203,16 +4049,14 @@ void updateSettingsData() {
 }
 
 void buildSettingsScreen() {
-  // Root container — full screen, hidden by default
-  settingsScr = lv_obj_create(lv_screen_active());
+  // Root screen — independent LVGL screen, loaded via lv_screen_load_anim()
+  settingsScr = lv_obj_create(NULL);
   lv_obj_remove_style_all(settingsScr);
   lv_obj_set_size(settingsScr, SCREEN_W, SCREEN_H);
-  lv_obj_set_pos(settingsScr, 0, 0);
   lv_obj_set_style_bg_color(settingsScr, FC_COLOR_BG, 0);
   lv_obj_set_style_bg_opa(settingsScr, LV_OPA_COVER, 0);
   lv_obj_clear_flag(settingsScr, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
                         | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
-  lv_obj_add_flag(settingsScr, LV_OBJ_FLAG_HIDDEN);
 
   // Menu container (sub-screen 0)
   settingsMenuCtr = lv_obj_create(settingsScr);
@@ -4680,6 +4524,9 @@ void initLVGL() {
   // Build LVGL settings screen (#112)
   buildSettingsScreen();
 
+  // Load compass as the initial active screen (#113)
+  lv_screen_load(compassScr);
+
   // Widget library demo screen (#108): all 6 widgets
   #if LVGL_TEST_MODE
   {
@@ -4712,33 +4559,22 @@ void initLVGL() {
 }
 
 // Preventive TFT re-initialization (P1 blank bug workaround)
-// TFT goes blank after ~40 minutes with no errors - re-init as workaround
-// With sprite mode, pushSprite overwrites every pixel each frame — self-healing.
-// Only needed in direct-draw mode as a safety net.
+// LVGL continuously repaints, so blank-screen is self-healing.
+// Kept as a safety net — re-init every 30 minutes + invalidate LVGL.
 void checkTFTHealth() {
-  // Sprite mode: pushSprite(0,0) writes all 153,600 pixels every frame,
-  // so any SPI glitch is corrected within 500ms. No reinit needed.
-  if (spriteAvailable) return;
-
   unsigned long now = millis();
-
-  // Skip if TFT is sleeping (intentional blank)
   if (tftSleeping) return;
 
-  // Preventive re-init every 30 minutes (direct-draw mode only)
   if (now - lastTFTReinit > TFT_REINIT_INTERVAL) {
     #if DEBUG_TFT
     logPrintf("[TFT] Preventive re-init at %lus (updates:%lu)\n",
               now / 1000, tftUpdateCount);
     #endif
-
-    // Re-initialize TFT
     tft.init();
     tft.setRotation(1);
-    tft.fillScreen(COLOR_BG);
-
+    analogWrite(TFT_BL, tftBrightness);
+    lv_obj_invalidate(lv_screen_active());  // Force LVGL full repaint
     lastTFTReinit = now;
-    logPrintln("[TFT] Preventive re-init complete");
   }
 }
 
@@ -6611,15 +6447,14 @@ void handleWebDiags() {
   sprintf(buf, "CPU Freq:  %lu MHz\n", (unsigned long)ESP.getCpuFreqMHz());
   html += buf;
   if (psramFound()) {
-    sprintf(buf, "PSRAM:     %luK / %luK (Sprite: %s)\n",
+    sprintf(buf, "PSRAM:     %luK / %luK\n",
             (unsigned long)ESP.getFreePsram() / 1024,
-            (unsigned long)ESP.getPsramSize() / 1024,
-            spriteAvailable ? "Active" : "Failed");
+            (unsigned long)ESP.getPsramSize() / 1024);
   } else {
     sprintf(buf, "PSRAM:     Not detected\n");
   }
   html += buf;
-  sprintf(buf, "Sprite:    %s\n", spriteAvailable ? "480x320 double-buffer" : "Direct draw (no sprite)");
+  sprintf(buf, "Render:    LVGL 9.5 (2x%dKB PSRAM buffers)\n", LVGL_BUF_SIZE / 1024);
   html += buf;
 
   // Sensors
@@ -7418,7 +7253,7 @@ void wakeTFT() {
   tft.writecommand(0x11);  // MIPI DCS Sleep Out
   delay(120);  // ST7796U datasheet: 120ms delay after sleep out
   analogWrite(TFT_BL, tftBrightness); // Backlight on (user brightness, #91)
-  tft.fillScreen(COLOR_BG);  // Clear screen on wake
+  lv_obj_invalidate(lv_screen_active());  // Force LVGL full repaint on wake (#113)
   #if DEBUG_SLEEP
   Serial.println("TFT woke up");
   #endif
@@ -7462,6 +7297,51 @@ void checkDisplaySleep() {
   if (tftSleepMs > 0 && !tftSleeping && elapsed > tftSleepMs) {
     sleepTFT();
   }
+}
+
+// ============== LVGL Screen Navigation (#113) ==============
+
+// Screen table for main screens (Settings is modal, not in cycle)
+static lv_obj_t** const mainScreens[] = { &compassScr, &geocacheScr, &envScr, &telemetryScr };
+
+void navigateScreen(int delta) {
+  int next = (currentScreen + delta + NUM_SCREENS) % NUM_SCREENS;
+  lv_scr_load_anim_t anim = (delta > 0)
+      ? LV_SCR_LOAD_ANIM_MOVE_LEFT : LV_SCR_LOAD_ANIM_MOVE_RIGHT;
+  lv_screen_load_anim(*mainScreens[next], anim, 300, 0, false);
+  currentScreen = next;
+  geocacheSubScreen = 0;
+}
+
+void navigateToSettings() {
+  previousScreen = currentScreen;
+  currentScreen = SCREEN_SETTINGS;
+  settingsSubScreen = 0;
+  lv_screen_load_anim(settingsScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
+  logPrintf("[NAV] → Settings (from screen %d)\n", previousScreen);
+}
+
+void navigateFromSettings() {
+  saveSettings();
+  settingsSubScreen = 0;
+  currentScreen = previousScreen;
+  lv_screen_load_anim(*mainScreens[currentScreen], LV_SCR_LOAD_ANIM_MOVE_RIGHT, 250, 0, false);
+  logPrintf("[NAV] Settings → screen %d\n", currentScreen);
+}
+
+// LVGL gesture callback — swipe left/right on main screens (#113)
+static void screenGestureCb(lv_event_t* e) {
+  (void)e;
+  lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
+  if (dir == LV_DIR_LEFT)       navigateScreen(1);
+  else if (dir == LV_DIR_RIGHT) navigateScreen(-1);
+}
+
+// Gear icon click — navigate to Settings (#113)
+static void gearIconClickCb(lv_event_t* e) {
+  (void)e;
+  if (currentScreen == SCREEN_SETTINGS) return;
+  navigateToSettings();
 }
 
 // ============== Button Handling ==============
@@ -7517,37 +7397,20 @@ void handleButtons() {
   // Flush FRAM buffer on button press
   if (framAvailable && sdAvailable) framFlushToSD();
 
-  // Reinit TFT on button press only in direct-draw mode (recovers from SPI glitch/white screen)
-  // With sprite double-buffering, pushSprite overwrites every pixel — self-healing
-  if (!spriteAvailable) {
-    tft.init();
-    tft.setRotation(1);
-    lastTFTReinit = now;
-  }
-
   // Handle A/B based on current screen and sub-screen
   if (currentScreen == SCREEN_GEOCACHE && geocacheSubScreen != 0) {
     // Geocache sub-screen navigation
     handleGeocacheButtons(buttonA, buttonB);
     lastButtonPress = now;
   } else {
-    // Normal screen navigation
+    // Normal screen navigation via LVGL animated transitions (#113)
     if (buttonA) {
-      currentScreen--;
-      if (currentScreen < 0) currentScreen = NUM_SCREENS - 1;
-      geocacheSubScreen = 0;  // Reset sub-screen when leaving
+      navigateScreen(-1);
       lastButtonPress = now;
-      if (spriteAvailable) forceDisplayUpdate = true;
-      else tft.fillScreen(COLOR_BG);
     }
-
     if (buttonB) {
-      currentScreen++;
-      if (currentScreen >= NUM_SCREENS) currentScreen = 0;
-      geocacheSubScreen = 0;  // Reset sub-screen when leaving
+      navigateScreen(1);
       lastButtonPress = now;
-      if (spriteAvailable) forceDisplayUpdate = true;
-      else tft.fillScreen(COLOR_BG);
     }
   }
 }
@@ -7577,8 +7440,6 @@ void handleGeocacheButtons(bool buttonA, bool buttonB) {
       listHighlightIndex++;
     }
   }
-  if (spriteAvailable) forceDisplayUpdate = true;
-  else tft.fillScreen(COLOR_BG);
 }
 
 // Timeout presets for Display settings (#91)
@@ -7597,23 +7458,7 @@ int findTimeoutIndex(const uint32_t presets[], int count, uint32_t value) {
   return 0;  // Default to first if not found
 }
 
-// Handle tap on screen (gear icon, future touch targets)
-void handleTap(int16_t x, int16_t y) {
-  static uint32_t lastTapTime = 0;
-  if (millis() - lastTapTime < 300) return;  // Debounce: ignore taps within 300ms
-  lastTapTime = millis();
-
-  // Gear icon hitbox: right side of header bar
-  if (x >= 440 && y <= 34 && currentScreen != SCREEN_SETTINGS) {
-    previousScreen = currentScreen;
-    currentScreen = SCREEN_SETTINGS;
-    settingsSubScreen = 0;
-    logPrintf("[TAP] Gear icon → Settings\n");
-    if (spriteAvailable) forceDisplayUpdate = true;
-    else tft.fillScreen(COLOR_BG);
-    return;
-  }
-}
+// handleTap removed — gear icon now uses LVGL gearIconClickCb (#113)
 
 // Button C short press handler
 void handleButtonCShortPress() {
@@ -7631,14 +7476,10 @@ void handleButtonCShortPress() {
       geocacheSubScreen = 1;
       listHighlightIndex = selectedCacheIndex;
       listScrollOffset = max(0, listHighlightIndex - 2);
-      if (spriteAvailable) forceDisplayUpdate = true;
-      else tft.fillScreen(COLOR_BG);
     } else if (geocacheSubScreen == 1) {
       // List screen: short press selects cache and returns to nav
       selectedCacheIndex = listHighlightIndex;
       geocacheSubScreen = 0;
-      if (spriteAvailable) forceDisplayUpdate = true;
-      else tft.fillScreen(COLOR_BG);
     } else if (geocacheSubScreen == 2) {
       // Details screen: short press toggles found status
       if (cacheListCount > 0 && listHighlightIndex < cacheListCount) {
@@ -7647,8 +7488,6 @@ void handleButtonCShortPress() {
           cacheList[listHighlightIndex].foundTime = millis() / 1000;  // Simple timestamp
         }
         saveCacheFoundStatus();  // Persist to SD
-        if (spriteAvailable) forceDisplayUpdate = true;
-        else tft.fillScreen(COLOR_BG);
       }
     }
   }
@@ -7668,13 +7507,9 @@ void handleButtonCLongPress() {
     if (geocacheSubScreen == 1) {
       // List screen: long press goes to details
       geocacheSubScreen = 2;
-      if (spriteAvailable) forceDisplayUpdate = true;
-      else tft.fillScreen(COLOR_BG);
     } else if (geocacheSubScreen == 2) {
       // Details screen: long press goes back to list
       geocacheSubScreen = 1;
-      if (spriteAvailable) forceDisplayUpdate = true;
-      else tft.fillScreen(COLOR_BG);
     }
   }
 }
@@ -8010,35 +7845,7 @@ void readIMU() {
 
 // ============== Display Functions ==============
 
-// Zone helper implementations (prototypes declared near DisplayZone struct)
-void zoneBegin() {
-  zoneCurCount = 0;
-}
-
-bool zoneMark(int16_t x, int16_t y, int16_t w, int16_t h, const char* key) {
-  if (zoneCurCount >= MAX_ZONES) return true;
-  uint8_t idx = zoneCurCount++;
-  DisplayZone& z = zonesCur[idx];
-  z.x = x; z.y = y; z.w = w; z.h = h;
-  strncpy(z.key, key, ZONE_KEY_LEN - 1);
-  z.key[ZONE_KEY_LEN - 1] = '\0';
-  if (idx < zonePrevCount) {
-    return strcmp(z.key, zonesPrev[idx].key) != 0;
-  }
-  return true;
-}
-
-void zonePushDirty() {
-  if (!spriteAvailable) return;
-  for (uint8_t i = 0; i < zoneCurCount; i++) {
-    if (i >= zonePrevCount || strcmp(zonesCur[i].key, zonesPrev[i].key) != 0) {
-      DisplayZone& z = zonesCur[i];
-      spr.pushSprite(z.x, z.y, z.x, z.y, z.w, z.h);
-    }
-  }
-  memcpy(zonesPrev, zonesCur, sizeof(DisplayZone) * zoneCurCount);
-  zonePrevCount = zoneCurCount;
-}
+// Zone helper implementations removed — LVGL handles dirty tracking (#114)
 
 // Update SD card status indicator on all screen headers (#120)
 void updateSDIndicators() {
@@ -8059,114 +7866,22 @@ void updateSDIndicators() {
 void updateDisplay() {
   static unsigned long lastUpdate = 0;
 
-  // Save forceDisplayUpdate BEFORE clearing (race fix)
-  bool wasForced = forceDisplayUpdate;
-  forceDisplayUpdate = false;
-
-  // Throttle: update every 500ms, or immediately if forced
-  if (!wasForced && millis() - lastUpdate < 500) return;
+  // Throttle: update data every 500ms (LVGL rendering runs independently)
+  if (millis() - lastUpdate < 500) return;
   lastUpdate = millis();
 
-  // Update TFT display (if not sleeping)
+  // Update TFT display data (if not sleeping)
   if (!tftSleeping) {
-
-    // Show/hide LVGL compass screen based on currentScreen (#109)
-    if (compassScr) {
-      if (currentScreen == SCREEN_COMPASS)
-        lv_obj_clear_flag(compassScr, LV_OBJ_FLAG_HIDDEN);
-      else
-        lv_obj_add_flag(compassScr, LV_OBJ_FLAG_HIDDEN);
-    }
-
-    // Show/hide LVGL geocache screen based on currentScreen (#110)
-    if (geocacheScr) {
-      if (currentScreen == SCREEN_GEOCACHE)
-        lv_obj_clear_flag(geocacheScr, LV_OBJ_FLAG_HIDDEN);
-      else
-        lv_obj_add_flag(geocacheScr, LV_OBJ_FLAG_HIDDEN);
-    }
-
-    // Show/hide LVGL environment screen based on currentScreen (#111)
-    if (envScr) {
-      if (currentScreen == SCREEN_ENV)
-        lv_obj_clear_flag(envScr, LV_OBJ_FLAG_HIDDEN);
-      else
-        lv_obj_add_flag(envScr, LV_OBJ_FLAG_HIDDEN);
-    }
-
-    // Show/hide LVGL telemetry screen based on currentScreen (#111)
-    if (telemetryScr) {
-      if (currentScreen == SCREEN_TELEMETRY)
-        lv_obj_clear_flag(telemetryScr, LV_OBJ_FLAG_HIDDEN);
-      else
-        lv_obj_add_flag(telemetryScr, LV_OBJ_FLAG_HIDDEN);
-    }
-
-    // Show/hide LVGL settings screen based on currentScreen (#112)
-    if (settingsScr) {
-      if (currentScreen == SCREEN_SETTINGS)
-        lv_obj_clear_flag(settingsScr, LV_OBJ_FLAG_HIDDEN);
-      else
-        lv_obj_add_flag(settingsScr, LV_OBJ_FLAG_HIDDEN);
-    }
-
     // Update SD card status indicator on all screen headers (#120)
     updateSDIndicators();
 
-    // LVGL-managed screens: update data, skip legacy sprite draw
-    if ((currentScreen == SCREEN_COMPASS && compassScr) ||
-        (currentScreen == SCREEN_GEOCACHE && geocacheScr) ||
-        (currentScreen == SCREEN_ENV && envScr) ||
-        (currentScreen == SCREEN_TELEMETRY && telemetryScr) ||
-        (currentScreen == SCREEN_SETTINGS && settingsScr)) {
-
-      if (currentScreen == SCREEN_COMPASS) {
-        updateCompassData();
-        fcNavBarSetActive(compassNavBar, currentScreen);
-      } else if (currentScreen == SCREEN_GEOCACHE) {
-        updateGeocacheData();
-      } else if (currentScreen == SCREEN_ENV) {
-        updateEnvData();
-      } else if (currentScreen == SCREEN_TELEMETRY) {
-        updateTelemetryData();
-      } else if (currentScreen == SCREEN_SETTINGS) {
-        updateSettingsData();
-      }
-
-      // Screen-change clear: wipe sprite framebuffer when transitioning
-      // from a legacy screen to an LVGL screen
-      static int lastLvglScreen = -1;
-      if (currentScreen != lastLvglScreen) {
-        if (spriteAvailable) {
-          spr.fillSprite(COLOR_BG);
-          spr.pushSprite(0, 0);
-        }
-        // Force LVGL full repaint — the sprite push overwrote the TFT
-        // outside LVGL's knowledge, so its dirty tracking is stale (#112)
-        lv_obj_invalidate(lv_screen_active());
-        lastLvglScreen = currentScreen;
-      }
-    } else {
-      // Legacy sprite pipeline for remaining screens
-      TFT_eSprite* c = &spr;
-
-      // On screen change: clear sprite + push full black frame to TFT
-      static int lastDrawnScreen = -1;
-      if (spriteAvailable && (currentScreen != lastDrawnScreen || wasForced)) {
-        spr.fillSprite(COLOR_BG);
-        spr.pushSprite(0, 0);
-        zonePrevCount = 0;
-        lastDrawnScreen = currentScreen;
-      }
-
-      switch (currentScreen) {
-        case SCREEN_COMPASS:   drawScreenCompass(c);   break;
-        case SCREEN_GEOCACHE:  drawScreenGeocache(c);  break;
-        case SCREEN_ENV:       drawScreenEnv(c);       break;
-        case SCREEN_TELEMETRY: drawScreenTelemetry(c); break;
-      }
-
-      zonePushDirty();
+    // Update active screen data — LVGL handles rendering via lv_timer_handler()
+    switch (currentScreen) {
+      case SCREEN_COMPASS:   updateCompassData(); fcNavBarSetActive(compassNavBar, currentScreen); break;
+      case SCREEN_GEOCACHE:  updateGeocacheData(); break;
+      case SCREEN_ENV:       updateEnvData(); break;
+      case SCREEN_TELEMETRY: updateTelemetryData(); break;
+      case SCREEN_SETTINGS:  updateSettingsData(); break;
     }
 
     // Track TFT update for health monitoring
@@ -8180,673 +7895,7 @@ void updateDisplay() {
   }
 }
 
-void drawHeader(TFT_eSprite* c, const char* title) {
-  c->fillRect(0, 0, SCREEN_W, 30, COLOR_HEADER);
-  c->setTextColor(COLOR_BG);
-  c->setTextSize(2);
-  c->setCursor(10, 7);
-  c->print(title);
-
-  // Draw gear icon on cycling screens (not on Settings itself)
-  if (currentScreen != SCREEN_SETTINGS) {
-    int gx = 458, gy = 15;  // Center of gear icon
-    int r = 8;               // Outer radius
-    c->fillCircle(gx, gy, 5, COLOR_BG);       // Gear body
-    c->fillCircle(gx, gy, 2, COLOR_HEADER);   // Center hole
-    // Draw 6 teeth around the gear
-    for (int i = 0; i < 6; i++) {
-      float angle = i * PI / 3.0;
-      int tx = gx + (int)(r * cos(angle));
-      int ty = gy + (int)(r * sin(angle));
-      c->fillCircle(tx, ty, 2, COLOR_BG);
-    }
-  }
-}
-
-void drawNavBar(TFT_eSprite* c) {
-  int y = SCREEN_H - 25;
-  c->fillRect(0, y, SCREEN_W, 25, 0x18C3);  // Dark gray
-
-  c->setTextColor(COLOR_TEXT);
-  c->setTextSize(2);
-
-  // Screen indicators - adjusted spacing for 4 screens (#97)
-  int startX = 80;
-  int spacing = 40;
-  for (int i = 0; i < NUM_SCREENS; i++) {
-    if (i == currentScreen) {
-      c->fillRect(startX + i * spacing, y + 3, 28, 19, COLOR_HEADER);
-      c->setTextColor(COLOR_BG);
-    } else {
-      c->setTextColor(COLOR_DIM);
-    }
-    c->setCursor(startX + 6 + i * spacing, y + 5);
-    c->print(i + 1);
-    c->setTextColor(COLOR_TEXT);
-  }
-
-  // Button hints
-  c->setTextSize(1);
-  c->setCursor(10, y + 8);
-  c->print("A<");
-  c->setCursor(SCREEN_W - 25, y + 8);
-  c->print(">B");
-}
-
-void drawLabel(TFT_eSprite* c, int x, int y, const char* label) {
-  c->setTextColor(COLOR_DIM);
-  c->setTextSize(2);
-  c->setCursor(x, y);
-  c->print(label);
-}
-
-void drawValue(TFT_eSprite* c, int x, int y, const char* value, uint16_t color = COLOR_VALUE, int clearWidth = 200) {
-  c->fillRect(x, y, clearWidth, 18, COLOR_BG);  // Clear value area before drawing
-  c->setTextColor(color);
-  c->setTextSize(2);
-  c->setCursor(x, y);
-  c->print(value);
-}
-
-// drawScreenOps() removed — content now in Settings > About (#102)
-
-// Combined Telemetry screen — GPS data + IMU data (#97)
-void drawScreenTelemetry(TFT_eSprite* c) {
-  zoneBegin();
-  char buf[ZONE_KEY_LEN];
-
-  // Column geometry
-  int leftLabelX = 20;
-  int leftValueX = 100;
-  int rightLabelX = 250;
-  int rightValueX = 340;
-  int lineH = 30;
-
-  // Zone 0: Header
-  if (zoneMark(0, 0, SCREEN_W, 30, "TELEMETRY"))
-    drawHeader(c, "TELEMETRY");
-
-  // ============ GPS Section (y=36..170) ============
-
-  // GPS mode transition clearing — force redraw on state change
-  int gpsMode = gpsData.valid ? 0 : (gpsData.receiving ? 1 : 2);
-  static int lastTelemetryGpsMode = -1;
-  if (gpsMode != lastTelemetryGpsMode) {
-    c->fillRect(0, 30, SCREEN_W, 142, COLOR_BG);  // Clear GPS section
-    spr.pushSprite(0, 0);
-    zonePrevCount = 0;
-    lastTelemetryGpsMode = gpsMode;
-  }
-
-  // Section label
-  if (zoneMark(0, 36, SCREEN_W, 14, "GPS_HDR")) {
-    c->setTextColor(COLOR_HEADER);
-    c->setTextSize(1);
-    int labelW = 11 * 6;  // "=== GPS ===" = 11 chars
-    c->setCursor((SCREEN_W - labelW) / 2, 38);
-    c->print("=== GPS ===");
-  }
-
-  if (gpsData.valid) {
-    int y = 56;
-
-    // Row 1: Lat / Lon
-    if (zoneMark(leftLabelX, y, 70, 18, "Lat:"))
-      drawLabel(c, leftLabelX, y, "Lat:");
-    sprintf(buf, "%.6f %c", fabs(gpsData.latitude), gpsData.latitude >= 0 ? 'N' : 'S');
-    if (zoneMark(leftValueX, y, 140, 18, buf))
-      drawValue(c, leftValueX, y, buf, COLOR_VALUE, 140);
-
-    if (zoneMark(rightLabelX, y, 80, 18, "Lon:"))
-      drawLabel(c, rightLabelX, y, "Lon:");
-    sprintf(buf, "%.6f %c", fabs(gpsData.longitude), gpsData.longitude >= 0 ? 'E' : 'W');
-    if (zoneMark(rightValueX, y, 140, 18, buf))
-      drawValue(c, rightValueX, y, buf, COLOR_VALUE, 140);
-    y += lineH;
-
-    // Row 2: Alt / Spd
-    if (zoneMark(leftLabelX, y, 70, 18, "Alt:"))
-      drawLabel(c, leftLabelX, y, "Alt:");
-    {
-      float alt = useMetricUnits ? gpsData.altitude : gpsData.altitude * 3.28084;
-      sprintf(buf, "%.1f %s", alt, useMetricUnits ? "m" : "ft");
-    }
-    if (zoneMark(leftValueX, y, 140, 18, buf))
-      drawValue(c, leftValueX, y, buf, COLOR_VALUE, 140);
-
-    if (zoneMark(rightLabelX, y, 80, 18, "Spd:"))
-      drawLabel(c, rightLabelX, y, "Spd:");
-    {
-      float speed = gpsData.speedKnots * (useMetricUnits ? 1.852 : 1.15078);
-      sprintf(buf, "%.1f %s", speed, useMetricUnits ? "km/h" : "mph");
-    }
-    if (zoneMark(rightValueX, y, 140, 18, buf))
-      drawValue(c, rightValueX, y, buf, COLOR_VALUE, 140);
-    y += lineH;
-
-    // Row 3: Sat / HDOP
-    if (zoneMark(leftLabelX, y, 70, 18, "Sat:"))
-      drawLabel(c, leftLabelX, y, "Sat:");
-    sprintf(buf, "%d", gpsData.satellites);
-    if (zoneMark(leftValueX, y, 140, 18, buf))
-      drawValue(c, leftValueX, y, buf, COLOR_VALUE, 140);
-
-    if (zoneMark(rightLabelX, y, 80, 18, "HDOP:"))
-      drawLabel(c, rightLabelX, y, "HDOP:");
-    sprintf(buf, "%.1f", gpsData.hdop);
-    if (zoneMark(rightValueX, y, 140, 18, buf))
-      drawValue(c, rightValueX, y, buf, COLOR_VALUE, 140);
-    y += lineH;
-
-    // Row 4: Status (full width)
-    if (zoneMark(leftLabelX, y, 110, 18, "Status:"))
-      drawLabel(c, leftLabelX, y, "Status:");
-    if (gpsHadFirstFix) {
-      sprintf(buf, "Fix OK (TTFF %lus)", gpsFirstFixTime / 1000);
-    } else {
-      strcpy(buf, "Fix OK");
-    }
-    if (zoneMark(leftValueX, y, 300, 18, buf))
-      drawValue(c, leftValueX, y, buf, COLOR_VALUE, 300);
-
-  } else if (gpsData.receiving) {
-    // Acquiring state
-    if (zoneMark(60, 60, 300, 20, "Acquiring fix...")) {
-      c->fillRect(60, 60, 300, 20, COLOR_BG);
-      c->setTextColor(COLOR_WARN);
-      c->setTextSize(2);
-      c->setCursor(60, 60);
-      c->print("Acquiring fix...");
-    }
-
-    unsigned long elapsed = millis() / 1000;
-    sprintf(buf, "Elapsed: %lum %lus", elapsed / 60, elapsed % 60);
-    if (zoneMark(60, 86, 300, 20, buf)) {
-      c->fillRect(60, 86, 300, 20, COLOR_BG);
-      c->setTextColor(COLOR_DIM);
-      c->setTextSize(2);
-      c->setCursor(60, 86);
-      c->print(buf);
-    }
-
-    if (zoneMark(60, 112, 300, 20, "Need clear sky view")) {
-      c->setTextColor(COLOR_DIM);
-      c->setTextSize(2);
-      c->setCursor(60, 112);
-      c->print("Need clear sky view");
-    }
-
-    sprintf(buf, "Sats: %d", gpsData.satellites);
-    if (zoneMark(60, 138, 300, 20, buf)) {
-      c->fillRect(60, 138, 300, 20, COLOR_BG);
-      c->setTextColor(COLOR_VALUE);
-      c->setTextSize(2);
-      c->setCursor(60, 138);
-      c->print(buf);
-    }
-
-  } else {
-    // No GPS
-    if (zoneMark(80, 80, 300, 20, "No GPS data")) {
-      c->setTextColor(COLOR_ERROR);
-      c->setTextSize(2);
-      c->setCursor(80, 80);
-      c->print("No GPS data");
-    }
-    if (zoneMark(60, 116, 300, 20, "Check connection")) {
-      c->setTextColor(COLOR_DIM);
-      c->setTextSize(2);
-      c->setCursor(60, 116);
-      c->print("Check connection");
-    }
-  }
-
-  // ============ Divider ============
-  c->drawLine(0, 172, SCREEN_W, 172, COLOR_DIM);
-
-  // ============ IMU Section (y=176..264) ============
-
-  // Section label
-  if (zoneMark(0, 176, SCREEN_W, 14, "IMU_HDR")) {
-    c->setTextColor(COLOR_HEADER);
-    c->setTextSize(1);
-    int labelW = 11 * 6;  // "=== IMU ===" = 11 chars
-    c->setCursor((SCREEN_W - labelW) / 2, 178);
-    c->print("=== IMU ===");
-  }
-
-  if (imuAvailable && magAvailable) {
-    int y = 196;
-
-    // Row 5: Heading+Cardinal / Roll
-    if (zoneMark(leftLabelX, y, 70, 18, "Hdg:"))
-      drawLabel(c, leftLabelX, y, "Hdg:");
-    sprintf(buf, "%.0f %s", imuData.heading, getCardinal(imuData.heading));
-    if (zoneMark(leftValueX, y, 140, 18, buf))
-      drawValue(c, leftValueX, y, buf, COLOR_VALUE, 140);
-
-    if (zoneMark(rightLabelX, y, 80, 18, "Roll:"))
-      drawLabel(c, rightLabelX, y, "Roll:");
-    sprintf(buf, "%.0f deg", imuData.roll);
-    if (zoneMark(rightValueX, y, 140, 18, buf))
-      drawValue(c, rightValueX, y, buf, COLOR_VALUE, 140);
-    y += lineH;
-
-    // Row 6: Pitch / Accel
-    if (zoneMark(leftLabelX, y, 70, 18, "Pitch:"))
-      drawLabel(c, leftLabelX, y, "Pitch:");
-    sprintf(buf, "%.0f deg", imuData.pitch);
-    if (zoneMark(leftValueX, y, 140, 18, buf))
-      drawValue(c, leftValueX, y, buf, COLOR_VALUE, 140);
-
-    if (zoneMark(rightLabelX, y, 80, 18, "Accel:"))
-      drawLabel(c, rightLabelX, y, "Accel:");
-    sprintf(buf, "%.2f m/s2", imuData.accelMag);
-    if (zoneMark(rightValueX, y, 140, 18, buf))
-      drawValue(c, rightValueX, y, buf, COLOR_VALUE, 140);
-
-  } else {
-    if (zoneMark(60, 210, 300, 20, "IMU not available")) {
-      c->setTextColor(COLOR_ERROR);
-      c->setTextSize(2);
-      c->setCursor(60, 210);
-      c->print("IMU not available");
-    }
-  }
-
-  // NavBar
-  sprintf(buf, "nav_%d", currentScreen);
-  if (zoneMark(0, SCREEN_H - 25, SCREEN_W, 25, buf))
-    drawNavBar(c);
-}
-
-void drawScreenEnv(TFT_eSprite* c) {
-  zoneBegin();
-  char buf[ZONE_KEY_LEN];
-
-  int y = 42;
-  int labelX = 10;
-  int valueX = 70;
-  int lineH = 16;
-
-  // ENV-specific lambdas at textSize 1 (#55)
-  auto envLabel = [&](int x, int y, const char* label) {
-    c->setTextColor(COLOR_DIM);
-    c->setTextSize(1);
-    c->setCursor(x, y);
-    c->print(label);
-  };
-  auto envValue = [&](int x, int y, const char* value, uint16_t color = COLOR_VALUE) {
-    c->fillRect(x, y, 250, 10, COLOR_BG);
-    c->setTextColor(color);
-    c->setTextSize(1);
-    c->setCursor(x, y);
-    c->print(value);
-  };
-
-  // Zone 0: Header
-  if (zoneMark(0, 0, SCREEN_W, 30, "ENVIRONMENT"))
-    drawHeader(c, "ENVIRONMENT");
-
-  if (bmeAvailable || shtAvailable) {
-    float tempC = shtAvailable ? shtData.temperature : envData.temperature;
-    float tempF = tempC * 9.0 / 5.0 + 32.0;
-    const char* tempSrc = shtAvailable ? "SHT" : "BME";
-
-    // Zone 1: Temp label
-    if (zoneMark(labelX, y, 55, 10, "Temp:"))
-      envLabel(labelX, y, "Temp:");
-    // Zone 2: Temp value (#98 — respects useFahrenheit)
-    if (useFahrenheit)
-      sprintf(buf, "%.1f\xF7""F (%.1fC) %s", tempF, tempC, tempSrc);
-    else
-      sprintf(buf, "%.1f\xF7""C (%.1fF) %s", tempC, tempF, tempSrc);
-    if (zoneMark(valueX, y, 250, 10, buf))
-      envValue(valueX, y, buf);
-    y += lineH;
-
-    // Zone 3: Humid label
-    float humid = shtAvailable ? shtData.humidity : envData.humidity;
-    if (zoneMark(labelX, y, 55, 10, "Humid:"))
-      envLabel(labelX, y, "Humid:");
-    // Zone 4: Humid value
-    sprintf(buf, "%.1f%% %s", humid, tempSrc);
-    if (zoneMark(valueX, y, 250, 10, buf))
-      envValue(valueX, y, buf);
-    y += lineH;
-
-    if (bmeAvailable) {
-      // Zone 5: IAQ label
-      if (zoneMark(labelX, y, 55, 10, "IAQ:"))
-        envLabel(labelX, y, "IAQ:");
-      // Zone 6: IAQ value
-      sprintf(buf, "%.0f [%s]", envData.iaq, getIaqAccuracyText(envData.iaqAccuracy));
-      uint16_t iaqColor = COLOR_VALUE;
-      if (envData.iaq > 200) iaqColor = COLOR_ERROR;
-      else if (envData.iaq > 100) iaqColor = COLOR_WARN;
-      if (zoneMark(valueX, y, 250, 10, buf))
-        envValue(valueX, y, buf, iaqColor);
-      y += lineH;
-
-      // Zone 7: CO2 label
-      if (zoneMark(labelX, y, 55, 10, "CO2:"))
-        envLabel(labelX, y, "CO2:");
-      // Zone 8: CO2 value
-      sprintf(buf, "%.0f ppm", envData.co2Equivalent);
-      uint16_t co2Color = COLOR_VALUE;
-      if (envData.co2Equivalent > 2000) co2Color = COLOR_ERROR;
-      else if (envData.co2Equivalent > 1000) co2Color = COLOR_WARN;
-      if (zoneMark(valueX, y, 250, 10, buf))
-        envValue(valueX, y, buf, co2Color);
-      y += lineH;
-
-      // Zone 9: Pressure label
-      if (zoneMark(labelX, y, 55, 10, "Press:"))
-        envLabel(labelX, y, "Press:");
-      // Zone 10: Pressure value
-      sprintf(buf, "%.1f hPa (%.2f\")", envData.pressure, hPaToInHg(envData.pressure));
-      if (zoneMark(valueX, y, 250, 10, buf))
-        envValue(valueX, y, buf);
-      y += lineH;
-
-      // Zone 11: Forecast label
-      if (zoneMark(labelX, y, 55, 10, "Fcst:"))
-        envLabel(labelX, y, "Fcst:");
-      // Zone 12: Forecast value
-      sprintf(buf, "%s %s", getTrendArrow(), weatherTrend.forecast);
-      uint16_t fcstColor = COLOR_VALUE;
-      if (strstr(weatherTrend.forecast, "Storm")) fcstColor = COLOR_ERROR;
-      else if (strstr(weatherTrend.forecast, "Rain") || strstr(weatherTrend.forecast, "Snow")) fcstColor = COLOR_WARN;
-      if (zoneMark(valueX, y, 250, 10, buf))
-        envValue(valueX, y, buf, fcstColor);
-    } else {
-      if (zoneMark(labelX, y, 55, 10, "IAQ:"))
-        envLabel(labelX, y, "IAQ:");
-      if (zoneMark(valueX, y, 250, 10, "N/A (no BME688)"))
-        envValue(valueX, y, "N/A (no BME688)", COLOR_DIM);
-      y += lineH;
-      if (zoneMark(labelX, y, 55, 10, "Press:"))
-        envLabel(labelX, y, "Press:");
-      if (zoneMark(valueX, y, 250, 10, "N/A (no BME688) p"))
-        envValue(valueX, y, "N/A (no BME688)", COLOR_DIM);
-    }
-  } else {
-    if (zoneMark(60, 100, 300, 20, "No env sensors")) {
-      c->setTextColor(COLOR_ERROR);
-      c->setTextSize(2);
-      c->setCursor(60, 100);
-      c->println("No env sensors");
-    }
-  }
-
-  // Zone 13: NavBar
-  sprintf(buf, "nav_%d", currentScreen);
-  if (zoneMark(0, SCREEN_H - 25, SCREEN_W, 25, buf))
-    drawNavBar(c);
-}
-
-void drawScreenCompass(TFT_eSprite* c) {
-  char buf[64];
-
-  // Calibration overlay removed — now in Settings > Compass Cal (#89)
-
-  zoneBegin();
-
-  // Zone 0: Header
-  if (zoneMark(0, 0, SCREEN_W, 30, "COMPASS"))
-    drawHeader(c, "COMPASS");
-
-  // Separator line between left panel and rose
-  c->drawLine(178, 34, 178, 290, 0x2104);
-
-  // GPS mode transition clearing — force full left-panel redraw on state change
-  static int lastCompassGpsMode = -1;
-  int compassGpsMode = gpsData.valid ? 0 : (gpsData.receiving ? 1 : 2);
-  if (compassGpsMode != lastCompassGpsMode) {
-    c->fillRect(0, 30, 178, 265, COLOR_BG);
-    spr.pushSprite(0, 0);
-    zonePrevCount = 0;
-    lastCompassGpsMode = compassGpsMode;
-  }
-
-  // === Left Panel: Text Data ===
-  if (imuAvailable && magAvailable) {
-    // Zone 1: Heading + Cardinal (textSize 4) — e.g., "204° SW"
-    const char* cardinal = getCardinal(imuData.heading);
-    sprintf(buf, "%.0f_%s", imuData.heading, cardinal);
-    if (zoneMark(8, 34, 170, 36, buf)) {
-      c->fillRect(8, 34, 170, 36, COLOR_BG);
-      c->setTextColor(COLOR_TEXT);
-      c->setTextSize(4);
-      c->setCursor(8, 36);
-      c->printf("%.0f", imuData.heading);
-      // Degree symbol proportional to textSize 4
-      int degX = c->getCursorX() + 2;
-      c->drawCircle(degX + 4, 38, 4, COLOR_TEXT);
-      // Cardinal direction after degree symbol
-      c->setCursor(degX + 14, 36);
-      c->print(cardinal);
-    }
-  } else {
-    // No IMU — single zone replaces heading + cardinal
-    if (zoneMark(8, 34, 170, 36, "No IMU")) {
-      c->fillRect(8, 34, 170, 36, COLOR_BG);
-      c->setTextColor(COLOR_ERROR);
-      c->setTextSize(2);
-      c->setCursor(8, 45);
-      c->print("No IMU");
-    }
-  }
-
-  // Zone 2: GPS Coordinates (textSize 1, 2 lines)
-  {
-    int gpsMode = gpsData.valid ? 0 : (gpsData.receiving ? 1 : 2);
-    if (gpsMode == 0) {
-      sprintf(buf, "G%d_%.4f_%.4f", gpsMode, gpsData.latitude, gpsData.longitude);
-    } else {
-      sprintf(buf, "G%d_s%d", gpsMode, gpsData.satellites);
-    }
-    if (zoneMark(8, 80, 170, 28, buf)) {
-      c->fillRect(8, 80, 170, 28, COLOR_BG);
-      c->setTextSize(1);
-      if (gpsData.valid) {
-        c->setTextColor(COLOR_DIM);
-        c->setCursor(8, 80);
-        c->print("Lat ");
-        c->setTextColor(COLOR_VALUE);
-        c->printf("%.4f%c", fabs(gpsData.latitude), gpsData.latitude >= 0 ? 'N' : 'S');
-        c->setTextColor(COLOR_DIM);
-        c->setCursor(8, 94);
-        c->print("Lon ");
-        c->setTextColor(COLOR_VALUE);
-        c->printf("%.4f%c", fabs(gpsData.longitude), gpsData.longitude >= 0 ? 'E' : 'W');
-      } else if (gpsData.receiving) {
-        c->setTextColor(COLOR_WARN);
-        c->setCursor(8, 80);
-        c->print("GPS Acquiring...");
-        c->setCursor(8, 94);
-        c->printf("Sats: %d", gpsData.satellites);
-      } else {
-        c->setTextColor(COLOR_ERROR);
-        c->setCursor(8, 84);
-        c->print("No GPS");
-      }
-    }
-  }
-
-  // Zone 3: Altitude (textSize 1) — grouped with GPS data
-  {
-    if (gpsData.valid) {
-      float alt = useMetricUnits ? gpsData.altitude : gpsData.altitude * 3.28084;
-      sprintf(buf, "A%.0f%c", alt, useMetricUnits ? 'm' : 'f');
-    } else {
-      strcpy(buf, "A--");
-    }
-    if (zoneMark(8, 108, 170, 14, buf)) {
-      c->fillRect(8, 108, 170, 14, COLOR_BG);
-      c->setTextSize(1);
-      c->setCursor(8, 108);
-      c->setTextColor(COLOR_DIM);
-      c->print("Alt ");
-      if (gpsData.valid) {
-        float alt = useMetricUnits ? gpsData.altitude : gpsData.altitude * 3.28084;
-        c->setTextColor(COLOR_VALUE);
-        c->printf("%.0f %s", alt, useMetricUnits ? "m" : "ft");
-      } else {
-        c->setTextColor(COLOR_DIM);
-        c->print("--");
-      }
-    }
-  }
-
-  // Zone 4: Speed (textSize 1) — grouped with GPS data
-  {
-    if (gpsData.valid) {
-      float speed = gpsData.speedKnots * (useMetricUnits ? 1.852 : 1.15078);
-      sprintf(buf, "S%.1f%c", speed, useMetricUnits ? 'k' : 'm');
-    } else {
-      strcpy(buf, "S--");
-    }
-    if (zoneMark(8, 122, 170, 14, buf)) {
-      c->fillRect(8, 122, 170, 14, COLOR_BG);
-      c->setTextSize(1);
-      c->setCursor(8, 122);
-      c->setTextColor(COLOR_DIM);
-      c->print("Spd ");
-      if (gpsData.valid) {
-        float speed = gpsData.speedKnots * (useMetricUnits ? 1.852 : 1.15078);
-        c->setTextColor(COLOR_VALUE);
-        c->printf("%.1f %s", speed, useMetricUnits ? "km/h" : "mph");
-      } else {
-        c->setTextColor(COLOR_DIM);
-        c->printf("-- %s", useMetricUnits ? "km/h" : "mph");
-      }
-    }
-  }
-
-  // Zone 5: Temperature (textSize 1)
-  {
-    bool hasTempSensor = shtAvailable || bmeAvailable;
-    if (hasTempSensor) {
-      float tempC = shtAvailable ? shtData.temperature : envData.temperature;
-      float tempDisplay = useFahrenheit ? tempC * 9.0 / 5.0 + 32.0 : tempC;
-      sprintf(buf, "T%.1f%c", tempDisplay, useFahrenheit ? 'F' : 'C');
-    } else {
-      strcpy(buf, "T--");
-    }
-    if (zoneMark(8, 144, 170, 14, buf)) {
-      c->fillRect(8, 144, 170, 14, COLOR_BG);
-      c->setTextSize(1);
-      c->setCursor(8, 144);
-      c->setTextColor(COLOR_DIM);
-      c->print("Temp ");
-      if (hasTempSensor) {
-        float tempC = shtAvailable ? shtData.temperature : envData.temperature;
-        float tempDisplay = useFahrenheit ? tempC * 9.0 / 5.0 + 32.0 : tempC;
-        c->setTextColor(COLOR_VALUE);
-        c->printf("%.1f", tempDisplay);
-        // Degree symbol using small circle
-        int degX = c->getCursorX() + 1;
-        int degY = c->getCursorY();
-        c->drawCircle(degX + 1, degY + 1, 1, COLOR_VALUE);
-        c->setCursor(degX + 5, degY);
-        c->printf("%c", useFahrenheit ? 'F' : 'C');
-      } else {
-        c->setTextColor(COLOR_DIM);
-        c->print("--");
-      }
-    }
-  }
-
-  // Zone 6: Forecast + trend (textSize 1)
-  {
-    sprintf(buf, "F_%s_%s", getTrendArrow(), weatherTrend.forecast);
-    if (zoneMark(8, 158, 170, 14, buf)) {
-      c->fillRect(8, 158, 170, 14, COLOR_BG);
-      c->setTextSize(1);
-      c->setCursor(8, 158);
-      c->setTextColor(COLOR_DIM);
-      c->print("Fcst ");
-      // Determine forecast color
-      uint16_t fcstColor = COLOR_VALUE;  // Default green
-      const char* fc = weatherTrend.forecast;
-      if (strstr(fc, "Storm")) fcstColor = COLOR_ERROR;
-      else if (strstr(fc, "Rain") || strstr(fc, "Snow") ||
-               strstr(fc, "Unsettled") || strstr(fc, "Precip")) fcstColor = COLOR_WARN;
-      else if (strcmp(fc, "Init") == 0 || strcmp(fc, "Learning") == 0 ||
-               strcmp(fc, "Traveled") == 0) fcstColor = COLOR_DIM;
-      c->setTextColor(fcstColor);
-      c->printf("%s %s", getTrendArrow(), fc);
-    }
-  }
-
-  // Zone 7: GPS Status (textSize 1)
-  {
-    if (gpsData.valid) {
-      sprintf(buf, "GS_OK_%d_%.1f", gpsData.satellites, gpsData.hdop);
-    } else if (gpsData.receiving) {
-      sprintf(buf, "GS_ACQ_%d", gpsData.satellites);
-    } else {
-      strcpy(buf, "GS_NONE");
-    }
-    if (zoneMark(8, 200, 170, 14, buf)) {
-      c->fillRect(8, 200, 170, 14, COLOR_BG);
-      c->setTextSize(1);
-      c->setCursor(8, 200);
-      if (gpsData.valid) {
-        c->setTextColor(COLOR_VALUE);
-        c->printf("GPS OK Sat:%d HDOP:%.1f", gpsData.satellites, gpsData.hdop);
-      } else if (gpsData.receiving) {
-        c->setTextColor(COLOR_WARN);
-        c->printf("GPS Acquiring Sat:%d", gpsData.satellites);
-      } else {
-        c->setTextColor(COLOR_ERROR);
-        c->print("No GPS");
-      }
-    }
-  }
-
-  // Zone 9: Time (textSize 2)
-  {
-    char timeBuf[16];
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo, 0)) {
-      formatTimeStr(timeBuf, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, false);
-    } else {
-      strcpy(timeBuf, "--:--");
-    }
-    if (zoneMark(8, 268, 170, 22, timeBuf)) {
-      c->fillRect(8, 268, 170, 22, COLOR_BG);
-      c->setTextSize(2);
-      c->setCursor(8, 270);
-      bool hasTime = (timeBuf[0] != '-');
-      c->setTextColor(hasTime ? COLOR_TEXT : COLOR_DIM);
-      c->print(timeBuf);
-    }
-  }
-
-  // === Right Panel: Compass Rose ===
-  // Zone 10: Compass rose — key on heading rounded to 2° steps
-  if (imuAvailable && magAvailable) {
-    int roseHeading = ((int)imuData.heading / 2) * 2;
-    sprintf(buf, "rose_%d", roseHeading);
-    if (zoneMark(182, 30, 298, 265, buf))
-      drawCompassRose(c, 320, 162, 108, imuData.heading);
-  } else {
-    if (zoneMark(182, 30, 298, 265, "rose_none")) {
-      c->drawCircle(320, 162, 108, COLOR_DIM);
-      c->setTextColor(COLOR_DIM);
-      c->setTextSize(3);
-      c->setCursor(312, 152);
-      c->print("?");
-    }
-  }
-
-  // Zone 7: NavBar
-  sprintf(buf, "nav_%d", currentScreen);
-  if (zoneMark(0, SCREEN_H - 25, SCREEN_W, 25, buf))
-    drawNavBar(c);
-}
+// ============== Utility Functions (preserved from legacy) ==============
 
 const char* getCardinal(float heading) {
   if (heading >= 337.5 || heading < 22.5) return "N";
@@ -8857,115 +7906,6 @@ const char* getCardinal(float heading) {
   if (heading >= 202.5 && heading < 247.5) return "SW";
   if (heading >= 247.5 && heading < 292.5) return "W";
   return "NW";
-}
-
-// Draw rotating 8-point compass rose
-// cx, cy = center, radius = outer ring size, heading = device heading (degrees)
-void drawCompassRose(TFT_eSprite* c, int cx, int cy, int radius, float heading) {
-  // Clear rose area — proportional margin, clamped to content area
-  int margin = radius / 5;  // 24 at r=120
-  int clearY = max(30, cy - radius - margin);
-  int clearBottom = min(294, cy + radius + margin);
-  c->fillRect(cx - radius - margin, clearY,
-              2 * (radius + margin), clearBottom - clearY, COLOR_BG);
-
-  // Anti-aliased outer circle
-  c->drawSmoothCircle(cx, cy, radius, COLOR_DIM, COLOR_BG);
-
-  // Rotation: rose turns opposite to heading so N points north
-  float rotDeg = -heading;
-
-  // Proportional tick lengths
-  int cardTickLen = radius / 10;    // 12px at r=120
-  int interTickLen = radius / 20;   // 6px at r=120
-
-  // Degree ticks every 30 degrees (12 ticks)
-  for (int i = 0; i < 12; i++) {
-    float tickAngle = radians(i * 30 + rotDeg - 90);  // -90 for screen coords
-    int tickLen = (i % 3 == 0) ? cardTickLen : interTickLen;
-    int outerX = cx + cos(tickAngle) * radius;
-    int outerY = cy + sin(tickAngle) * radius;
-    int innerX = cx + cos(tickAngle) * (radius - tickLen);
-    int innerY = cy + sin(tickAngle) * (radius - tickLen);
-    c->drawLine(innerX, innerY, outerX, outerY, COLOR_DIM);
-
-    // Degree label just outside the ring
-    int deg = i * 30;
-    char lbl[4];
-    sprintf(lbl, "%d", deg);
-    int labelRadius = radius + 4;  // Slightly outside the circle
-    int lblX = cx + cos(tickAngle) * labelRadius;
-    int lblY = cy + sin(tickAngle) * labelRadius;
-    int charW = strlen(lbl) * 6;  // textSize 1: 6px per char
-    c->setTextSize(1);
-    c->setTextColor((i % 3 == 0) ? COLOR_TEXT : COLOR_DIM);
-    c->setCursor(lblX - charW / 2, lblY - 4);  // Center on point
-    c->print(lbl);
-  }
-
-  // Proportional needle dimensions derived from radius
-  int cardLen  = radius * 93 / 100;  // Cardinal length (93% of r)
-  int interLen = radius * 60 / 100;  // Intercardinal length (60% of r)
-  int cardHW   = radius * 10 / 100;  // Cardinal half-width (10% of r)
-  int interHW  = radius * 6 / 100;   // Intercardinal half-width (6% of r)
-
-  // 8 diamond needles: cardinals (longer, wider) + intercardinals (shorter, thinner)
-  struct Needle {
-    float angle;      // Degrees from north
-    int length;       // Tip distance from center
-    int halfWidth;    // Half-width at center
-    uint16_t color;
-  };
-
-  Needle needles[] = {
-    {  0,  cardLen,  cardHW,  COLOR_HEADER},  // N — cyan
-    { 45,  interLen, interHW, COLOR_DIM},     // NE — gray
-    { 90,  cardLen,  cardHW,  COLOR_TEXT},     // E — white
-    {135,  interLen, interHW, COLOR_DIM},      // SE — gray
-    {180,  cardLen,  cardHW,  COLOR_ERROR},    // S — red
-    {225,  interLen, interHW, COLOR_DIM},      // SW — gray
-    {270,  cardLen,  cardHW,  COLOR_TEXT},     // W — white
-    {315,  interLen, interHW, COLOR_DIM},      // NW — gray
-  };
-
-  for (int i = 0; i < 8; i++) {
-    float tipRad = radians(needles[i].angle + rotDeg - 90);
-    float perpRad = tipRad + radians(90);
-
-    // Tip point (outer end of needle)
-    int tipX = cx + cos(tipRad) * needles[i].length;
-    int tipY = cy + sin(tipRad) * needles[i].length;
-
-    // Two side points at center (perpendicular to needle axis)
-    int sideX1 = cx + cos(perpRad) * needles[i].halfWidth;
-    int sideY1 = cy + sin(perpRad) * needles[i].halfWidth;
-    int sideX2 = cx - cos(perpRad) * needles[i].halfWidth;
-    int sideY2 = cy - sin(perpRad) * needles[i].halfWidth;
-
-    // Tail point (opposite end, 1/3 length)
-    float tailRad = tipRad + radians(180);
-    int tailLen = needles[i].length / 3;
-    int tailX = cx + cos(tailRad) * tailLen;
-    int tailY = cy + sin(tailRad) * tailLen;
-
-    // Draw as two triangles: tip half and tail half
-    c->fillTriangle(tipX, tipY, sideX1, sideY1, sideX2, sideY2, needles[i].color);
-    // Tail: cardinals get dark fill, intercardinals get gray
-    uint16_t tailColor = (needles[i].color == COLOR_DIM) ? COLOR_DIM : 0x2104;
-    c->fillTriangle(tailX, tailY, sideX1, sideY1, sideX2, sideY2, tailColor);
-  }
-
-  // Proportional center hub — sized to frame needle bases
-  int hubR = max(5, radius / 15);  // 7px at r=108
-  c->fillCircle(cx, cy, hubR, COLOR_TEXT);
-  c->drawCircle(cx, cy, hubR, COLOR_DIM);
-
-  // Fixed lubber line at top (does NOT rotate) — proportional orange triangle
-  int lubberY = cy - radius - 4;
-  int lubberHW = max(5, radius / 15);   // 8px at r=120
-  int lubberH  = max(8, radius / 10);   // 12px at r=120
-  c->fillTriangle(cx, lubberY, cx - lubberHW, lubberY - lubberH,
-                  cx + lubberHW, lubberY - lubberH, COLOR_WARN);
 }
 
 // ============== Geocache Helper Functions (#70) ==============
@@ -8997,544 +7937,11 @@ float getGpsAccuracyMeters() {
   return 3.0 * gpsData.hdop;  // Typical GPS accuracy ≈ 3m × HDOP
 }
 
-// Get color for accuracy indicator
-uint16_t getAccuracyColor(float accuracyM) {
-  if (accuracyM < 10) return COLOR_VALUE;  // Green - excellent
-  if (accuracyM < 25) return COLOR_WARN;   // Yellow - good
-  return COLOR_ERROR;                       // Red - poor
-}
-
-// Draw Google Maps style navigation triangle
-void drawNavTriangle(TFT_eSprite* c, int cx, int cy, int size, float angle, uint16_t color) {
-  // angle = 0 means pointing up (north), increases clockwise
-  float rad = radians(angle - 90);  // Adjust for screen coordinates
-
-  // Front tip (pointed direction)
-  int tipX = cx + cos(rad) * size;
-  int tipY = cy + sin(rad) * size;
-
-  // Rear corners (wider base for aerodynamic look)
-  float rearRad1 = rad + radians(140);
-  float rearRad2 = rad - radians(140);
-  int rear1X = cx + cos(rearRad1) * size * 0.7;
-  int rear1Y = cy + sin(rearRad1) * size * 0.7;
-  int rear2X = cx + cos(rearRad2) * size * 0.7;
-  int rear2Y = cy + sin(rearRad2) * size * 0.7;
-
-  // Rear center notch (creates aerodynamic tail)
-  float rearCenterRad = rad + radians(180);
-  int rearCenterX = cx + cos(rearCenterRad) * size * 0.3;
-  int rearCenterY = cy + sin(rearCenterRad) * size * 0.3;
-
-  // Draw as two triangles for notched rear
-  c->fillTriangle(tipX, tipY, rear1X, rear1Y, rearCenterX, rearCenterY, color);
-  c->fillTriangle(tipX, tipY, rear2X, rear2Y, rearCenterX, rearCenterY, color);
-}
-
-// Draw pulsing search zone circle that shrinks as we get closer
-void drawSearchZoneCircle(TFT_eSprite* c, int cx, int cy, float distanceM, float accuracyM) {
-  // Circle size shrinks as we get closer (visual "getting warmer")
-  int maxRadius = 60;
-  int minRadius = 20;
-  float ratio = constrain(distanceM / accuracyM, 0.0, 1.0);
-  int radius = minRadius + (int)((maxRadius - minRadius) * ratio);
-
-  // Pulsing effect using millis()
-  int pulse = (millis() / 100) % 10;  // 0-9 cycle
-  int pulseOffset = (pulse < 5) ? pulse : (9 - pulse);  // 0-4-0 triangle wave
-  radius += pulseOffset * 2;
-
-  // Draw filled circle with outline
-  c->fillCircle(cx, cy, radius, COLOR_WARN);
-  c->drawCircle(cx, cy, radius + 2, COLOR_TEXT);
-
-  // Center dot
-  c->fillCircle(cx, cy, 4, COLOR_TEXT);
-}
-
-// ============== Geocache Navigation Screen (#70) ==============
-
-// Forward declarations for sub-screens
-void drawCacheNavScreen(TFT_eSprite* c);
-
-// ─── Geocache Screen ───────────────────────────────────────────────────────
-
-void drawCacheListScreen(TFT_eSprite* c);
-void drawCacheDetailsScreen(TFT_eSprite* c);
-
-void drawScreenGeocache(TFT_eSprite* c) {
-  zoneBegin();
-
-  // Track sub-screen changes — clear and push to erase old sub-screen artifacts
-  static int lastGeoSubScreen = -1;
-  if (geocacheSubScreen != lastGeoSubScreen) {
-    c->fillRect(0, 30, SCREEN_W, SCREEN_H - 30, COLOR_BG);
-    spr.pushSprite(0, 0);  // Full push to clear old sub-screen artifacts from TFT
-    zonePrevCount = 0;      // Force all zones dirty
-    lastGeoSubScreen = geocacheSubScreen;
-  }
-
-  // Dispatch to appropriate sub-screen
-  switch (geocacheSubScreen) {
-    case 1:
-      drawCacheListScreen(c);
-      break;
-    case 2:
-      drawCacheDetailsScreen(c);
-      break;
-    default:
-      drawCacheNavScreen(c);
-      break;
-  }
-}
-
-// Sub-screen 0: Navigation (main geocache screen)
-void drawCacheNavScreen(TFT_eSprite* c) {
-  char buf[ZONE_KEY_LEN];
-
-  // Zone: Header
-  if (zoneMark(0, 0, SCREEN_W, 30, "GEOCACHE"))
-    drawHeader(c, "GEOCACHE");
-
-  // Check if we have any caches and if selected cache is valid
-  if (cacheListCount == 0 || selectedCacheIndex >= cacheListCount || !cacheList[selectedCacheIndex].valid) {
-    if (zoneMark(0, 30, SCREEN_W, SCREEN_H - 30, "no_cache")) {
-      c->setCursor(80, 120);
-      c->setTextColor(COLOR_DIM);
-      c->setTextSize(2);
-      c->print("No cache loaded");
-    }
-    return;
-  }
-
-  // Get reference to selected cache for cleaner code
-  GeocacheEntry& cache = cacheList[selectedCacheIndex];
-
-  // Calculate distance and bearing
-  float distKm = calcDistanceKm(gpsData.latitude, gpsData.longitude,
-                                 cache.latitude, cache.longitude);
-  float distM = distKm * 1000;
-  float bearing = calcBearing(gpsData.latitude, gpsData.longitude,
-                               cache.latitude, cache.longitude);
-  float accuracyM = getGpsAccuracyMeters();
-  bool inSearchZone = (distM < accuracyM);
-
-  // Zone: Cache name (changes when selected cache changes)
-  snprintf(buf, ZONE_KEY_LEN, "n_%d_%s", selectedCacheIndex, cache.name);
-  if (zoneMark(0, 33, SCREEN_W, 20, buf)) {
-    c->fillRect(0, 33, SCREEN_W, 20, COLOR_BG);
-    c->setTextSize(2);
-    c->setTextColor(COLOR_TEXT);
-    int nameLen = strlen(cache.name);
-    int nameX = (SCREEN_W - nameLen * 12) / 2;
-    if (nameX < 10) nameX = 10;
-    c->setCursor(nameX, 35);
-    c->print(cache.name);
-  }
-
-  // Zone: Distance + D/T row (left side, 260px wide)
-  if (inSearchZone) {
-    snprintf(buf, ZONE_KEY_LEN, "SEARCHZONE D:%.1f T:%.1f", cache.difficulty, cache.terrain);
-  } else {
-    char distBuf[20];
-    if (useMetricUnits) {
-      if (distKm >= 1.0) sprintf(distBuf, "%.1f km", distKm);
-      else sprintf(distBuf, "%.0f m", distM);
-    } else {
-      float distMi = distKm * 0.621371;
-      if (distMi >= 1.0) sprintf(distBuf, "%.1f mi", distMi);
-      else sprintf(distBuf, "%.0f ft", distKm * 3280.84);
-    }
-    snprintf(buf, ZONE_KEY_LEN, "%s D:%.1f T:%.1f", distBuf, cache.difficulty, cache.terrain);
-  }
-  if (zoneMark(10, 55, 250, 20, buf)) {
-    c->fillRect(10, 55, 250, 20, COLOR_BG);
-    c->setCursor(10, 55);
-    c->setTextSize(2);
-    if (inSearchZone) {
-      c->setTextColor(COLOR_WARN);
-      c->print("SEARCH ZONE");
-    } else {
-      c->setTextColor(COLOR_VALUE);
-      // Re-format distance for drawing
-      if (useMetricUnits) {
-        if (distKm >= 1.0) sprintf(buf, "%.1f km", distKm);
-        else sprintf(buf, "%.0f m", distM);
-      } else {
-        float distMi = distKm * 0.621371;
-        if (distMi >= 1.0) sprintf(buf, "%.1f mi", distMi);
-        else sprintf(buf, "%.0f ft", distKm * 3280.84);
-      }
-      c->print(buf);
-    }
-    c->setTextSize(1);
-    c->setTextColor(COLOR_DIM);
-    sprintf(buf, " D:%.1f T:%.1f", cache.difficulty, cache.terrain);
-    c->print(buf);
-  }
-
-  // Zone: Bearing (right side)
-  snprintf(buf, ZONE_KEY_LEN, "brg_%d", (int)bearing);
-  if (zoneMark(260, 55, 60, 20, buf)) {
-    c->fillRect(260, 55, 60, 20, COLOR_BG);
-    c->setCursor(265, 55);
-    c->setTextColor(COLOR_VALUE);
-    c->setTextSize(2);
-    sprintf(buf, "%d", (int)bearing);
-    c->print(buf);
-    c->setTextSize(1);
-    c->print((char)247);  // Degree symbol
-  }
-
-  // Zone: Nav graphic (triangle or search zone circle)
-  // Key on rounded bearing (2°), heading (2°), and search zone state
-  int roundedBrg = ((int)bearing / 2) * 2;
-  int roundedHdg = ((int)imuData.heading / 2) * 2;
-  int roundedDist = (int)(distM / 2) * 2;  // Round to 2m for search zone pulse
-  if (inSearchZone)
-    snprintf(buf, ZONE_KEY_LEN, "nav_sz_%d_%d", roundedDist, (int)accuracyM);
-  else
-    snprintf(buf, ZONE_KEY_LEN, "nav_%d_%d", roundedBrg, roundedHdg);
-  if (zoneMark(100, 75, 120, 110, buf)) {
-    c->fillRect(100, 75, 120, 110, COLOR_BG);
-    if (inSearchZone) {
-      drawSearchZoneCircle(c, 160, 130, distM, accuracyM);
-    } else {
-      float triangleAngle = bearing - imuData.heading;
-      if (triangleAngle < 0) triangleAngle += 360;
-      if (triangleAngle >= 360) triangleAngle -= 360;
-      drawNavTriangle(c, 160, 130, 50, triangleAngle, COLOR_HEADER);
-    }
-  }
-
-  // Zone: GPS accuracy
-  if (useMetricUnits)
-    snprintf(buf, ZONE_KEY_LEN, "+/-%.0fm", accuracyM);
-  else
-    snprintf(buf, ZONE_KEY_LEN, "+/-%.0fft", accuracyM * 3.28084);
-  if (zoneMark(80, 185, 160, 20, buf)) {
-    c->fillRect(80, 185, 160, 20, COLOR_BG);
-    uint16_t accColor = getAccuracyColor(accuracyM);
-    c->setTextColor(accColor);
-    c->setTextSize(2);
-    // buf already has formatted accuracy from zone key
-    int accLen = strlen(buf);
-    int accX = (SCREEN_W - accLen * 12) / 2;
-    c->setCursor(accX, 185);
-    c->print(buf);
-  }
-
-  // Zone: Hint area
-  // Key includes search zone state and hint content (truncated for key)
-  if (strlen(cache.hint) > 0) {
-    char hintKey[ZONE_KEY_LEN];
-    snprintf(hintKey, ZONE_KEY_LEN, "hint_%d_%.20s", inSearchZone ? 1 : 0, cache.hint);
-    if (zoneMark(10, 200, SCREEN_W - 20, 30, hintKey)) {
-      c->fillRect(10, 200, SCREEN_W - 20, 30, COLOR_BG);
-      c->setTextColor(COLOR_DIM);
-      c->setTextSize(1);
-      if (inSearchZone) {
-        c->setCursor(10, 205);
-        c->print("Hint: ");
-        c->print(cache.hint);
-      } else {
-        c->setCursor(10, 220);
-        char hintPreview[35];
-        strncpy(hintPreview, cache.hint, 30);
-        hintPreview[30] = '\0';
-        if (strlen(cache.hint) > 30) strcat(hintPreview, "...");
-        c->print("Hint: ");
-        c->print(hintPreview);
-      }
-    }
-  }
-}
-
-// Sub-screen 1: Cache List
-void drawCacheListScreen(TFT_eSprite* c) {
-  char buf[ZONE_KEY_LEN];
-
-  // Zone: Header
-  if (zoneMark(0, 0, SCREEN_W, 30, "CACHE LIST"))
-    drawHeader(c, "CACHE LIST");
-
-  // Zone: Count indicator
-  snprintf(buf, ZONE_KEY_LEN, "[%d/%d]", listHighlightIndex + 1, cacheListCount);
-  if (zoneMark(270, 8, 50, 12, buf)) {
-    c->fillRect(270, 8, 50, 12, COLOR_BG);
-    c->setTextSize(1);
-    c->setTextColor(COLOR_DIM);
-    c->setCursor(280, 10);
-    c->print(buf);
-  }
-
-  if (cacheListCount == 0) {
-    if (zoneMark(0, 30, SCREEN_W, SCREEN_H - 30, "no_caches")) {
-      c->setCursor(80, 120);
-      c->setTextColor(COLOR_DIM);
-      c->setTextSize(2);
-      c->print("No caches loaded");
-    }
-    return;
-  }
-
-  // Zone: Entire list area — key on scroll offset + highlight + distances
-  // The list has interleaved selection highlighting, distances, and names.
-  // Treat the whole visible list as one zone keyed on state that affects it.
-  int y = 38;
-  int lineH = 28;
-  int maxVisible = 5;
-
-  // Build a composite key from scroll state + all visible row data
-  char listKey[ZONE_KEY_LEN];
-  snprintf(listKey, ZONE_KEY_LEN, "l_%d_%d", listScrollOffset, listHighlightIndex);
-  // Append abbreviated distance data for visible rows
-  for (int i = 0; i < maxVisible && (listScrollOffset + i) < cacheListCount; i++) {
-    int cacheIdx = listScrollOffset + i;
-    float distKm = calcDistanceKm(gpsData.latitude, gpsData.longitude,
-                                   cacheList[cacheIdx].latitude, cacheList[cacheIdx].longitude);
-    char d[8];
-    snprintf(d, 8, "%.0f", distKm * 1000);
-    // Append if space allows
-    int curLen = strlen(listKey);
-    if (curLen + strlen(d) + 1 < ZONE_KEY_LEN) {
-      listKey[curLen] = '_';
-      strcpy(listKey + curLen + 1, d);
-    }
-  }
-
-  if (zoneMark(0, 36, SCREEN_W, maxVisible * lineH + 4, listKey)) {
-    // Clear list area
-    c->fillRect(0, 36, SCREEN_W, maxVisible * lineH + 4, COLOR_BG);
-
-    for (int i = 0; i < maxVisible && (listScrollOffset + i) < cacheListCount; i++) {
-      int cacheIdx = listScrollOffset + i;
-      GeocacheEntry& cache = cacheList[cacheIdx];
-      bool isSelected = (cacheIdx == listHighlightIndex);
-
-      if (isSelected) {
-        c->fillRect(0, y - 2, SCREEN_W, lineH, COLOR_HEADER & 0x18E3);
-      }
-
-      int x = 5;
-
-      c->setTextSize(2);
-      c->setTextColor(isSelected ? COLOR_HEADER : COLOR_DIM);
-      c->setCursor(x, y + 2);
-      c->print(isSelected ? ">" : " ");
-      x += 18;
-
-      float distKm = calcDistanceKm(gpsData.latitude, gpsData.longitude,
-                                     cache.latitude, cache.longitude);
-      c->setTextColor(COLOR_VALUE);
-      c->setTextSize(1);
-      c->setCursor(x, y + 4);
-      if (useMetricUnits) {
-        if (distKm >= 1.0) sprintf(buf, "%4.1fkm", distKm);
-        else sprintf(buf, "%4.0fm", distKm * 1000);
-      } else {
-        float distMi = distKm * 0.621371;
-        if (distMi >= 1.0) sprintf(buf, "%4.1fmi", distMi);
-        else sprintf(buf, "%4.0fft", distKm * 3280.84);
-      }
-      c->print(buf);
-      x += 48;
-
-      c->setTextColor(COLOR_TEXT);
-      c->setCursor(x, y + 4);
-      char nameBuf[20];
-      strncpy(nameBuf, cache.name, 16);
-      nameBuf[16] = '\0';
-      if (strlen(cache.name) > 16) {
-        nameBuf[14] = '.';
-        nameBuf[15] = '.';
-      }
-      c->print(nameBuf);
-      x += 100;
-
-      if (cache.found) {
-        c->setTextColor(COLOR_VALUE);
-        c->setCursor(x, y + 4);
-        c->print("*");
-      }
-      x += 12;
-
-      c->setTextColor(COLOR_DIM);
-      c->setCursor(x, y + 4);
-      sprintf(buf, "D:%d T:%d", (int)cache.difficulty, (int)cache.terrain);
-      c->print(buf);
-
-      y += lineH;
-    }
-  }
-
-  // Zone: Button hints (static)
-  if (zoneMark(10, 188, SCREEN_W - 20, 12, "list_hints")) {
-    c->setTextSize(1);
-    c->setTextColor(COLOR_DIM);
-    c->setCursor(10, 190);
-    c->print("[A]Up [B]Down [C]Select [C+]Details");
-  }
-}
-
-// Sub-screen 2: Cache Details
-void drawCacheDetailsScreen(TFT_eSprite* c) {
-  char buf[ZONE_KEY_LEN];
-
-  if (cacheListCount == 0 || listHighlightIndex >= cacheListCount) {
-    if (zoneMark(0, 0, SCREEN_W, 30, "CACHE DETAILS"))
-      drawHeader(c, "CACHE DETAILS");
-    if (zoneMark(0, 30, SCREEN_W, SCREEN_H - 30, "no_cache_d")) {
-      c->setCursor(80, 120);
-      c->setTextColor(COLOR_DIM);
-      c->setTextSize(2);
-      c->print("No cache");
-    }
-    return;
-  }
-
-  GeocacheEntry& cache = cacheList[listHighlightIndex];
-
-  // Zone: Header
-  if (zoneMark(0, 0, SCREEN_W, 30, "CACHE DETAILS"))
-    drawHeader(c, "CACHE DETAILS");
-
-  // Zone: Count indicator
-  snprintf(buf, ZONE_KEY_LEN, "[%d/%d]", listHighlightIndex + 1, cacheListCount);
-  if (zoneMark(270, 8, 50, 12, buf)) {
-    c->fillRect(270, 8, 50, 12, COLOR_BG);
-    c->setTextSize(1);
-    c->setTextColor(COLOR_DIM);
-    c->setCursor(280, 10);
-    c->print(buf);
-  }
-
-  int y = 35;
-  int lineH = 18;
-
-  // Zone: Cache name (changes when selected cache changes)
-  snprintf(buf, ZONE_KEY_LEN, "dn_%d", listHighlightIndex);
-  if (zoneMark(10, y, SCREEN_W - 20, 20, buf)) {
-    c->fillRect(10, y, SCREEN_W - 20, 20, COLOR_BG);
-    c->setTextSize(2);
-    c->setTextColor(COLOR_TEXT);
-    c->setCursor(10, y);
-    char nameBuf[24];
-    strncpy(nameBuf, cache.name, 22);
-    nameBuf[22] = '\0';
-    c->print(nameBuf);
-  }
-  y += 22;
-
-  // Zone: GC Code (changes with cache selection)
-  snprintf(buf, ZONE_KEY_LEN, "gc_%s", cache.gcCode);
-  if (zoneMark(10, y, 200, 12, buf)) {
-    c->fillRect(10, y, 200, 12, COLOR_BG);
-    c->setTextSize(1);
-    c->setTextColor(COLOR_HEADER);
-    c->setCursor(10, y);
-    c->print(cache.gcCode);
-  }
-  y += lineH + 4;
-
-  // Zone: Coordinates (static per cache)
-  snprintf(buf, ZONE_KEY_LEN, "%.4f%c %.4f%c",
-           fabs(cache.latitude), cache.latitude >= 0 ? 'N' : 'S',
-           fabs(cache.longitude), cache.longitude >= 0 ? 'E' : 'W');
-  if (zoneMark(10, y, SCREEN_W - 20, 12, buf)) {
-    c->fillRect(10, y, SCREEN_W - 20, 12, COLOR_BG);
-    c->setTextColor(COLOR_VALUE);
-    c->setTextSize(1);
-    c->setCursor(10, y);
-    c->print(buf);
-  }
-  y += lineH;
-
-  // Zone: D/T (static per cache)
-  snprintf(buf, ZONE_KEY_LEN, "D:%.1f T:%.1f", cache.difficulty, cache.terrain);
-  if (zoneMark(10, y, SCREEN_W - 20, 12, buf)) {
-    c->fillRect(10, y, SCREEN_W - 20, 12, COLOR_BG);
-    c->setTextColor(COLOR_TEXT);
-    c->setTextSize(1);
-    c->setCursor(10, y);
-    sprintf(buf, "Difficulty: %.1f  Terrain: %.1f", cache.difficulty, cache.terrain);
-    c->print(buf);
-  }
-  y += lineH + 4;
-
-  // Zone: Distance/Bearing (dynamic - changes with GPS position)
-  float distKm = calcDistanceKm(gpsData.latitude, gpsData.longitude,
-                                 cache.latitude, cache.longitude);
-  float bearing = calcBearing(gpsData.latitude, gpsData.longitude,
-                               cache.latitude, cache.longitude);
-  if (useMetricUnits)
-    snprintf(buf, ZONE_KEY_LEN, "%.2fkm %d", distKm, (int)bearing);
-  else
-    snprintf(buf, ZONE_KEY_LEN, "%.2fmi %d", distKm * 0.621371, (int)bearing);
-  if (zoneMark(10, y, SCREEN_W - 20, 12, buf)) {
-    c->fillRect(10, y, SCREEN_W - 20, 12, COLOR_BG);
-    c->setTextColor(COLOR_VALUE);
-    c->setTextSize(1);
-    c->setCursor(10, y);
-    if (useMetricUnits)
-      sprintf(buf, "Distance: %.2f km  Bearing: %d", distKm, (int)bearing);
-    else
-      sprintf(buf, "Distance: %.2f mi  Bearing: %d", distKm * 0.621371, (int)bearing);
-    c->print(buf);
-    c->print((char)247);
-  }
-  y += lineH + 4;
-
-  // Zone: Hint (static per cache)
-  if (strlen(cache.hint) > 0) {
-    snprintf(buf, ZONE_KEY_LEN, "dh_%d_%.20s", listHighlightIndex, cache.hint);
-    if (zoneMark(10, y, SCREEN_W - 20, 50, buf)) {
-      c->fillRect(10, y, SCREEN_W - 20, 50, COLOR_BG);
-      c->setTextColor(COLOR_DIM);
-      c->setTextSize(1);
-      c->setCursor(10, y);
-      c->print("Hint: ");
-      c->setTextColor(COLOR_TEXT);
-      c->setCursor(10, y + 10);
-      int hintLen = strlen(cache.hint);
-      int pos = 0;
-      int lineY = y + 10;
-      while (pos < hintLen && lineY < 175) {
-        int chunkLen = min(50, hintLen - pos);
-        char chunk[52];
-        strncpy(chunk, cache.hint + pos, chunkLen);
-        chunk[chunkLen] = '\0';
-        c->setCursor(10, lineY);
-        c->print(chunk);
-        pos += chunkLen;
-        lineY += 10;
-      }
-    }
-  }
-
-  // Zone: Found status (changes on toggle)
-  snprintf(buf, ZONE_KEY_LEN, "found_%d_%d", listHighlightIndex, cache.found ? 1 : 0);
-  if (zoneMark(10, 178, SCREEN_W - 20, 20, buf)) {
-    c->fillRect(10, 178, SCREEN_W - 20, 20, COLOR_BG);
-    c->setCursor(10, 180);
-    c->setTextSize(2);
-    if (cache.found) {
-      c->setTextColor(COLOR_VALUE);
-      c->print("[* FOUND]");
-    } else {
-      c->setTextColor(COLOR_DIM);
-      c->print("[ NOT FOUND ]");
-    }
-  }
-
-  // Zone: Button hints (static)
-  if (zoneMark(10, 203, SCREEN_W - 20, 12, "detail_hints")) {
-    c->setTextSize(1);
-    c->setTextColor(COLOR_DIM);
-    c->setCursor(10, 205);
-    c->print("[A]Prev [B]Next [C]Toggle [C+]Back");
-  }
-}
+// Legacy TFT_eSprite draw functions removed — all rendering via LVGL (#114)
+// Removed: drawHeader, drawNavBar, drawLabel, drawValue, drawScreenTelemetry,
+//   drawScreenEnv, drawScreenCompass, drawCompassRose (legacy sprite version),
+//   drawNavTriangle, drawSearchZoneCircle, drawScreenGeocache,
+//   drawCacheNavScreen, drawCacheListScreen, drawCacheDetailsScreen (~1,300 lines)
 
 // ============== OLED Display Functions ==============
 
