@@ -1,0 +1,255 @@
+name: Auto-Promote Ready Issues
+
+# Two triggers:
+# 1. Event-driven: fires when any issue is closed
+# 2. Cron fallback: every 30 minutes in case events are missed
+on:
+  issues:
+    types: [closed]
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch: {} # Manual trigger for testing
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Promote unblocked issues to Ready
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_PAT }}
+          script: |
+            const PROJECT_NUMBER = 3;
+            const OWNER = 'Strycher';
+            const REPO = 'Field_Compass';
+
+            // ── Step 1: Get project metadata (field IDs, option IDs) ──
+            const projectQuery = `
+              query($owner: String!, $number: Int!) {
+                user(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 20) {
+                      nodes {
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options { id name }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const projectResult = await github.graphql(projectQuery, {
+              owner: OWNER,
+              number: PROJECT_NUMBER,
+            });
+
+            const project = projectResult.user.projectV2;
+            const projectId = project.id;
+
+            // Find Status field and its option IDs
+            const statusField = project.fields.nodes.find(
+              f => f.name === 'Status'
+            );
+            if (!statusField) {
+              core.setFailed('Could not find Status field on project');
+              return;
+            }
+
+            const todoOptionId = statusField.options.find(
+              o => o.name === 'Todo'
+            )?.id;
+            const readyOptionId = statusField.options.find(
+              o => o.name === 'Ready'
+            )?.id;
+
+            if (!todoOptionId || !readyOptionId) {
+              core.setFailed('Could not find Todo or Ready options');
+              return;
+            }
+
+            core.info(`Project: ${projectId}`);
+            core.info(`Status field: ${statusField.id}`);
+            core.info(`Todo: ${todoOptionId}, Ready: ${readyOptionId}`);
+
+            // ── Step 2: Get all open issues in the repo ──
+            let allIssues = [];
+            let page = 1;
+            while (true) {
+              const batch = await github.rest.issues.listForRepo({
+                owner: OWNER,
+                repo: REPO,
+                state: 'all',
+                per_page: 100,
+                page: page,
+              });
+              allIssues = allIssues.concat(batch.data);
+              if (batch.data.length < 100) break;
+              page++;
+            }
+
+            // Build lookup: issue number → state
+            const issueState = {};
+            for (const issue of allIssues) {
+              issueState[issue.number] = issue.state; // 'open' or 'closed'
+            }
+
+            core.info(`Loaded ${allIssues.length} issues total`);
+
+            // ── Step 3: Find open issues with depends-on tags ──
+            const dependsOnRegex = /<!--\s*depends-on:\s*(#\d+(?:\s*,\s*#\d+)*)\s*-->/g;
+            const promotionCandidates = [];
+
+            for (const issue of allIssues) {
+              if (issue.state !== 'open') continue;
+              if (!issue.body) continue;
+
+              const matches = [...issue.body.matchAll(dependsOnRegex)];
+              if (matches.length === 0) continue;
+
+              // Parse all dependency numbers
+              const deps = [];
+              for (const match of matches) {
+                const numMatches = match[1].matchAll(/#(\d+)/g);
+                for (const nm of numMatches) {
+                  deps.push(parseInt(nm[1]));
+                }
+              }
+
+              if (deps.length === 0) continue;
+
+              // Check if ALL dependencies are closed
+              const allDepsClosed = deps.every(
+                depNum => issueState[depNum] === 'closed'
+              );
+
+              if (allDepsClosed) {
+                promotionCandidates.push({
+                  number: issue.number,
+                  title: issue.title,
+                  deps: deps,
+                });
+              }
+            }
+
+            core.info(`Found ${promotionCandidates.length} issues ready to promote`);
+
+            if (promotionCandidates.length === 0) {
+              core.info('No issues to promote. Done.');
+              return;
+            }
+
+            // ── Step 4: Get project items to find their IDs and current status ──
+            let projectItems = [];
+            let hasNextPage = true;
+            let cursor = null;
+
+            while (hasNextPage) {
+              const itemsQuery = `
+                query($projectId: ID!, $cursor: String) {
+                  node(id: $projectId) {
+                    ... on ProjectV2 {
+                      items(first: 100, after: $cursor) {
+                        pageInfo { hasNextPage endCursor }
+                        nodes {
+                          id
+                          content {
+                            ... on Issue { number }
+                          }
+                          fieldValues(first: 10) {
+                            nodes {
+                              ... on ProjectV2ItemFieldSingleSelectValue {
+                                field { ... on ProjectV2SingleSelectField { name } }
+                                optionId
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+
+              const itemsResult = await github.graphql(itemsQuery, {
+                projectId: projectId,
+                cursor: cursor,
+              });
+
+              const items = itemsResult.node.items;
+              projectItems = projectItems.concat(items.nodes);
+              hasNextPage = items.pageInfo.hasNextPage;
+              cursor = items.pageInfo.endCursor;
+            }
+
+            core.info(`Loaded ${projectItems.length} project items`);
+
+            // ── Step 5: Promote eligible issues from Todo → Ready ──
+            let promoted = 0;
+
+            for (const candidate of promotionCandidates) {
+              // Find this issue's project item
+              const projectItem = projectItems.find(
+                item => item.content?.number === candidate.number
+              );
+
+              if (!projectItem) {
+                core.warning(
+                  `#${candidate.number} not found on project board — skipping`
+                );
+                continue;
+              }
+
+              // Check current status — only promote from Todo
+              const currentStatus = projectItem.fieldValues.nodes.find(
+                fv => fv.field?.name === 'Status'
+              );
+
+              if (currentStatus?.optionId !== todoOptionId) {
+                core.info(
+                  `#${candidate.number} is not in Todo — skipping ` +
+                  `(current: ${currentStatus?.optionId || 'none'})`
+                );
+                continue;
+              }
+
+              // Move to Ready!
+              const mutation = `
+                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: { singleSelectOptionId: $optionId }
+                  }) {
+                    projectV2Item { id }
+                  }
+                }
+              `;
+
+              await github.graphql(mutation, {
+                projectId: projectId,
+                itemId: projectItem.id,
+                fieldId: statusField.id,
+                optionId: readyOptionId,
+              });
+
+              // Add a comment so there's a visible audit trail
+              await github.rest.issues.createComment({
+                owner: OWNER,
+                repo: REPO,
+                issue_number: candidate.number,
+                body: `🤖 **Auto-promoted to Ready** — all dependencies resolved (${candidate.deps.map(d => '#' + d).join(', ')} closed).`,
+              });
+
+              core.info(
+                `✅ Promoted #${candidate.number} (${candidate.title}) to Ready`
+              );
+              promoted++;
+            }
+
+            core.info(`\nDone! Promoted ${promoted} issues to Ready.`);
