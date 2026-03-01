@@ -3239,7 +3239,7 @@ void buildTelemetryScreen() {
   lv_obj_set_style_border_width(telDivider, 0, 0);
   lv_obj_set_style_radius(telDivider, 0, 0);
   lv_obj_set_style_pad_all(telDivider, 0, 0);
-  lv_obj_clear_flag(telDivider, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(telDivider, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
 
   // === IMU Section ===
   telLblImuSection = lv_label_create(telemetryScr);
@@ -4553,11 +4553,12 @@ void initLVGL() {
     lv_indev_set_type(lvglTouchIndev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(lvglTouchIndev, lvglTouchReadCb);
     lv_indev_set_display(lvglTouchIndev, lvglDisplay);
-    // Increase scroll threshold: default 10px is too sensitive for capacitive touch
-    // jitter — finger movement during tap is typically 5-15px. 50px ensures taps
-    // aren't misinterpreted as scroll gestures on non-scrollable containers. (#112)
-    lv_indev_set_scroll_limit(lvglTouchIndev, 50);
-    logPrintln("[LVGL] Touch indev created (pointer, scroll_limit=50)");
+    // Scroll threshold: prevent tap jitter (5-15px) from triggering scroll. (#112)
+    lv_indev_set_scroll_limit(lvglTouchIndev, 30);
+    // Gesture threshold: default 50px is too high for 480px wide screen — short
+    // swipes fail silently. 20px is above jitter but catches natural flicks. (#121)
+    lv_indev_set_gesture_min_distance(lvglTouchIndev, 20);
+    logPrintln("[LVGL] Touch indev created (scroll_limit=30, gesture_min=20)");
   }
 
   // Create encoder input device (buttons A/B/C → encoder) (#106)
