@@ -202,17 +202,23 @@ Field_Compass/
 
 At the start of every session, verify all infrastructure is operational before doing any work:
 
-1. **Beads/Dolt**: Run `bd dolt test`. If it fails, start the Dolt server:
+1. **Dolt SSH Tunnel**: Verify port 3307 is listening (SSH tunnel to Hetzner `unfocused@46.224.181.82`).
+   If not running, start it:
    ```bash
-   cd .beads/dolt && dolt sql-server --port=3307 &
+   ssh -fNL 3307:127.0.0.1:3307 unfocused@46.224.181.82
    ```
-   Re-test. If still failing, STOP and alert the user.
 
-2. **Agent Mail**: If MCP agent-mail is available, call `ensure_project` with `human_key: "C:\dev\Field_Compass"`. If it returns a 403 or connection error, STOP and alert the user.
+2. **Beads/Dolt**: Run `bd dolt test`. If it fails, check the Dolt Docker container on Hetzner:
+   ```bash
+   ssh unfocused@46.224.181.82 "docker ps | grep dolt"
+   ```
+   If still failing, STOP and alert the user.
 
-3. **Beads readiness**: Run `bd ready` to load current task state.
+3. **Agent Mail**: Verify health at `https://getunfocused.app/health/liveness`. If unreachable or returning errors, STOP and alert the user.
 
-**CRITICAL**: If Beads or Agent Mail are unreachable, **STOP and tell the user immediately.** Do NOT silently fall back to GitHub-only workflows. Use the startup scripts in `scripts/` to ensure proper initialization.
+4. **Beads readiness**: Run `bd ready` to load current task state.
+
+**CRITICAL**: If Beads or Agent Mail are unreachable, **STOP and tell the user immediately.** Do NOT silently fall back to GitHub-only workflows. Use the startup scripts in `scripts/` or the preflight hook in `.claude/hooks/preflight.sh` to ensure proper initialization.
 
 ### Autonomous Operation Rules
 - **Only pick up issues from the "Ready" column on the GitHub Project board.** Never pull from Backlog, Todo, or On Hold — Ben decides what is ready for development.
