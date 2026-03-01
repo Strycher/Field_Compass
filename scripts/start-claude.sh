@@ -1,93 +1,162 @@
 #!/usr/bin/env bash
-# One-click launcher: Dolt + Beads + Agent Mail check + Claude Code
+# =============================================================================
+# Field Compass — One-click CLI Agent Startup
+# =============================================================================
 # Usage: ./scripts/start-claude.sh
+#
+# Steps:
+#   1. Git: checkout main, pull latest, clean up old branches
+#   2. SSH tunnel to Hetzner Dolt server (port 3307)
+#   3. Beads/Dolt connectivity
+#   4. Agent Mail health
+#   5. Launch Claude Code with startup protocol
+#
+# If any infrastructure check fails, launch is BLOCKED.
+# =============================================================================
 
-set -e
+set -eo pipefail
+
 PROJECT_DIR="/c/Dev/Field_Compass"
-DOLT_DIR="$PROJECT_DIR/.beads/dolt"
+HETZNER_HOST="unfocused@46.224.181.82"
 DOLT_PORT=3307
-DOLT_DB="beads_FC"
-AGENT_NAME="fc-firmware-agent"
+AGENT_MAIL_HEALTH="https://getunfocused.app/health/liveness"
+ERRORS=0
+
+pass() { echo "  ✓ $1"; }
+fail() { echo "  ✗ $1"; ERRORS=$((ERRORS + 1)); }
+info() { echo "  $1"; }
+warn() { echo "  ! $1"; }
 
 echo ""
 echo "========================================"
-echo "  Field Compass Dev Environment Startup"
+echo "  Field Compass CLI Agent Startup"
 echo "========================================"
 echo ""
-
-# ── Step 1: Local Dolt Server ─────────────────────
-echo "[1/4] Checking local Dolt server on port $DOLT_PORT..."
-
-DOLT_RUNNING=false
-if nc -z 127.0.0.1 $DOLT_PORT 2>/dev/null; then
-    DOLT_RUNNING=true
-    echo "  -> Dolt already running on port $DOLT_PORT"
-else
-    echo "  -> Starting local Dolt SQL server..."
-
-    if [ ! -d "$DOLT_DIR" ]; then
-        echo "  X Dolt directory not found: $DOLT_DIR"
-        echo "    Run 'bd init' first to set up the Beads database."
-        exit 1
-    fi
-
-    cd "$DOLT_DIR" && dolt sql-server --port=$DOLT_PORT &
-    cd "$PROJECT_DIR"
-
-    # Wait for server to initialize
-    sleep 3
-
-    if nc -z 127.0.0.1 $DOLT_PORT 2>/dev/null; then
-        DOLT_RUNNING=true
-        echo "  -> Dolt server started successfully"
-    else
-        echo "  X Failed to start Dolt server!"
-        echo "    Try manually: cd $DOLT_DIR && dolt sql-server --port=$DOLT_PORT"
-        exit 1
-    fi
-fi
-
-# ── Step 2: Verify Beads ────────────────────────
-echo ""
-echo "[2/4] Verifying Beads/Dolt connectivity..."
 
 cd "$PROJECT_DIR"
 
-if [ "$DOLT_RUNNING" = true ]; then
-    if bd dolt test 2>/dev/null; then
-        echo "  -> Beads connected to Dolt ($DOLT_DB)"
-        bd stats 2>/dev/null || true
+# ── Step 1: Git ───────────────────────────────────────────────────
+echo "[1/5] Git: checkout main, pull latest..."
+
+dirty=$(git status --porcelain 2>/dev/null || true)
+if [ -n "$dirty" ]; then
+    warn "Uncommitted changes found, stashing"
+    git stash push -m "auto-stash $(date +%Y-%m-%d-%H%M%S)" 2>/dev/null || true
+fi
+
+current=$(git branch --show-current 2>/dev/null || echo "unknown")
+if [ "$current" != "main" ]; then
+    if git checkout main 2>/dev/null; then
+        pass "Switched to main (was on $current)"
     else
-        echo "  X Beads cannot reach Dolt"
-        echo "    Check that $DOLT_DB database exists in $DOLT_DIR"
-        exit 1
+        warn "Could not checkout main"
     fi
 else
-    echo "  ~ Skipped (Dolt not running)"
+    pass "Already on main"
+fi
+
+pull_out=$(git pull origin main 2>&1 || true)
+if echo "$pull_out" | grep -q "Already up to date"; then
+    pass "Already up to date"
+else
+    pass "Pulled latest changes"
+fi
+
+git fetch --prune 2>/dev/null || true
+merged=$(git branch --merged main 2>/dev/null | grep -v "main" | grep -v "^\*" || true)
+if [ -n "$merged" ]; then
+    count=$(echo "$merged" | wc -l | tr -d ' ')
+    echo "$merged" | while read -r b; do
+        b=$(echo "$b" | xargs)
+        [ -n "$b" ] && git branch -d "$b" 2>/dev/null || true
+    done
+    info "Cleaned up $count merged branch(es)"
+fi
+
+# ── Step 2: SSH Tunnel ────────────────────────────────────────────
+echo ""
+echo "[2/5] Dolt SSH tunnel (port $DOLT_PORT)..."
+
+tunnel_running() {
+    netstat -an 2>/dev/null | grep "$DOLT_PORT" | grep -qi "listen"
+}
+
+if tunnel_running; then
+    pass "Tunnel already active"
+else
+    info "Tunnel not running. Starting..."
+    if ssh -fNL ${DOLT_PORT}:127.0.0.1:${DOLT_PORT} "$HETZNER_HOST" 2>/dev/null; then
+        sleep 3
+        if tunnel_running; then
+            pass "Tunnel auto-started"
+        else
+            fail "Could not establish tunnel"
+            info "Run manually: ssh -fNL $DOLT_PORT:127.0.0.1:$DOLT_PORT $HETZNER_HOST"
+        fi
+    else
+        fail "Could not start SSH process"
+        info "Run manually: ssh -fNL $DOLT_PORT:127.0.0.1:$DOLT_PORT $HETZNER_HOST"
+    fi
+fi
+
+# ── Step 3: Beads / Dolt ──────────────────────────────────────────
+echo ""
+echo "[3/5] Beads/Dolt connectivity..."
+
+if tunnel_running; then
+    if bd dolt test 2>/dev/null; then
+        pass "Beads connected to Dolt (beads_FC)"
+        bd stats 2>/dev/null || true
+    else
+        fail "Beads cannot reach Dolt"
+    fi
+else
+    fail "Skipped (no tunnel)"
+fi
+
+# ── Step 4: Agent Mail ────────────────────────────────────────────
+echo ""
+echo "[4/5] Agent Mail..."
+
+if curl -s --connect-timeout 5 "$AGENT_MAIL_HEALTH" 2>/dev/null | grep -q "alive"; then
+    pass "Agent Mail is healthy"
+else
+    fail "Agent Mail is unreachable"
+fi
+
+# ── Step 5: Launch or Block ───────────────────────────────────────
+echo ""
+
+if [ "$ERRORS" -gt 0 ]; then
+    echo "========================================"
+    echo "  BLOCKED: $ERRORS check(s) failed"
+    echo "========================================"
+    echo ""
+    echo "Fix the issues above, then re-run this script."
     exit 1
 fi
 
-# ── Step 3: Agent Mail Readiness ──────────────────
-echo ""
-echo "[3/4] Checking Agent Mail readiness..."
-
-if bd ready 2>/dev/null; then
-    echo "  -> Beads task queue operational"
-else
-    echo "  ! Beads 'bd ready' returned errors (non-fatal)"
-fi
-
-echo "  i Agent Mail MCP check happens inside Claude Code session"
-echo "  i Agent name: $AGENT_NAME"
-
-# ── Step 4: Launch Claude Code ──────────────────
-echo ""
-echo "[4/4] Launching Claude Code..."
+echo "[5/5] Launching Claude Code..."
 echo "  Mode: --dangerously-skip-permissions"
-echo "  Directory: $PROJECT_DIR"
-echo "  Dolt: local ($DOLT_DIR) on port $DOLT_PORT"
 echo ""
 echo "========================================"
 echo ""
 
-claude --dangerously-skip-permissions
+claude --dangerously-skip-permissions "You are starting a new CLI agent session for the Field Compass project. Complete this startup protocol NOW, in order, before doing anything else:
+
+1. **Register with Agent Mail:**
+   - ensure_project(human_key=\"C:\\dev\\Field_Compass\")
+   - register_agent(project_key=\"C:\\dev\\Field_Compass\", program=\"claude-code\", model=\"claude-sonnet-4-20250514\")
+
+2. **Check inbox** for coordination messages from other agents:
+   - fetch_inbox(project_key=\"C:\\dev\\Field_Compass\", agent_name=\"<your-name>\", include_bodies=true)
+
+3. **Sync Beads:** Run \`bd dolt pull\` then \`bd ready\` to see available work.
+
+4. **Check for in-progress claims:** Run \`bd list --status=in_progress\` — if another agent already claimed a task, pick a different one.
+
+5. **Claim exactly ONE task:** Run \`bd update <id> --status=in_progress\` on your chosen task.
+
+6. **Reserve files** via Agent Mail before editing anything: file_reservation_paths with specific paths/globs.
+
+7. **Report ready:** Tell me which task you claimed, which files you reserved. Then begin work."
