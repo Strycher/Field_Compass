@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.48.1"
+#define FW_VERSION "0.49.0"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -2024,6 +2024,30 @@ static lv_obj_t* settingsAboutCtr   = NULL;
 static lv_obj_t* settingsResetCtr   = NULL;
 static lv_obj_t* settingsMenuBtns[6];
 
+// Scroll areas for settings sub-screens (#101)
+static lv_obj_t* settingsScrollAreas[7] = {NULL};
+#define SETTINGS_SCROLL_STEP 50  // Pixels per A/B button press
+
+// Helper: create a scrollable content area between header and action bar (#101)
+static lv_obj_t* fcSettingsScrollCreate(lv_obj_t* parent, int idx) {
+  lv_obj_t* scroll = lv_obj_create(parent);
+  lv_obj_remove_style_all(scroll);
+  lv_obj_set_size(scroll, SCREEN_W, 240);  // 320 - 30 header - 50 action bar
+  lv_obj_set_pos(scroll, 0, 30);
+  lv_obj_set_style_bg_opa(scroll, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(scroll, 0, 0);
+  lv_obj_set_style_pad_all(scroll, 0, 0);
+  // Vertical scroll only, auto-show scrollbar when content overflows
+  lv_obj_set_scroll_dir(scroll, LV_DIR_VER);
+  lv_obj_set_scrollbar_mode(scroll, LV_SCROLLBAR_MODE_AUTO);
+  lv_obj_set_style_bg_color(scroll, lv_color_hex(0x808080), LV_PART_SCROLLBAR);
+  lv_obj_set_style_bg_opa(scroll, LV_OPA_COVER, LV_PART_SCROLLBAR);
+  lv_obj_set_style_width(scroll, 4, LV_PART_SCROLLBAR);
+  lv_obj_clear_flag(scroll, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_CLICKABLE));
+  settingsScrollAreas[idx] = scroll;
+  return scroll;
+}
+
 // Config sub-screen widget pointers (#112)
 static lv_obj_t* cfgTzDropdown   = NULL;
 static lv_obj_t* cfgTimeToggle   = NULL;
@@ -3749,7 +3773,7 @@ void updateSettingsData() {
     if (settingsAboutCtr)   lv_obj_add_flag(settingsAboutCtr,   LV_OBJ_FLAG_HIDDEN);
     if (settingsResetCtr)   lv_obj_add_flag(settingsResetCtr,   LV_OBJ_FLAG_HIDDEN);
 
-    // Show the active sub-screen container
+    // Show the active sub-screen container and reset scroll position (#101)
     switch (settingsSubScreen) {
       case 0: if (settingsMenuCtr)    lv_obj_clear_flag(settingsMenuCtr,    LV_OBJ_FLAG_HIDDEN); break;
       case 1: if (settingsConfigCtr)  lv_obj_clear_flag(settingsConfigCtr,  LV_OBJ_FLAG_HIDDEN); break;
@@ -3758,6 +3782,10 @@ void updateSettingsData() {
       case 4: if (settingsDiagsCtr)   lv_obj_clear_flag(settingsDiagsCtr,   LV_OBJ_FLAG_HIDDEN); break;
       case 5: if (settingsAboutCtr)   lv_obj_clear_flag(settingsAboutCtr,   LV_OBJ_FLAG_HIDDEN); break;
       case 6: if (settingsResetCtr)   lv_obj_clear_flag(settingsResetCtr,   LV_OBJ_FLAG_HIDDEN); break;
+    }
+    // Reset scroll to top when entering a sub-screen (#101)
+    if (settingsSubScreen >= 0 && settingsSubScreen < 7 && settingsScrollAreas[settingsSubScreen]) {
+      lv_obj_scroll_to_y(settingsScrollAreas[settingsSubScreen], 0, LV_ANIM_OFF);
     }
     prevSubScreen = settingsSubScreen;
     logPrintf("[SETTINGS] Sub-screen changed to %d\n", settingsSubScreen);
@@ -4093,14 +4121,17 @@ void buildSettingsScreen() {
   lv_obj_clear_flag(settingsMenuCtr, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
                         | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
 
-  // Header
+  // Header (fixed at top)
   fcHeaderCreate(settingsMenuCtr, "SETTINGS");
 
-  // Flex container for menu buttons
-  lv_obj_t* menuList = lv_obj_create(settingsMenuCtr);
+  // Scroll area (#101)
+  lv_obj_t* menuScroll = fcSettingsScrollCreate(settingsMenuCtr, 0);
+
+  // Flex container for menu buttons (inside scroll area)
+  lv_obj_t* menuList = lv_obj_create(menuScroll);
   lv_obj_remove_style_all(menuList);
-  lv_obj_set_size(menuList, 460, 235);
-  lv_obj_set_pos(menuList, 10, 35);
+  lv_obj_set_size(menuList, 460, LV_SIZE_CONTENT);
+  lv_obj_set_pos(menuList, 10, 5);
   lv_obj_set_style_pad_row(menuList, 1, 0);
   lv_obj_set_flex_flow(menuList, LV_FLEX_FLOW_COLUMN);
   lv_obj_clear_flag(menuList, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
@@ -4146,25 +4177,28 @@ void buildSettingsScreen() {
 
   fcHeaderCreate(settingsConfigCtr, "CONFIGURATION");
 
+  // Scroll area (#101)
+  lv_obj_t* cfgScroll = fcSettingsScrollCreate(settingsConfigCtr, 1);
+
   // Timezone dropdown — click on ENTIRE row opens picker (#117/#119)
-  cfgTzDropdown = fcDropdownCreate(settingsConfigCtr, 45, "Time Zone", tzDisplayName);
+  cfgTzDropdown = fcDropdownCreate(cfgScroll, 15, "Time Zone", tzDisplayName);
   lv_obj_add_event_cb(cfgTzDropdown, cfgTzDropdownCb, LV_EVENT_CLICKED, NULL);
   lv_obj_add_event_cb(cfgTzDropdown, cfgTzSelectedCb, LV_EVENT_VALUE_CHANGED, NULL);
   // Time format toggle: 0=12Hour(left), 1=24Hour(right)
-  cfgTimeToggle = fcToggleCreate(settingsConfigCtr, 95, "Time", "12 Hour", "24 Hour", use12Hour ? 0 : 1);
+  cfgTimeToggle = fcToggleCreate(cfgScroll, 65, "Time", "12 Hour", "24 Hour", use12Hour ? 0 : 1);
   lv_obj_add_event_cb(cfgTimeToggle, cfgToggleCb, LV_EVENT_VALUE_CHANGED, NULL);
 
   // Temperature unit toggle: 0=degF(left), 1=degC(right)
-  cfgTempToggle = fcToggleCreate(settingsConfigCtr, 145, "Temp", "\xC2\xB0""F", "\xC2\xB0""C", useFahrenheit ? 0 : 1);
+  cfgTempToggle = fcToggleCreate(cfgScroll, 115, "Temp", "\xC2\xB0""F", "\xC2\xB0""C", useFahrenheit ? 0 : 1);
   lv_obj_add_event_cb(cfgTempToggle, cfgToggleCb, LV_EVENT_VALUE_CHANGED, NULL);
 
   // Distance unit toggle: 0=Imperial(left), 1=Metric(right)
-  cfgDistToggle = fcToggleCreate(settingsConfigCtr, 195, "Distance", "Imperial", "Metric", useMetricUnits ? 1 : 0);
+  cfgDistToggle = fcToggleCreate(cfgScroll, 165, "Distance", "Imperial", "Metric", useMetricUnits ? 1 : 0);
   lv_obj_add_event_cb(cfgDistToggle, cfgToggleCb, LV_EVENT_VALUE_CHANGED, NULL);
 
   // Live preview label
-  cfgPreviewLabel = lv_label_create(settingsConfigCtr);
-  lv_obj_set_pos(cfgPreviewLabel, 20, 235);
+  cfgPreviewLabel = lv_label_create(cfgScroll);
+  lv_obj_set_pos(cfgPreviewLabel, 20, 205);
   lv_obj_set_style_text_font(cfgPreviewLabel, &lv_font_montserrat_16, 0);
   lv_obj_set_style_text_color(cfgPreviewLabel, lv_color_hex(0x808080), 0);
   lv_label_set_text(cfgPreviewLabel, "");
@@ -4188,17 +4222,20 @@ void buildSettingsScreen() {
 
   fcHeaderCreate(settingsDisplayCtr, "DISPLAY");
 
+  // Scroll area (#101)
+  lv_obj_t* dispScroll = fcSettingsScrollCreate(settingsDisplayCtr, 2);
+
   // Brightness label
-  lv_obj_t* brightLbl = lv_label_create(settingsDisplayCtr);
+  lv_obj_t* brightLbl = lv_label_create(dispScroll);
   lv_label_set_text(brightLbl, "Brightness");
   lv_obj_set_style_text_color(brightLbl, FC_COLOR_DIM, 0);
   lv_obj_set_style_text_font(brightLbl, FC_FONT_SM, 0);
-  lv_obj_set_pos(brightLbl, 20, 53);
+  lv_obj_set_pos(brightLbl, 20, 23);
 
   // Brightness slider: range 25-255, initial = tftBrightness
-  dispBrightnessSlider = lv_slider_create(settingsDisplayCtr);
+  dispBrightnessSlider = lv_slider_create(dispScroll);
   lv_obj_set_size(dispBrightnessSlider, 250, 30);
-  lv_obj_set_pos(dispBrightnessSlider, 140, 47);
+  lv_obj_set_pos(dispBrightnessSlider, 140, 17);
   lv_slider_set_range(dispBrightnessSlider, 25, 255);
   lv_slider_set_value(dispBrightnessSlider, tftBrightness, LV_ANIM_OFF);
   // Style: green indicator, dark gray track, white knob
@@ -4209,21 +4246,21 @@ void buildSettingsScreen() {
   lv_obj_add_event_cb(dispBrightnessSlider, dispBrightnessChangedCb, LV_EVENT_VALUE_CHANGED, NULL);
 
   // Brightness numeric readout (to the right of slider)
-  dispBrightnessLabel = lv_label_create(settingsDisplayCtr);
-  lv_obj_set_pos(dispBrightnessLabel, 375, 53);
+  dispBrightnessLabel = lv_label_create(dispScroll);
+  lv_obj_set_pos(dispBrightnessLabel, 375, 23);
   lv_obj_set_style_text_color(dispBrightnessLabel, FC_COLOR_VALUE, 0);
   lv_obj_set_style_text_font(dispBrightnessLabel, FC_FONT_SM, 0);
   lv_label_set_text_fmt(dispBrightnessLabel, "%d", tftBrightness);
 
   // TFT Sleep timeout dropdown — click on entire row (#117)
   int tftIdx = findTimeoutIndex(tftTimeoutPresets, TFT_TIMEOUT_COUNT, tftSleepMs);
-  dispTftDropdown = fcDropdownCreate(settingsDisplayCtr, 105, "TFT Sleep", tftTimeoutLabels[tftIdx]);
+  dispTftDropdown = fcDropdownCreate(dispScroll, 75, "TFT Sleep", tftTimeoutLabels[tftIdx]);
   lv_obj_add_event_cb(dispTftDropdown, dispTftDropdownCb, LV_EVENT_CLICKED, NULL);
   lv_obj_add_event_cb(dispTftDropdown, dispTftSelectedCb, LV_EVENT_VALUE_CHANGED, NULL);
 
   // OLED Sleep timeout dropdown — click on entire row (#117)
   int oledIdx = findTimeoutIndex(oledTimeoutPresets, OLED_TIMEOUT_COUNT, oledSleepMs);
-  dispOledDropdown = fcDropdownCreate(settingsDisplayCtr, 155, "OLED Sleep", oledTimeoutLabels[oledIdx]);
+  dispOledDropdown = fcDropdownCreate(dispScroll, 125, "OLED Sleep", oledTimeoutLabels[oledIdx]);
   lv_obj_add_event_cb(dispOledDropdown, dispOledDropdownCb, LV_EVENT_CLICKED, NULL);
   lv_obj_add_event_cb(dispOledDropdown, dispOledSelectedCb, LV_EVENT_VALUE_CHANGED, NULL);
 
@@ -4246,25 +4283,28 @@ void buildSettingsScreen() {
 
   fcHeaderCreate(settingsCalCtr, "COMPASS CAL");
 
+  // Scroll area (#101)
+  lv_obj_t* calScroll = fcSettingsScrollCreate(settingsCalCtr, 3);
+
   // === Idle state widgets ===
 
   // Status label
-  calStatusLabel = lv_label_create(settingsCalCtr);
-  lv_obj_set_pos(calStatusLabel, 20, 50);
+  calStatusLabel = lv_label_create(calScroll);
+  lv_obj_set_pos(calStatusLabel, 20, 20);
   lv_obj_set_style_text_font(calStatusLabel, FC_FONT_MD, 0);
   lv_label_set_text(calStatusLabel, "Status: ---");
 
   // Offsets label
-  calOffsetsLabel = lv_label_create(settingsCalCtr);
-  lv_obj_set_pos(calOffsetsLabel, 20, 80);
+  calOffsetsLabel = lv_label_create(calScroll);
+  lv_obj_set_pos(calOffsetsLabel, 20, 50);
   lv_obj_set_style_text_font(calOffsetsLabel, FC_FONT_SM, 0);
   lv_obj_set_style_text_color(calOffsetsLabel, FC_COLOR_DIM, 0);
   lv_label_set_text(calOffsetsLabel, "Offsets: ---");
 
   // Start Calibration button
-  calStartBtn = lv_button_create(settingsCalCtr);
+  calStartBtn = lv_button_create(calScroll);
   lv_obj_set_size(calStartBtn, 220, 40);
-  lv_obj_set_pos(calStartBtn, 130, 130);
+  lv_obj_set_pos(calStartBtn, 130, 100);
   lv_obj_set_style_radius(calStartBtn, 6, 0);
   if (magAvailable) {
     lv_obj_set_style_bg_color(calStartBtn, lv_color_hex(0x007D00), 0);  // Green
@@ -4284,12 +4324,12 @@ void buildSettingsScreen() {
   lv_obj_t* calBack = lv_obj_get_child(calIdleActBar, 0);
   lv_obj_add_event_cb(calBack, calBackCb, LV_EVENT_CLICKED, NULL);
 
-  // === Active calibration widgets (hidden initially) ===
+  // === Active calibration widgets (hidden initially, inside scroll area) ===
 
   // Progress arc
-  calArc = lv_arc_create(settingsCalCtr);
+  calArc = lv_arc_create(calScroll);
   lv_obj_set_size(calArc, 140, 140);
-  lv_obj_set_pos(calArc, 170, 55);
+  lv_obj_set_pos(calArc, 170, 25);
   lv_arc_set_range(calArc, 0, 100);
   lv_arc_set_value(calArc, 0);
   lv_arc_set_bg_angles(calArc, 0, 360);
@@ -4302,24 +4342,24 @@ void buildSettingsScreen() {
   lv_obj_add_flag(calArc, LV_OBJ_FLAG_HIDDEN);
 
   // Countdown label (centered in arc)
-  calCountdownLabel = lv_label_create(settingsCalCtr);
-  lv_obj_set_pos(calCountdownLabel, 225, 105);  // Centered in arc area
+  calCountdownLabel = lv_label_create(calScroll);
+  lv_obj_set_pos(calCountdownLabel, 225, 75);  // Centered in arc area
   lv_obj_set_style_text_font(calCountdownLabel, FC_FONT_HERO, 0);  // 32px
   lv_obj_set_style_text_color(calCountdownLabel, FC_COLOR_TEXT, 0);
   lv_label_set_text(calCountdownLabel, "15");
   lv_obj_add_flag(calCountdownLabel, LV_OBJ_FLAG_HIDDEN);
 
   // Instruction label
-  calInstructLabel = lv_label_create(settingsCalCtr);
-  lv_obj_set_pos(calInstructLabel, 80, 210);
+  calInstructLabel = lv_label_create(calScroll);
+  lv_obj_set_pos(calInstructLabel, 80, 180);
   lv_obj_set_style_text_font(calInstructLabel, FC_FONT_MD, 0);
   lv_obj_set_style_text_color(calInstructLabel, FC_COLOR_WARN, 0);  // Orange
   lv_label_set_text(calInstructLabel, "Rotate device slowly 360\xC2\xB0");
   lv_obj_add_flag(calInstructLabel, LV_OBJ_FLAG_HIDDEN);
 
   // Min/max label
-  calMinMaxLabel = lv_label_create(settingsCalCtr);
-  lv_obj_set_pos(calMinMaxLabel, 20, 245);
+  calMinMaxLabel = lv_label_create(calScroll);
+  lv_obj_set_pos(calMinMaxLabel, 20, 215);
   lv_obj_set_style_text_font(calMinMaxLabel, FC_FONT_XS, 0);  // 14px
   lv_obj_set_style_text_color(calMinMaxLabel, FC_COLOR_DIM, 0);
   lv_label_set_text(calMinMaxLabel, "");
@@ -4337,24 +4377,27 @@ void buildSettingsScreen() {
 
   fcHeaderCreate(settingsDiagsCtr, "DIAGNOSTICS");
 
+  // Scroll area (#101) — Diagnostics has 11 rows at 21px = 231px, close to 240px limit
+  lv_obj_t* diagsScroll = fcSettingsScrollCreate(settingsDiagsCtr, 4);
+
   // 11 label-value rows
   static const char* diagLabels[11] = {
     "BSEC:", "Weather:", "Heap:", "PSRAM:", "Sensors:",
     "Temps:", "GPS:", "MagCal:", "Storage:", "Web:", "Touch:"
   };
 
-  int diagY = 38;
+  int diagY = 8;
   int diagLineH = 21;
   for (int i = 0; i < 11; i++) {
     // Cyan label
-    lv_obj_t* lbl = lv_label_create(settingsDiagsCtr);
+    lv_obj_t* lbl = lv_label_create(diagsScroll);
     lv_label_set_text(lbl, diagLabels[i]);
     lv_obj_set_pos(lbl, 10, diagY + i * diagLineH);
     lv_obj_set_style_text_font(lbl, FC_FONT_XS, 0);
     lv_obj_set_style_text_color(lbl, FC_COLOR_HEADER, 0);
 
     // Value label (updated each frame)
-    diagValueLabels[i] = lv_label_create(settingsDiagsCtr);
+    diagValueLabels[i] = lv_label_create(diagsScroll);
     lv_label_set_text(diagValueLabels[i], "---");
     lv_obj_set_pos(diagValueLabels[i], 70, diagY + i * diagLineH);
     lv_obj_set_style_text_font(diagValueLabels[i], FC_FONT_XS, 0);
@@ -4378,21 +4421,24 @@ void buildSettingsScreen() {
 
   fcHeaderCreate(settingsAboutCtr, "ABOUT");
 
+  // Scroll area (#101)
+  lv_obj_t* aboutScroll = fcSettingsScrollCreate(settingsAboutCtr, 5);
+
   // 6 label-value rows
   static const char* aboutLabels[6] = {
     "Version:", "Uptime:", "Heap:", "PSRAM:", "Battery:", "WiFi:"
   };
 
-  int aboutY = 50;
+  int aboutY = 20;
   int aboutLineH = 30;
   for (int i = 0; i < 6; i++) {
-    lv_obj_t* lbl = lv_label_create(settingsAboutCtr);
+    lv_obj_t* lbl = lv_label_create(aboutScroll);
     lv_label_set_text(lbl, aboutLabels[i]);
     lv_obj_set_pos(lbl, 20, aboutY + i * aboutLineH);
     lv_obj_set_style_text_font(lbl, FC_FONT_MD, 0);
     lv_obj_set_style_text_color(lbl, FC_COLOR_DIM, 0);
 
-    aboutValueLabels[i] = lv_label_create(settingsAboutCtr);
+    aboutValueLabels[i] = lv_label_create(aboutScroll);
     lv_label_set_text(aboutValueLabels[i], "---");
     lv_obj_set_pos(aboutValueLabels[i], 160, aboutY + i * aboutLineH);
     lv_obj_set_style_text_font(aboutValueLabels[i], FC_FONT_MD, 0);
@@ -4419,17 +4465,20 @@ void buildSettingsScreen() {
 
   fcHeaderCreate(settingsResetCtr, "FACTORY RESET");
 
+  // Scroll area (#101)
+  lv_obj_t* resetScroll = fcSettingsScrollCreate(settingsResetCtr, 6);
+
   // Warning text (orange)
-  lv_obj_t* resetWarn = lv_label_create(settingsResetCtr);
+  lv_obj_t* resetWarn = lv_label_create(resetScroll);
   lv_label_set_text(resetWarn, "Reset all settings to\nfactory defaults?");
-  lv_obj_set_pos(resetWarn, 20, 90);
+  lv_obj_set_pos(resetWarn, 20, 60);
   lv_obj_set_style_text_font(resetWarn, FC_FONT_LG, 0);  // 20px
   lv_obj_set_style_text_color(resetWarn, FC_COLOR_WARN, 0);  // Orange
 
   // Info text (dim)
-  lv_obj_t* resetInfo = lv_label_create(settingsResetCtr);
+  lv_obj_t* resetInfo = lv_label_create(resetScroll);
   lv_label_set_text(resetInfo, "Compass calibration will\nbe preserved.");
-  lv_obj_set_pos(resetInfo, 20, 155);
+  lv_obj_set_pos(resetInfo, 20, 125);
   lv_obj_set_style_text_font(resetInfo, FC_FONT_SM, 0);  // 16px
   lv_obj_set_style_text_color(resetInfo, FC_COLOR_DIM, 0);
 
@@ -7512,7 +7561,17 @@ void handleButtons() {
   if (framAvailable && sdAvailable) framFlushToSD();
 
   // Handle A/B based on current screen and sub-screen
-  if (currentScreen == SCREEN_GEOCACHE && geocacheSubScreen != 0) {
+  if (currentScreen == SCREEN_SETTINGS) {
+    // Settings: A/B scroll the active sub-screen content (#101)
+    lv_obj_t* scroll = (settingsSubScreen >= 0 && settingsSubScreen < 7)
+                       ? settingsScrollAreas[settingsSubScreen] : NULL;
+    if (scroll) {
+      int step = SETTINGS_SCROLL_STEP;
+      if (buttonA) lv_obj_scroll_by(scroll, 0, step, LV_ANIM_ON);   // Scroll up
+      if (buttonB) lv_obj_scroll_by(scroll, 0, -step, LV_ANIM_ON);  // Scroll down
+    }
+    lastButtonPress = now;
+  } else if (currentScreen == SCREEN_GEOCACHE && geocacheSubScreen != 0) {
     // Geocache sub-screen navigation
     handleGeocacheButtons(buttonA, buttonB);
     lastButtonPress = now;
