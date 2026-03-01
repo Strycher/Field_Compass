@@ -1239,11 +1239,11 @@ void loop() {
     // SHT41 temp/humidity preferred in status log (#48)
     float logTempC = shtAvailable ? shtData.temperature : envData.temperature;
     float logHumid = shtAvailable ? shtData.humidity : envData.humidity;
-    snprintf(buf, sizeof(buf), "[%lus] T:%.1fF H:%.0f%% IAQ:%.0f Hdg:%.0f %s Sat:%d HDOP:%.1f TTFF:%lus Batt:%.3fV/%.2f%%/%+.1f%%hr\n",
+    snprintf(buf, sizeof(buf), "[%lus] T:%.1fF H:%.0f%% IAQ:%.0f(%s) Hdg:%.0f %s Sat:%d HDOP:%.1f TTFF:%lus Batt:%.3fV/%.2f%%/%+.1f%%hr\n",
              millis() / 1000,
              logTempC * 9.0 / 5.0 + 32.0,
              logHumid,
-             envData.iaq,
+             envData.iaq, getIaqQualityText(envData.iaq),
              imuData.heading,
              gpsStatus,
              gpsData.satellites,
@@ -3333,8 +3333,11 @@ void updateEnvData() {
     lv_obj_clear_flag(envLblFcstLabel, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(envLblFcstValue, LV_OBJ_FLAG_HIDDEN);
 
-    // IAQ with color coding
-    snprintf(buf, sizeof(buf), "%.0f [%s]", envData.iaq, getIaqAccuracyText(envData.iaqAccuracy));
+    // IAQ with quality word and color coding (#31)
+    if (envData.iaqAccuracy == 0)
+      snprintf(buf, sizeof(buf), "-- [INIT]");
+    else
+      snprintf(buf, sizeof(buf), "%.0f %s [%s]", envData.iaq, getIaqQualityText(envData.iaq), getIaqAccuracyText(envData.iaqAccuracy));
     lv_label_set_text(envLblIaqValue, buf);
     if (envData.iaq > 200)
       lv_obj_set_style_text_color(envLblIaqValue, FC_COLOR_ERROR, 0);
@@ -6979,12 +6982,12 @@ void handleWebJSON() {
   snprintf(buf, sizeof(buf),
     "{"
     "\"gps\":{\"valid\":%s,\"lat\":%.6f,\"lon\":%.6f,\"alt\":%.1f},"
-    "\"env\":{\"temp\":%.1f,\"humidity\":%.1f,\"pressure\":%.1f,\"iaq\":%.0f,\"co2\":%.0f,\"accuracy\":%d,\"tempSource\":\"%s\"},"
+    "\"env\":{\"temp\":%.1f,\"humidity\":%.1f,\"pressure\":%.1f,\"iaq\":%.0f,\"iaqQuality\":\"%s\",\"co2\":%.0f,\"accuracy\":%d,\"tempSource\":\"%s\"},"
     "\"imu\":{\"heading\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"accel\":%.2f},"
     "\"system\":{\"uptime\":%lu,\"wifi\":%s,\"battery\":%.1f,\"batteryConnected\":%s,\"heap\":%lu}"
     "}",
     gpsData.valid ? "true" : "false", gpsData.latitude, gpsData.longitude, gpsData.altitude,
-    jsonTempC, jsonHumid, envData.pressure, envData.iaq, envData.co2Equivalent, envData.iaqAccuracy,
+    jsonTempC, jsonHumid, envData.pressure, envData.iaq, getIaqQualityText(envData.iaq), envData.co2Equivalent, envData.iaqAccuracy,
     shtAvailable ? "SHT41" : "BME688",
     imuData.heading, imuData.roll, imuData.pitch, imuData.accelMag,
     millis() / 1000, wifiConnected ? "true" : "false",
@@ -7929,6 +7932,16 @@ const char* getIaqAccuracyText(uint8_t accuracy) {
     case 3: return "OK";
     default: return "?";
   }
+}
+
+// Helper function to get IAQ quality word from Bosch BSEC index ranges
+const char* getIaqQualityText(float iaq) {
+  if (iaq <= 50)  return "Excellent";
+  if (iaq <= 100) return "Good";
+  if (iaq <= 150) return "Fair";
+  if (iaq <= 200) return "Poor";
+  if (iaq <= 300) return "Bad";
+  return "Hazardous";
 }
 
 // Convert hPa to inHg (inches of mercury)
