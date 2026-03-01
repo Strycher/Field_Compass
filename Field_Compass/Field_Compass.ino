@@ -2032,10 +2032,11 @@ static lv_obj_t* aboutValueLabels[6];  // 6 value labels (some live-updating)
 void buildCompassScreen() {
   // Root screen — independent LVGL screen, loaded via lv_screen_load_anim()
   compassScr = lv_obj_create(NULL);
-  lv_obj_remove_style_all(compassScr);
   lv_obj_set_size(compassScr, SCREEN_W, SCREEN_H);
   lv_obj_set_style_bg_color(compassScr, FC_COLOR_BG, 0);
-  lv_obj_set_style_bg_opa(compassScr, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(compassScr, 0, 0);
+  lv_obj_set_style_radius(compassScr, 0, 0);
+  lv_obj_set_style_pad_all(compassScr, 0, 0);
   lv_obj_clear_flag(compassScr, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_event_cb(compassScr, screenGestureCb, LV_EVENT_GESTURE, NULL);
 
@@ -2153,8 +2154,6 @@ void buildCompassScreen() {
   // NavBar at bottom
   compassNavBar = fcNavBarCreate(compassScr, NUM_SCREENS, SCREEN_COMPASS);
 
-  // Start hidden — shown when currentScreen == SCREEN_COMPASS
-  lv_obj_add_flag(compassScr, LV_OBJ_FLAG_HIDDEN);
 
   logPrintln("[LVGL] Compass screen built (#109)");
 }
@@ -2539,10 +2538,11 @@ static void geocacheNavDrawCb(lv_event_t* e) {
 void buildGeocacheScreen() {
   // Root screen — independent LVGL screen, loaded via lv_screen_load_anim()
   geocacheScr = lv_obj_create(NULL);
-  lv_obj_remove_style_all(geocacheScr);
   lv_obj_set_size(geocacheScr, SCREEN_W, SCREEN_H);
   lv_obj_set_style_bg_color(geocacheScr, FC_COLOR_BG, 0);
-  lv_obj_set_style_bg_opa(geocacheScr, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(geocacheScr, 0, 0);
+  lv_obj_set_style_radius(geocacheScr, 0, 0);
+  lv_obj_set_style_pad_all(geocacheScr, 0, 0);
   lv_obj_clear_flag(geocacheScr, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_event_cb(geocacheScr, screenGestureCb, LV_EVENT_GESTURE, NULL);
 
@@ -2811,8 +2811,6 @@ void buildGeocacheScreen() {
   // Nav bar
   gcDetNavBar = fcNavBarCreate(geocacheDetailsCtr, NUM_SCREENS, SCREEN_GEOCACHE);
 
-  // Start entire geocache screen hidden
-  lv_obj_add_flag(geocacheScr, LV_OBJ_FLAG_HIDDEN);
 
   logPrintln("[LVGL] Geocache screen built (#110)");
 }
@@ -4051,10 +4049,11 @@ void updateSettingsData() {
 void buildSettingsScreen() {
   // Root screen — independent LVGL screen, loaded via lv_screen_load_anim()
   settingsScr = lv_obj_create(NULL);
-  lv_obj_remove_style_all(settingsScr);
   lv_obj_set_size(settingsScr, SCREEN_W, SCREEN_H);
   lv_obj_set_style_bg_color(settingsScr, FC_COLOR_BG, 0);
-  lv_obj_set_style_bg_opa(settingsScr, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(settingsScr, 0, 0);
+  lv_obj_set_style_radius(settingsScr, 0, 0);
+  lv_obj_set_style_pad_all(settingsScr, 0, 0);
   lv_obj_clear_flag(settingsScr, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE
                         | LV_OBJ_FLAG_SCROLL_CHAIN_HOR | LV_OBJ_FLAG_SCROLL_CHAIN_VER));
 
