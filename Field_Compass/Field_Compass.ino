@@ -129,6 +129,10 @@ const char* NTP_SERVER = "pool.ntp.org";
 #define FRAM_WX_ENTRY       24         // Bytes per weather entry
 #define FRAM_WX_COUNT       300        // Ring buffer capacity (25 hrs at 5 min)
 #define FRAM_FLUSH_INTERVAL 300000     // Flush to SD every 5 minutes (ms)
+#define FRAM_SETTINGS_ADDR  0x046C0    // User settings backup (after weather ring)
+#define FRAM_SETTINGS_SIZE  128        // Allocated block size
+#define FRAM_SETTINGS_MAGIC 0x53544E47 // "STNG" in ASCII
+#define FRAM_SETTINGS_VER   1
 
 // SPI pins (explicit definition for PSRAM variant compatibility)
 // Adafruit ESP32-S3 Feather default SPI pins
@@ -385,6 +389,24 @@ struct FRAMBatteryEntry {
 };
 // FRAMWeatherEntry: reuse existing WeatherReading struct (24 bytes, same layout)
 
+// FRAM settings backup struct (#118) — written as raw bytes to FRAM_SETTINGS_ADDR
+struct FRAMSettings {
+  uint32_t magic;              // FRAM_SETTINGS_MAGIC
+  uint8_t  version;            // FRAM_SETTINGS_VER
+  uint8_t  use12Hour;
+  uint8_t  useFahrenheit;
+  uint8_t  useMetricUnits;
+  char     posixTZ[48];
+  char     tzDisplayName[24];
+  int8_t   tzSelectedIndex;
+  uint8_t  tftBrightness;
+  uint8_t  _pad[2];            // Align to 4 bytes
+  uint32_t tftSleepMs;
+  uint32_t oledSleepMs;
+  uint32_t checksum;           // XOR-32 of all preceding bytes
+};
+static_assert(sizeof(FRAMSettings) <= FRAM_SETTINGS_SIZE, "FRAMSettings exceeds allocated block");
+
 // FRAM state (in RAM — synced from FRAM header on boot)
 FRAMHeader framHeader;
 unsigned long lastFramFlush = 0;
@@ -608,6 +630,10 @@ void recordSDError(SDErrorType err);
 bool shouldAttemptReInit();
 bool trySDReInit();
 File sdOpenSafe(const char* path, const char* mode, bool silent = false);
+
+// Forward declarations for FRAM settings backup (#118)
+bool loadSettingsFromFRAM();
+void saveSettingsToFRAM();
 
 // Forward declarations for serial log to SD (#59)
 void initSerialLog();
@@ -5329,6 +5355,72 @@ void framFlushToSD() {
   lastFramFlush = millis();
 }
 
+// ============== FRAM Settings Backup (#118) ==============
+
+// XOR-32 checksum over raw bytes (excludes the checksum field itself)
+static uint32_t framSettingsChecksum(const FRAMSettings& s) {
+  const uint8_t* p = (const uint8_t*)&s;
+  size_t len = offsetof(FRAMSettings, checksum);  // everything before checksum
+  uint32_t ck = 0;
+  for (size_t i = 0; i < len; i++) ck ^= ((uint32_t)p[i]) << ((i & 3) * 8);
+  return ck;
+}
+
+void saveSettingsToFRAM() {
+  if (!framAvailable) return;
+
+  FRAMSettings s;
+  memset(&s, 0, sizeof(s));
+  s.magic          = FRAM_SETTINGS_MAGIC;
+  s.version        = FRAM_SETTINGS_VER;
+  s.use12Hour      = use12Hour ? 1 : 0;
+  s.useFahrenheit  = useFahrenheit ? 1 : 0;
+  s.useMetricUnits = useMetricUnits ? 1 : 0;
+  strncpy(s.posixTZ, posixTZ, sizeof(s.posixTZ) - 1);
+  strncpy(s.tzDisplayName, tzDisplayName, sizeof(s.tzDisplayName) - 1);
+  s.tzSelectedIndex = (int8_t)tzSelectedIndex;
+  s.tftBrightness   = tftBrightness;
+  s.tftSleepMs      = tftSleepMs;
+  s.oledSleepMs     = oledSleepMs;
+  s.checksum        = framSettingsChecksum(s);
+
+  const uint8_t* data = (const uint8_t*)&s;
+  for (size_t i = 0; i < sizeof(s); i++) {
+    fram.write8(FRAM_SETTINGS_ADDR + i, data[i]);
+  }
+  logPrintln("[SETTINGS] Saved to FRAM");
+}
+
+bool loadSettingsFromFRAM() {
+  if (!framAvailable) return false;
+
+  FRAMSettings s;
+  uint8_t* data = (uint8_t*)&s;
+  for (size_t i = 0; i < sizeof(s); i++) {
+    data[i] = fram.read8(FRAM_SETTINGS_ADDR + i);
+  }
+
+  if (s.magic != FRAM_SETTINGS_MAGIC || s.version != FRAM_SETTINGS_VER) return false;
+  if (s.checksum != framSettingsChecksum(s)) {
+    logPrintln("[SETTINGS] FRAM checksum mismatch, ignoring");
+    return false;
+  }
+
+  use12Hour       = s.use12Hour;
+  useFahrenheit   = s.useFahrenheit;
+  useMetricUnits  = s.useMetricUnits;
+  strncpy(posixTZ, s.posixTZ, sizeof(posixTZ) - 1);
+  strncpy(tzDisplayName, s.tzDisplayName, sizeof(tzDisplayName) - 1);
+  tzSelectedIndex = s.tzSelectedIndex;
+  tftBrightness   = constrain(s.tftBrightness, 25, 255);
+  tftSleepMs      = s.tftSleepMs;
+  oledSleepMs     = s.oledSleepMs;
+
+  logPrintf("[SETTINGS] Loaded from FRAM: 12h=%d F=%d metric=%d tz=%s bright=%d\n",
+            use12Hour, useFahrenheit, useMetricUnits, tzDisplayName, tftBrightness);
+  return true;
+}
+
 // ============== Geocache Found Status Persistence (#70) ==============
 
 #define GEOCACHE_FOUND_FILE "/geocache_found.csv"
@@ -5775,17 +5867,29 @@ int formatTimeStr(char* buf, int hour, int minute, int second, bool includeSecon
   }
 }
 
-// Load user settings from SD (#98, #118)
+// Load user settings — try SD first, fall back to FRAM (#98, #118)
 void loadSettings() {
   if (!sdHealth.available) {
-    logPrintln("[SETTINGS] SD unavailable, using defaults");
+    // SD unavailable — try FRAM backup (#118)
+    if (loadSettingsFromFRAM()) {
+      settingsLoadedFromSD = true;  // Treat FRAM load as success for deferred-load flag
+      applyTimezone();
+      return;
+    }
+    logPrintln("[SETTINGS] SD + FRAM unavailable, using defaults");
     applyTimezone();
     return;
   }
 
   File f = sdOpenSafe("/config/settings.txt", "r", true);  // silent — normal on first boot
   if (!f) {
-    logPrintln("[SETTINGS] No settings file, using defaults");
+    // No SD file — try FRAM backup (#118)
+    if (loadSettingsFromFRAM()) {
+      settingsLoadedFromSD = true;
+      applyTimezone();
+      return;
+    }
+    logPrintln("[SETTINGS] No settings file or FRAM backup, using defaults");
     applyTimezone();
     return;
   }
@@ -5824,15 +5928,18 @@ void loadSettings() {
             use12Hour, useFahrenheit, useMetricUnits, tzDisplayName, tftBrightness);
 }
 
-// Save user settings to SD — atomic write via temp file (#98, #118)
-// Writes to .tmp first, then removes original + renames, to prevent
-// data loss if write fails (FILE_WRITE truncates BEFORE writing).
+// Save user settings to SD + FRAM (#98, #118)
+// SD: atomic write via temp file (.tmp → rename) to prevent truncation loss.
+// FRAM: instant backup — survives SD mount failures on next boot.
 void saveSettings() {
+  // Always save to FRAM first — instant, no SD dependency (#118)
+  saveSettingsToFRAM();
+
   if (!sdHealth.available) {
     logPrintln("[SETTINGS] SD unavailable, attempting re-init before save...");
     trySDReInit();  // Try to recover SD before giving up (#118)
     if (!sdHealth.available) {
-      logPrintln("[SETTINGS] SD still unavailable after re-init, cannot save");
+      logPrintln("[SETTINGS] SD still unavailable — saved to FRAM only");
       return;
     }
   }
@@ -5843,7 +5950,7 @@ void saveSettings() {
 
   File f = sdOpenSafe(tmpPath, "w");
   if (!f) {
-    logPrintln("[SETTINGS] Failed to open temp file for save");
+    logPrintln("[SETTINGS] Failed to open temp file — saved to FRAM only");
     return;
   }
 
@@ -5862,14 +5969,22 @@ void saveSettings() {
   // Atomic swap: remove old, rename temp to final
   if (SD.exists(finalPath)) SD.remove(finalPath);
   SD.rename(tmpPath, finalPath);
-  logPrintln("[SETTINGS] Settings saved to SD");
+  logPrintln("[SETTINGS] Settings saved to SD + FRAM");
 }
 
 // Factory reset — delete settings file and restore compiled defaults (#104)
 void factoryReset() {
-  // Delete stored settings
+  // Delete stored settings from SD
   if (sdHealth.available && SD.exists("/config/settings.txt")) {
     SD.remove("/config/settings.txt");
+  }
+
+  // Clear FRAM settings backup (#118) — zero the magic so it won't be loaded
+  if (framAvailable) {
+    for (size_t i = 0; i < FRAM_SETTINGS_SIZE; i++) {
+      fram.write8(FRAM_SETTINGS_ADDR + i, 0);
+    }
+    logPrintln("[SETTINGS] FRAM settings cleared");
   }
 
   // Restore compiled defaults
@@ -7306,8 +7421,8 @@ static lv_obj_t** const mainScreens[] = { &compassScr, &geocacheScr, &envScr, &t
 void navigateScreen(int delta) {
   int next = (currentScreen + delta + NUM_SCREENS) % NUM_SCREENS;
   lv_scr_load_anim_t anim = (delta > 0)
-      ? LV_SCR_LOAD_ANIM_MOVE_LEFT : LV_SCR_LOAD_ANIM_MOVE_RIGHT;
-  lv_screen_load_anim(*mainScreens[next], anim, 300, 0, false);
+      ? LV_SCR_LOAD_ANIM_OVER_LEFT : LV_SCR_LOAD_ANIM_OVER_RIGHT;
+  lv_screen_load_anim(*mainScreens[next], anim, 200, 0, false);
   currentScreen = next;
   geocacheSubScreen = 0;
 }
@@ -7316,7 +7431,7 @@ void navigateToSettings() {
   previousScreen = currentScreen;
   currentScreen = SCREEN_SETTINGS;
   settingsSubScreen = 0;
-  lv_screen_load_anim(settingsScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
+  lv_screen_load_anim(settingsScr, LV_SCR_LOAD_ANIM_OVER_LEFT, 200, 0, false);
   logPrintf("[NAV] → Settings (from screen %d)\n", previousScreen);
 }
 
@@ -7324,7 +7439,7 @@ void navigateFromSettings() {
   saveSettings();
   settingsSubScreen = 0;
   currentScreen = previousScreen;
-  lv_screen_load_anim(*mainScreens[currentScreen], LV_SCR_LOAD_ANIM_MOVE_RIGHT, 250, 0, false);
+  lv_screen_load_anim(*mainScreens[currentScreen], LV_SCR_LOAD_ANIM_OVER_RIGHT, 200, 0, false);
   logPrintf("[NAV] Settings → screen %d\n", currentScreen);
 }
 
