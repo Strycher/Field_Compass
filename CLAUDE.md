@@ -198,6 +198,22 @@ Field_Compass/
 - Reserve files you're working on to prevent conflicts with other agents.
 - When done with a file, release the reservation.
 
+### Infrastructure Health Check (MANDATORY)
+
+At the start of every session, verify all infrastructure is operational before doing any work:
+
+1. **Beads/Dolt**: Run `bd dolt test`. If it fails, start the Dolt server:
+   ```bash
+   cd .beads/dolt && dolt sql-server --port=3307 &
+   ```
+   Re-test. If still failing, STOP and alert the user.
+
+2. **Agent Mail**: If MCP agent-mail is available, call `ensure_project` with `human_key: "C:\dev\Field_Compass"`. If it returns a 403 or connection error, STOP and alert the user.
+
+3. **Beads readiness**: Run `bd ready` to load current task state.
+
+**CRITICAL**: If Beads or Agent Mail are unreachable, **STOP and tell the user immediately.** Do NOT silently fall back to GitHub-only workflows. Use the startup scripts in `scripts/` to ensure proper initialization.
+
 ### Autonomous Operation Rules
 - **Only pick up issues from the "Ready" column on the GitHub Project board.** Never pull from Backlog, Todo, or On Hold — Ben decides what is ready for development.
 - You may operate autonomously without human approval for:
@@ -208,6 +224,16 @@ Field_Compass/
 - If unsure about a design decision, create a GitHub Issue tagged "question" rather than guessing.
 - If a task is blocked by unclear requirements, move it to On Hold and comment on the GitHub Issue explaining what's needed.
 - When creating sub-issues with dependencies, always include `<!-- depends-on: #NNN -->` in the issue body so the auto-promote Action can chain them.
+
+### Session Size Limits (MANDATORY)
+
+Working sessions MUST be limited to **15–30 minutes of effort per issue**, touching **no more than 1–3 files**. This applies to all agents and all sessions without exception.
+
+- If an issue requires more than 30 minutes of work or touches more than 3 files, it MUST be decomposed into smaller sub-issues before starting.
+- Each sub-issue should be independently implementable, compilable, and testable within one session.
+- Use `<!-- depends-on: #NNN -->` to chain sub-issues so the auto-promote Action sequences them correctly.
+- Never start a large implementation in a single session — plan first, break it down, then work the pieces.
+- If you discover mid-session that an issue is larger than estimated, STOP, create sub-issues for the remaining work, and close out what you've completed.
 
 ## Quick Reference Commands
 
