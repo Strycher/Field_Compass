@@ -1285,7 +1285,7 @@ void loop() {
   // Reset watchdog timer (proves loop is not hung)
   esp_task_wdt_reset();
 
-  delay(50);
+  delay(5);  // 5ms RTOS yield — keeps touch/LVGL responsive (~120Hz) (#121)
 }
 
 // ============== I2C Scanner ==============
@@ -4553,12 +4553,12 @@ void initLVGL() {
     lv_indev_set_type(lvglTouchIndev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(lvglTouchIndev, lvglTouchReadCb);
     lv_indev_set_display(lvglTouchIndev, lvglDisplay);
-    // Scroll threshold: prevent tap jitter (5-15px) from triggering scroll. (#112)
-    lv_indev_set_scroll_limit(lvglTouchIndev, 30);
-    // Gesture threshold: default 50px is too high for 480px wide screen — short
-    // swipes fail silently. 20px is above jitter but catches natural flicks. (#121)
-    lv_indev_set_gesture_min_distance(lvglTouchIndev, 20);
-    logPrintln("[LVGL] Touch indev created (scroll_limit=30, gesture_min=20)");
+    // Scroll threshold: prevent tap jitter from triggering scroll. (#112)
+    lv_indev_set_scroll_limit(lvglTouchIndev, 20);
+    // Gesture threshold: default 50px is too high for 480px/3.5" screen.
+    // FT6336U has hardware filtering — 10px safely above residual jitter. (#121)
+    lv_indev_set_gesture_min_distance(lvglTouchIndev, 10);
+    logPrintln("[LVGL] Touch indev created (scroll_limit=20, gesture_min=10)");
   }
 
   // Create encoder input device (buttons A/B/C → encoder) (#106)
@@ -7472,7 +7472,7 @@ void navigateScreen(int delta) {
   int next = (currentScreen + delta + NUM_SCREENS) % NUM_SCREENS;
   lv_scr_load_anim_t anim = (delta > 0)
       ? LV_SCR_LOAD_ANIM_OVER_LEFT : LV_SCR_LOAD_ANIM_OVER_RIGHT;
-  lv_screen_load_anim(*mainScreens[next], anim, 200, 0, false);
+  lv_screen_load_anim(*mainScreens[next], anim, 80, 0, false);
   currentScreen = next;
   geocacheSubScreen = 0;
 }
@@ -7481,7 +7481,7 @@ void navigateToSettings() {
   previousScreen = currentScreen;
   currentScreen = SCREEN_SETTINGS;
   settingsSubScreen = 0;
-  lv_screen_load_anim(settingsScr, LV_SCR_LOAD_ANIM_OVER_LEFT, 200, 0, false);
+  lv_screen_load_anim(settingsScr, LV_SCR_LOAD_ANIM_OVER_LEFT, 80, 0, false);
   logPrintf("[NAV] → Settings (from screen %d)\n", previousScreen);
 }
 
@@ -7489,7 +7489,7 @@ void navigateFromSettings() {
   saveSettings();
   settingsSubScreen = 0;
   currentScreen = previousScreen;
-  lv_screen_load_anim(*mainScreens[currentScreen], LV_SCR_LOAD_ANIM_OVER_RIGHT, 200, 0, false);
+  lv_screen_load_anim(*mainScreens[currentScreen], LV_SCR_LOAD_ANIM_OVER_RIGHT, 80, 0, false);
   logPrintf("[NAV] Settings → screen %d\n", currentScreen);
 }
 
