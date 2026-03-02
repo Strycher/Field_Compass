@@ -4645,13 +4645,13 @@ void checkTFTHealth() {
 
   if (now - lastTFTReinit > TFT_REINIT_INTERVAL) {
     #if DEBUG_TFT
-    logPrintf("[TFT] Preventive re-init at %lus (updates:%lu)\n",
+    logPrintf("[TFT] Soft repaint at %lus (updates:%lu)\n",
               now / 1000, tftUpdateCount);
     #endif
-    tft.init();
-    tft.setRotation(1);
-    analogWrite(TFT_BL, tftBrightness);
-    lv_obj_invalidate(lv_screen_active());  // Force LVGL full repaint
+    // tft.init() + setRotation() removed — caused visible flash every 30 min.
+    // LVGL continuously repaints, so a full invalidation is sufficient as a
+    // safety net against stale display state without reinitializing hardware.
+    lv_obj_invalidate(lv_screen_active());
     lastTFTReinit = now;
   }
 }
@@ -6001,7 +6001,7 @@ void saveSettings() {
   const char* tmpPath = "/config/settings.tmp";
   const char* finalPath = "/config/settings.txt";
 
-  File f = sdOpenSafe(tmpPath, "w");
+  File f = sdOpenSafe(tmpPath, "w", true);  // silent — FRAM already has settings (#31 SD RED fix)
   if (!f) {
     logPrintln("[SETTINGS] Failed to open temp file — saved to FRAM only");
     return;
