@@ -187,11 +187,11 @@ $StartupMessage = @"
 You are starting a new CLI agent session for the Field Compass project. Complete this startup protocol NOW, in order, before doing anything else:
 
 1. **Register with Agent Mail:**
-   - ensure_project(human_key="C:\dev\Field_Compass")
-   - register_agent(project_key="C:\dev\Field_Compass", program="claude-code", model="claude-sonnet-4-20250514")
+   - ensure_project(human_key=<working directory path>)
+   - register_agent(project_key=<working directory path>, program="claude-code", model=<your model id>)
 
 2. **Check inbox** for coordination messages from other agents:
-   - fetch_inbox(project_key="C:\dev\Field_Compass", agent_name="<your-name>", include_bodies=true)
+   - fetch_inbox(project_key=<working directory path>, agent_name=<your-name>, include_bodies=true)
 
 3. **Sync Beads:** Run ``bd dolt pull`` then ``bd ready`` to see available work.
 
@@ -202,6 +202,8 @@ You are starting a new CLI agent session for the Field Compass project. Complete
 6. **Reserve files** via Agent Mail before editing anything: file_reservation_paths with specific paths/globs.
 
 7. **Report ready:** Tell me which task you claimed, which files you reserved. Then begin work.
+
+8. **Continuous Work Loop:** After completing each task, run the Between-Task Reset Protocol (see CLAUDE.md), then immediately check ``bd ready`` and pick the next task. Do NOT stop and ask — keep working until no tasks remain.
 "@
 
 claude --dangerously-skip-permissions $StartupMessage
