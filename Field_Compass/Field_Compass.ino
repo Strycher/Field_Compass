@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.50.3"
+#define FW_VERSION "0.50.4"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -2638,6 +2638,7 @@ void buildGeocacheScreen() {
   lv_obj_set_style_text_font(gcNavLblName, FC_FONT_LG, 0);
   lv_obj_set_style_text_color(gcNavLblName, FC_COLOR_TEXT, 0);
   lv_obj_set_style_text_align(gcNavLblName, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_long_mode(gcNavLblName, LV_LABEL_LONG_DOT);  // Clip with "..." to prevent overlap
   lv_label_set_text(gcNavLblName, "No cache loaded");
 
   // Distance
@@ -3067,6 +3068,7 @@ void updateGeocacheData() {
     } else {
       lv_label_set_text(gcNavLblDist, "Acquiring GPS...");
       lv_obj_set_style_text_color(gcNavLblDist, FC_COLOR_WARN, 0);
+      lv_label_set_text(gcNavLblDT, "");       // Clear to prevent overlap with dist text
       lv_label_set_text(gcNavLblBearing, "");
       lv_label_set_text(gcNavLblAccuracy, "");
     }
