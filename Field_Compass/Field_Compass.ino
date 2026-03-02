@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.50.0"
+#define FW_VERSION "0.50.1"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -1412,6 +1412,7 @@ void initFCTheme() {
 
 // Forward declarations for callbacks used in widgets (#113)
 static void gearIconClickCb(lv_event_t* e);
+static void gcNavListBtnCb(lv_event_t* e);     // (#122) nav→list touch nav
 static void gcFilterBtnCb(lv_event_t* e);     // (#122) filter screen callbacks
 static void gcFilterBackCb(lv_event_t* e);
 static void gcFilterFoundCb(lv_event_t* e);
@@ -2711,6 +2712,15 @@ void buildGeocacheScreen() {
   lv_obj_set_style_text_color(gcNavLblHint, FC_COLOR_DIM, 0);
   lv_label_set_long_mode(gcNavLblHint, LV_LABEL_LONG_WRAP);
   lv_label_set_text(gcNavLblHint, "");
+
+  // "List" touch label in header area — tap to go to cache list (#122)
+  lv_obj_t* gcNavListBtn = lv_label_create(geocacheNavCtr);
+  lv_obj_set_pos(gcNavListBtn, 415, 7);
+  lv_obj_set_style_text_font(gcNavListBtn, FC_FONT_XS, 0);
+  lv_obj_set_style_text_color(gcNavListBtn, FC_COLOR_HEADER, 0);
+  lv_label_set_text(gcNavListBtn, "List");
+  lv_obj_add_flag(gcNavListBtn, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(gcNavListBtn, gcNavListBtnCb, LV_EVENT_CLICKED, NULL);
 
   // Nav bar
   gcNavNavBar = fcNavBarCreate(geocacheNavCtr, NUM_SCREENS, SCREEN_GEOCACHE);
@@ -5712,7 +5722,7 @@ bool loadSettingsFromFRAM() {
 void saveCacheFoundStatus() {
   if (!sdAvailable) return;
 
-  File file = sdOpenSafe(GEOCACHE_FOUND_FILE, "w");
+  File file = sdOpenSafe(GEOCACHE_FOUND_FILE, "w", true);  // silent — don't red-flag SD
   if (!file) {
     logPrintln("[GEOCACHE] Failed to save found status");
     return;
@@ -7459,14 +7469,14 @@ void handleGeocacheUploadData() {
       return;
     }
 
-    // Save GPX to SD card
+    // Save GPX to SD card (silent — caches already in RAM, don't red-flag SD)
     if (sdAvailable) {
       // Ensure directory exists
       if (!SD.exists(GEOCACHE_DIR)) {
         SD.mkdir(GEOCACHE_DIR);
       }
 
-      File f = sdOpenSafe(GEOCACHE_GPX_FILE, "w");
+      File f = sdOpenSafe(GEOCACHE_GPX_FILE, "w", true);
       if (f) {
         f.print(gpxUploadBuffer);
         f.close();
@@ -7808,6 +7818,14 @@ static void gearIconClickCb(lv_event_t* e) {
   (void)e;
   if (currentScreen == SCREEN_SETTINGS) return;
   navigateToSettings();
+}
+
+// Nav screen → list touch callback (#122)
+static void gcNavListBtnCb(lv_event_t* e) {
+  (void)e;
+  geocacheSubScreen = 1;
+  listHighlightIndex = 0;
+  listScrollOffset = 0;
 }
 
 // ============== Geocache Filter Callbacks (#122) ==============
