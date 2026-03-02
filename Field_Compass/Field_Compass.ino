@@ -2706,10 +2706,10 @@ void buildGeocacheScreen() {
 
   // "List" touch label in header area — tap to go to cache list (#122)
   lv_obj_t* gcNavListBtn = lv_label_create(geocacheNavCtr);
-  lv_obj_set_pos(gcNavListBtn, 415, 7);
+  lv_obj_set_pos(gcNavListBtn, 200, 7);
   lv_obj_set_style_text_font(gcNavListBtn, FC_FONT_XS, 0);
-  lv_obj_set_style_text_color(gcNavListBtn, FC_COLOR_HEADER, 0);
-  lv_label_set_text(gcNavListBtn, "List");
+  lv_obj_set_style_text_color(gcNavListBtn, FC_COLOR_BG, 0);  // Black on cyan header
+  lv_label_set_text(gcNavListBtn, "[List]");
   lv_obj_add_flag(gcNavListBtn, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(gcNavListBtn, gcNavListBtnCb, LV_EVENT_CLICKED, NULL);
 
