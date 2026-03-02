@@ -198,6 +198,14 @@ Field_Compass/
 - Reserve files you're working on to prevent conflicts with other agents.
 - When done with a file, release the reservation.
 
+**Parallel Agent Detection (MANDATORY):**
+At session start, after registering with Agent Mail, check `bd list --status=in_progress`. If ANY task is already claimed by another agent:
+1. **STOP and ask the user:** "Another agent is currently working on FC-xxx. Field Compass is a single-file firmware project — parallel agents will conflict. Do you really want to run a second agent?"
+2. Do NOT proceed until the user explicitly confirms.
+3. If the user says no, report what the other agent is working on and exit gracefully.
+
+This project has a single ~8,000-line source file (`Field_Compass.ino`). Parallel agents virtually guarantee conflicts. This is not like a multi-file web project — serialize by default.
+
 ### Infrastructure Health Check (MANDATORY)
 
 At the start of every session, verify all infrastructure is operational before doing any work:
@@ -221,22 +229,29 @@ At the start of every session, verify all infrastructure is operational before d
 **CRITICAL**: If Beads or Agent Mail are unreachable, **STOP and tell the user immediately.** Do NOT silently fall back to GitHub-only workflows. Use the startup scripts in `scripts/` or the preflight hook in `.claude/hooks/preflight.sh` to ensure proper initialization.
 
 ### Autonomous Operation Rules
+
+**Default mode: Interactive.** Agents work on ONE task per session and report results to the user for review. The user verifies on hardware before approving the next task.
+
 - **Only pick up issues from the "Ready" column on the GitHub Project board.** Never pull from Backlog, Todo, or On Hold — Ben decides what is ready for development.
-- You MUST operate autonomously without human approval for:
+- You may operate autonomously for:
   - Implementing features from GitHub Issues in the "Ready" column
   - Writing and running tests (compile checks)
   - Updating Beads tasks and GitHub Issues
   - Committing code that compiles successfully (per commit convention above)
-  - Picking up the next task after completing one (see Continuous Work Loop below)
+- After completing a task, **report results and wait for the user.** Do not auto-pick the next task unless the Continuous Work Loop is active (see below).
 - If unsure about a design decision, create a GitHub Issue tagged "question" rather than guessing.
 - If a task is blocked by unclear requirements, move it to On Hold and comment on the GitHub Issue explaining what's needed.
 - When creating sub-issues with dependencies, always include `<!-- depends-on: #NNN -->` in the issue body so the auto-promote Action can chain them.
 
 > **CRITICAL RULE (repeated for emphasis):** If Beads or Agent Mail are unreachable, **STOP and tell the user immediately.** Do NOT silently fall back to GitHub-only workflows. The user has invested in this infrastructure specifically so agents coordinate — ignoring failures defeats the entire purpose.
 
-### Continuous Work Loop (MANDATORY)
+### Continuous Work Loop (OPT-IN — requires explicit `/work` command)
 
-**After completing a task, you MUST immediately check for and pick up the next available task. Do NOT stop and ask the user if they want you to continue. Do NOT report "nothing to do" without checking. The standing directive is: work until `bd ready` returns nothing.**
+The Continuous Work Loop is **OFF by default.** It activates ONLY when the user explicitly types `/work` or includes "continuous work loop" in their launch instructions. This is intentional — Field Compass is a single-file embedded firmware project where each change should be verified on hardware before proceeding.
+
+**When active:**
+
+After completing a task, immediately check for and pick up the next available task. Do not stop and ask the user if they want to continue. Work until `bd ready` returns nothing.
 
 ```
 Complete task → Reset (below) → bd ready → claim next → work → repeat
@@ -244,7 +259,7 @@ Complete task → Reset (below) → bd ready → claim next → work → repeat
 
 **Rules:**
 1. After every task completion, run the Between-Task Reset Protocol below, then run `bd ready`.
-2. If `bd ready` returns tasks, pick the highest-priority one and begin work immediately. Do not ask for permission.
+2. If `bd ready` returns tasks, pick the highest-priority one and begin work immediately.
 3. If `bd ready` returns nothing, check `bd list --status=open` for blocked tasks and report what they're waiting on. Only THEN tell the user there's no available work.
 4. If a task you just completed unblocks downstream tasks, those will appear in `bd ready` — pick them up.
 5. The only reasons to stop working are:
@@ -253,12 +268,8 @@ Complete task → Reset (below) → bd ready → claim next → work → repeat
    - Infrastructure failure (Beads/Agent Mail unreachable)
    - You've hit a hard blocker you cannot resolve
 
-**Anti-pattern (NEVER do this):**
-> "I've completed the task. Would you like me to check for more work?"
-
-**Correct behavior:**
-> "Task complete, pushed to main. Checking for next available work..."
-> *[runs bd ready, claims task, begins work]*
+**When NOT active (default):**
+> "Task complete, pushed to main. Here's what changed: [summary]. Ready for you to verify on device."
 
 ### Between-Task Reset Protocol
 
