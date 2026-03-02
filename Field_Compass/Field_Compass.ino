@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.51.0"
+#define FW_VERSION "0.51.1"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -2913,63 +2913,70 @@ void buildGeocacheScreen() {
   // Found: tap cycles All→Unfound→Found
   gcFiltLblFound = lv_label_create(geocacheFilterCtr);
   lv_obj_set_pos(gcFiltLblFound, 12, 45);
-  lv_obj_set_style_text_font(gcFiltLblFound, FC_FONT_SM, 0);
+  lv_obj_set_style_text_font(gcFiltLblFound, FC_FONT_MD, 0);
   lv_obj_set_style_text_color(gcFiltLblFound, FC_COLOR_HEADER, 0);
   lv_label_set_text(gcFiltLblFound, "Found: All");
   lv_obj_add_flag(gcFiltLblFound, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(gcFiltLblFound, 10);
   lv_obj_add_event_cb(gcFiltLblFound, gcFilterFoundCb, LV_EVENT_CLICKED, NULL);
 
   // Sort: tap cycles Distance→Name
   gcFiltLblSort = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(gcFiltLblSort, 12, 75);
-  lv_obj_set_style_text_font(gcFiltLblSort, FC_FONT_SM, 0);
+  lv_obj_set_pos(gcFiltLblSort, 12, 80);
+  lv_obj_set_style_text_font(gcFiltLblSort, FC_FONT_MD, 0);
   lv_obj_set_style_text_color(gcFiltLblSort, FC_COLOR_HEADER, 0);
   lv_label_set_text(gcFiltLblSort, "Sort: Distance");
   lv_obj_add_flag(gcFiltLblSort, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(gcFiltLblSort, 10);
   lv_obj_add_event_cb(gcFiltLblSort, gcFilterSortCb, LV_EVENT_CLICKED, NULL);
 
   // D range: tap cycles through preset ranges
   gcFiltLblDRange = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(gcFiltLblDRange, 12, 105);
-  lv_obj_set_style_text_font(gcFiltLblDRange, FC_FONT_SM, 0);
+  lv_obj_set_pos(gcFiltLblDRange, 12, 115);
+  lv_obj_set_style_text_font(gcFiltLblDRange, FC_FONT_MD, 0);
   lv_obj_set_style_text_color(gcFiltLblDRange, FC_COLOR_HEADER, 0);
   lv_label_set_text(gcFiltLblDRange, "D: 1.0 - 5.0");
   lv_obj_add_flag(gcFiltLblDRange, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(gcFiltLblDRange, 10);
   lv_obj_add_event_cb(gcFiltLblDRange, gcFilterDMinUpCb, LV_EVENT_CLICKED, NULL);
 
   // T range: tap cycles through preset ranges
   gcFiltLblTRange = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(gcFiltLblTRange, 12, 135);
-  lv_obj_set_style_text_font(gcFiltLblTRange, FC_FONT_SM, 0);
+  lv_obj_set_pos(gcFiltLblTRange, 12, 150);
+  lv_obj_set_style_text_font(gcFiltLblTRange, FC_FONT_MD, 0);
   lv_obj_set_style_text_color(gcFiltLblTRange, FC_COLOR_HEADER, 0);
   lv_label_set_text(gcFiltLblTRange, "T: 1.0 - 5.0");
   lv_obj_add_flag(gcFiltLblTRange, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(gcFiltLblTRange, 10);
   lv_obj_add_event_cb(gcFiltLblTRange, gcFilterTMinUpCb, LV_EVENT_CLICKED, NULL);
 
   // Distance: tap cycles All→1mi→5mi→10mi→25mi
   gcFiltLblDist = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(gcFiltLblDist, 12, 165);
-  lv_obj_set_style_text_font(gcFiltLblDist, FC_FONT_SM, 0);
+  lv_obj_set_pos(gcFiltLblDist, 12, 185);
+  lv_obj_set_style_text_font(gcFiltLblDist, FC_FONT_MD, 0);
   lv_obj_set_style_text_color(gcFiltLblDist, FC_COLOR_HEADER, 0);
   lv_label_set_text(gcFiltLblDist, "Dist: All");
   lv_obj_add_flag(gcFiltLblDist, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(gcFiltLblDist, 10);
   lv_obj_add_event_cb(gcFiltLblDist, gcFilterDistCb, LV_EVENT_CLICKED, NULL);
 
   // Reset + Back on same row
   lv_obj_t* resetBtn = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(resetBtn, 12, 210);
-  lv_obj_set_style_text_font(resetBtn, FC_FONT_SM, 0);
+  lv_obj_set_pos(resetBtn, 12, 230);
+  lv_obj_set_style_text_font(resetBtn, FC_FONT_MD, 0);
   lv_obj_set_style_text_color(resetBtn, FC_COLOR_WARN, 0);
   lv_label_set_text(resetBtn, "[Reset All]");
   lv_obj_add_flag(resetBtn, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(resetBtn, 10);
   lv_obj_add_event_cb(resetBtn, gcFilterResetCb, LV_EVENT_CLICKED, NULL);
 
   lv_obj_t* backBtn = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(backBtn, 350, 210);
-  lv_obj_set_style_text_font(backBtn, FC_FONT_SM, 0);
+  lv_obj_set_pos(backBtn, 350, 230);
+  lv_obj_set_style_text_font(backBtn, FC_FONT_MD, 0);
   lv_obj_set_style_text_color(backBtn, FC_COLOR_HEADER, 0);
   lv_label_set_text(backBtn, "[Back]");
   lv_obj_add_flag(backBtn, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(backBtn, 10);
   lv_obj_add_event_cb(backBtn, gcFilterBackCb, LV_EVENT_CLICKED, NULL);
 
   logPrintln("[LVGL] Geocache screen built (#110)");
