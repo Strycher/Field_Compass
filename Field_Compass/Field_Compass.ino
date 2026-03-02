@@ -1412,6 +1412,20 @@ void initFCTheme() {
 
 // Forward declarations for callbacks used in widgets (#113)
 static void gearIconClickCb(lv_event_t* e);
+static void gcFilterBtnCb(lv_event_t* e);     // (#122) filter screen callbacks
+static void gcFilterBackCb(lv_event_t* e);
+static void gcFilterFoundCb(lv_event_t* e);
+static void gcFilterSortCb(lv_event_t* e);
+static void gcFilterDMinDownCb(lv_event_t* e);
+static void gcFilterDMinUpCb(lv_event_t* e);
+static void gcFilterDMaxDownCb(lv_event_t* e);
+static void gcFilterDMaxUpCb(lv_event_t* e);
+static void gcFilterTMinDownCb(lv_event_t* e);
+static void gcFilterTMinUpCb(lv_event_t* e);
+static void gcFilterTMaxDownCb(lv_event_t* e);
+static void gcFilterTMaxUpCb(lv_event_t* e);
+static void gcFilterDistCb(lv_event_t* e);
+static void gcFilterResetCb(lv_event_t* e);
 static void screenGestureCb(lv_event_t* e);
 
 // --- Header Bar: 30px cyan bar with title + gear icon ---
@@ -1933,6 +1947,15 @@ static lv_obj_t* gcDetLblHintLabel = NULL;
 static lv_obj_t* gcDetLblHint = NULL;
 static lv_obj_t* gcDetLblFound = NULL;
 static lv_obj_t* gcDetLblHints = NULL;
+
+// Filter sub-screen handles (#122)
+static lv_obj_t* geocacheFilterCtr = NULL;
+static lv_obj_t* gcFiltLblFound = NULL;
+static lv_obj_t* gcFiltLblSort = NULL;
+static lv_obj_t* gcFiltLblDRange = NULL;
+static lv_obj_t* gcFiltLblTRange = NULL;
+static lv_obj_t* gcFiltLblDist = NULL;
+static lv_obj_t* gcFiltLblActive = NULL;   // Active filter indicator on list screen
 
 // Nav graphic state tracking
 static float gcNavLastBearing = -999;
@@ -2778,6 +2801,22 @@ void buildGeocacheScreen() {
   lv_obj_set_style_text_align(gcListLblHints, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_text(gcListLblHints, "[A]Up [B]Down [C]Select [C+]Details");
 
+  // Active filter indicator in header area (#122)
+  gcFiltLblActive = lv_label_create(geocacheListCtr);
+  lv_obj_set_pos(gcFiltLblActive, 180, 7);
+  lv_obj_set_style_text_font(gcFiltLblActive, FC_FONT_XS, 0);
+  lv_obj_set_style_text_color(gcFiltLblActive, FC_COLOR_WARN, 0);
+  lv_label_set_text(gcFiltLblActive, "");
+
+  // Filter button (touchable label) (#122)
+  lv_obj_t* gcFilterBtn = lv_label_create(geocacheListCtr);
+  lv_obj_set_pos(gcFilterBtn, 415, 7);
+  lv_obj_set_style_text_font(gcFilterBtn, FC_FONT_XS, 0);
+  lv_obj_set_style_text_color(gcFilterBtn, FC_COLOR_HEADER, 0);
+  lv_label_set_text(gcFilterBtn, "Filter");
+  lv_obj_add_flag(gcFilterBtn, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(gcFilterBtn, gcFilterBtnCb, LV_EVENT_CLICKED, NULL);
+
   // Nav bar
   gcListNavBar = fcNavBarCreate(geocacheListCtr, NUM_SCREENS, SCREEN_GEOCACHE);
 
@@ -2872,6 +2911,170 @@ void buildGeocacheScreen() {
   // Nav bar
   gcDetNavBar = fcNavBarCreate(geocacheDetailsCtr, NUM_SCREENS, SCREEN_GEOCACHE);
 
+  // === Filter sub-screen container (sub 3) (#122) ===
+  geocacheFilterCtr = lv_obj_create(geocacheScr);
+  lv_obj_remove_style_all(geocacheFilterCtr);
+  lv_obj_set_size(geocacheFilterCtr, SCREEN_W, SCREEN_H);
+  lv_obj_set_pos(geocacheFilterCtr, 0, 0);
+  lv_obj_clear_flag(geocacheFilterCtr, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(geocacheFilterCtr, LV_OBJ_FLAG_HIDDEN);
+
+  fcHeaderCreate(geocacheFilterCtr, "FILTER CACHES");
+
+  // Found filter row: label + 3 toggle chips
+  lv_obj_t* fRowFound = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(fRowFound, 12, 42);
+  lv_obj_set_style_text_font(fRowFound, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(fRowFound, FC_COLOR_DIM, 0);
+  lv_label_set_text(fRowFound, "Found:");
+
+  gcFiltLblFound = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(gcFiltLblFound, 90, 42);
+  lv_obj_set_style_text_font(gcFiltLblFound, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(gcFiltLblFound, FC_COLOR_HEADER, 0);
+  lv_label_set_text(gcFiltLblFound, "All");
+  lv_obj_add_flag(gcFiltLblFound, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(gcFiltLblFound, gcFilterFoundCb, LV_EVENT_CLICKED, NULL);
+
+  // Sort mode row
+  lv_obj_t* fRowSort = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(fRowSort, 12, 72);
+  lv_obj_set_style_text_font(fRowSort, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(fRowSort, FC_COLOR_DIM, 0);
+  lv_label_set_text(fRowSort, "Sort:");
+
+  gcFiltLblSort = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(gcFiltLblSort, 90, 72);
+  lv_obj_set_style_text_font(gcFiltLblSort, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(gcFiltLblSort, FC_COLOR_HEADER, 0);
+  lv_label_set_text(gcFiltLblSort, "Distance");
+  lv_obj_add_flag(gcFiltLblSort, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(gcFiltLblSort, gcFilterSortCb, LV_EVENT_CLICKED, NULL);
+
+  // Difficulty range row
+  lv_obj_t* fRowD = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(fRowD, 12, 102);
+  lv_obj_set_style_text_font(fRowD, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(fRowD, FC_COLOR_DIM, 0);
+  lv_label_set_text(fRowD, "D:");
+
+  // D min [-] value [+]
+  lv_obj_t* dMinDown = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(dMinDown, 50, 102);
+  lv_obj_set_style_text_font(dMinDown, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(dMinDown, FC_COLOR_HEADER, 0);
+  lv_label_set_text(dMinDown, "[-]");
+  lv_obj_add_flag(dMinDown, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(dMinDown, gcFilterDMinDownCb, LV_EVENT_CLICKED, NULL);
+
+  gcFiltLblDRange = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(gcFiltLblDRange, 82, 102);
+  lv_obj_set_style_text_font(gcFiltLblDRange, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(gcFiltLblDRange, FC_COLOR_VALUE, 0);
+  lv_label_set_text(gcFiltLblDRange, "1.0-5.0");
+
+  lv_obj_t* dMinUp = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(dMinUp, 150, 102);
+  lv_obj_set_style_text_font(dMinUp, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(dMinUp, FC_COLOR_HEADER, 0);
+  lv_label_set_text(dMinUp, "[+]");
+  lv_obj_add_flag(dMinUp, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(dMinUp, gcFilterDMinUpCb, LV_EVENT_CLICKED, NULL);
+
+  // D max [-] [+]
+  lv_obj_t* dMaxDown = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(dMaxDown, 190, 102);
+  lv_obj_set_style_text_font(dMaxDown, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(dMaxDown, FC_COLOR_HEADER, 0);
+  lv_label_set_text(dMaxDown, "[-]");
+  lv_obj_add_flag(dMaxDown, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(dMaxDown, gcFilterDMaxDownCb, LV_EVENT_CLICKED, NULL);
+
+  lv_obj_t* dMaxUp = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(dMaxUp, 220, 102);
+  lv_obj_set_style_text_font(dMaxUp, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(dMaxUp, FC_COLOR_HEADER, 0);
+  lv_label_set_text(dMaxUp, "[+]");
+  lv_obj_add_flag(dMaxUp, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(dMaxUp, gcFilterDMaxUpCb, LV_EVENT_CLICKED, NULL);
+
+  // Terrain range row
+  lv_obj_t* fRowT = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(fRowT, 12, 132);
+  lv_obj_set_style_text_font(fRowT, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(fRowT, FC_COLOR_DIM, 0);
+  lv_label_set_text(fRowT, "T:");
+
+  lv_obj_t* tMinDown = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(tMinDown, 50, 132);
+  lv_obj_set_style_text_font(tMinDown, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(tMinDown, FC_COLOR_HEADER, 0);
+  lv_label_set_text(tMinDown, "[-]");
+  lv_obj_add_flag(tMinDown, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(tMinDown, gcFilterTMinDownCb, LV_EVENT_CLICKED, NULL);
+
+  gcFiltLblTRange = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(gcFiltLblTRange, 82, 132);
+  lv_obj_set_style_text_font(gcFiltLblTRange, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(gcFiltLblTRange, FC_COLOR_VALUE, 0);
+  lv_label_set_text(gcFiltLblTRange, "1.0-5.0");
+
+  lv_obj_t* tMinUp = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(tMinUp, 150, 132);
+  lv_obj_set_style_text_font(tMinUp, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(tMinUp, FC_COLOR_HEADER, 0);
+  lv_label_set_text(tMinUp, "[+]");
+  lv_obj_add_flag(tMinUp, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(tMinUp, gcFilterTMinUpCb, LV_EVENT_CLICKED, NULL);
+
+  lv_obj_t* tMaxDown = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(tMaxDown, 190, 132);
+  lv_obj_set_style_text_font(tMaxDown, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(tMaxDown, FC_COLOR_HEADER, 0);
+  lv_label_set_text(tMaxDown, "[-]");
+  lv_obj_add_flag(tMaxDown, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(tMaxDown, gcFilterTMaxDownCb, LV_EVENT_CLICKED, NULL);
+
+  lv_obj_t* tMaxUp = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(tMaxUp, 220, 132);
+  lv_obj_set_style_text_font(tMaxUp, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(tMaxUp, FC_COLOR_HEADER, 0);
+  lv_label_set_text(tMaxUp, "[+]");
+  lv_obj_add_flag(tMaxUp, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(tMaxUp, gcFilterTMaxUpCb, LV_EVENT_CLICKED, NULL);
+
+  // Distance preset row
+  lv_obj_t* fRowDist = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(fRowDist, 12, 162);
+  lv_obj_set_style_text_font(fRowDist, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(fRowDist, FC_COLOR_DIM, 0);
+  lv_label_set_text(fRowDist, "Dist:");
+
+  gcFiltLblDist = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(gcFiltLblDist, 90, 162);
+  lv_obj_set_style_text_font(gcFiltLblDist, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(gcFiltLblDist, FC_COLOR_HEADER, 0);
+  lv_label_set_text(gcFiltLblDist, "All");
+  lv_obj_add_flag(gcFiltLblDist, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(gcFiltLblDist, gcFilterDistCb, LV_EVENT_CLICKED, NULL);
+
+  // Reset All button
+  lv_obj_t* resetBtn = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(resetBtn, 12, 210);
+  lv_obj_set_style_text_font(resetBtn, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(resetBtn, FC_COLOR_WARN, 0);
+  lv_label_set_text(resetBtn, "[Reset All]");
+  lv_obj_add_flag(resetBtn, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(resetBtn, gcFilterResetCb, LV_EVENT_CLICKED, NULL);
+
+  // Back button
+  lv_obj_t* backBtn = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(backBtn, 350, 210);
+  lv_obj_set_style_text_font(backBtn, FC_FONT_SM, 0);
+  lv_obj_set_style_text_color(backBtn, FC_COLOR_HEADER, 0);
+  lv_label_set_text(backBtn, "[Back]");
+  lv_obj_add_flag(backBtn, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(backBtn, gcFilterBackCb, LV_EVENT_CLICKED, NULL);
 
   logPrintln("[LVGL] Geocache screen built (#110)");
 }
@@ -2889,20 +3092,15 @@ static lv_color_t getLvglAccuracyColor(float accuracyM) {
 void updateGeocacheData() {
   if (!geocacheScr) return;
 
-  // Sub-screen visibility switching
-  if (geocacheSubScreen == 0) {
-    lv_obj_clear_flag(geocacheNavCtr, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(geocacheListCtr, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(geocacheDetailsCtr, LV_OBJ_FLAG_HIDDEN);
-  } else if (geocacheSubScreen == 1) {
-    lv_obj_add_flag(geocacheNavCtr, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(geocacheListCtr, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(geocacheDetailsCtr, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    lv_obj_add_flag(geocacheNavCtr, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(geocacheListCtr, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(geocacheDetailsCtr, LV_OBJ_FLAG_HIDDEN);
-  }
+  // Sub-screen visibility switching (#122: added sub 3 filter)
+  lv_obj_add_flag(geocacheNavCtr, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(geocacheListCtr, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(geocacheDetailsCtr, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(geocacheFilterCtr, LV_OBJ_FLAG_HIDDEN);
+  if (geocacheSubScreen == 0)      lv_obj_clear_flag(geocacheNavCtr, LV_OBJ_FLAG_HIDDEN);
+  else if (geocacheSubScreen == 1) lv_obj_clear_flag(geocacheListCtr, LV_OBJ_FLAG_HIDDEN);
+  else if (geocacheSubScreen == 2) lv_obj_clear_flag(geocacheDetailsCtr, LV_OBJ_FLAG_HIDDEN);
+  else if (geocacheSubScreen == 3) lv_obj_clear_flag(geocacheFilterCtr, LV_OBJ_FLAG_HIDDEN);
 
   // === NAV sub-screen data (sub 0) ===
   if (geocacheSubScreen == 0) {
@@ -3004,6 +3202,12 @@ void updateGeocacheData() {
       lv_label_set_text_fmt(gcListLblCount, "[%d/%d shown]", gcFilteredCount, cacheListCount);
     else
       lv_label_set_text_fmt(gcListLblCount, "[%d/%d]", listHighlightIndex + 1, cacheListCount);
+
+    // Active filter indicator (#122)
+    bool hasFilter = (gcFilterFoundMode != 0 || gcFilterDMin > 1.0f || gcFilterDMax < 5.0f ||
+                      gcFilterTMin > 1.0f || gcFilterTMax < 5.0f || gcFilterMaxDistKm > 0 ||
+                      gcSortMode != 0);
+    lv_label_set_text(gcFiltLblActive, hasFilter ? "[FILTERED]" : "");
 
     for (int r = 0; r < MAX_CACHES; r++) {
       if (r >= gcFilteredCount) {
@@ -7606,6 +7810,117 @@ static void gearIconClickCb(lv_event_t* e) {
   navigateToSettings();
 }
 
+// ============== Geocache Filter Callbacks (#122) ==============
+
+// Helper: update filter screen labels to reflect current state
+void gcUpdateFilterLabels() {
+  const char* foundLabels[] = {"All", "Unfound", "Found"};
+  lv_label_set_text(gcFiltLblFound, foundLabels[gcFilterFoundMode]);
+  lv_label_set_text(gcFiltLblSort, gcSortMode == 0 ? "Distance" : "Name");
+  lv_label_set_text_fmt(gcFiltLblDRange, "%.1f-%.1f", gcFilterDMin, gcFilterDMax);
+  lv_label_set_text_fmt(gcFiltLblTRange, "%.1f-%.1f", gcFilterTMin, gcFilterTMax);
+  if (gcFilterMaxDistKm <= 0) {
+    lv_label_set_text(gcFiltLblDist, "All");
+  } else if (useMetricUnits) {
+    lv_label_set_text_fmt(gcFiltLblDist, "%.0fkm", gcFilterMaxDistKm);
+  } else {
+    lv_label_set_text_fmt(gcFiltLblDist, "%.0fmi", gcFilterMaxDistKm * 0.621371f);
+  }
+}
+
+static void gcFilterBtnCb(lv_event_t* e) {
+  (void)e;
+  geocacheSubScreen = 3;
+  gcUpdateFilterLabels();
+}
+
+static void gcFilterBackCb(lv_event_t* e) {
+  (void)e;
+  gcSortCacheList();
+  gcApplyFilters();
+  listHighlightIndex = 0;
+  geocacheSubScreen = 1;
+}
+
+static void gcFilterFoundCb(lv_event_t* e) {
+  (void)e;
+  gcFilterFoundMode = (gcFilterFoundMode + 1) % 3;
+  gcUpdateFilterLabels();
+}
+
+static void gcFilterSortCb(lv_event_t* e) {
+  (void)e;
+  gcSortMode = (gcSortMode + 1) % 2;
+  gcUpdateFilterLabels();
+}
+
+static void gcFilterDMinDownCb(lv_event_t* e) {
+  (void)e;
+  if (gcFilterDMin > 1.0f) gcFilterDMin -= 0.5f;
+  gcUpdateFilterLabels();
+}
+static void gcFilterDMinUpCb(lv_event_t* e) {
+  (void)e;
+  if (gcFilterDMin < gcFilterDMax) gcFilterDMin += 0.5f;
+  gcUpdateFilterLabels();
+}
+static void gcFilterDMaxDownCb(lv_event_t* e) {
+  (void)e;
+  if (gcFilterDMax > gcFilterDMin) gcFilterDMax -= 0.5f;
+  gcUpdateFilterLabels();
+}
+static void gcFilterDMaxUpCb(lv_event_t* e) {
+  (void)e;
+  if (gcFilterDMax < 5.0f) gcFilterDMax += 0.5f;
+  gcUpdateFilterLabels();
+}
+static void gcFilterTMinDownCb(lv_event_t* e) {
+  (void)e;
+  if (gcFilterTMin > 1.0f) gcFilterTMin -= 0.5f;
+  gcUpdateFilterLabels();
+}
+static void gcFilterTMinUpCb(lv_event_t* e) {
+  (void)e;
+  if (gcFilterTMin < gcFilterTMax) gcFilterTMin += 0.5f;
+  gcUpdateFilterLabels();
+}
+static void gcFilterTMaxDownCb(lv_event_t* e) {
+  (void)e;
+  if (gcFilterTMax > gcFilterTMin) gcFilterTMax -= 0.5f;
+  gcUpdateFilterLabels();
+}
+static void gcFilterTMaxUpCb(lv_event_t* e) {
+  (void)e;
+  if (gcFilterTMax < 5.0f) gcFilterTMax += 0.5f;
+  gcUpdateFilterLabels();
+}
+
+// Distance presets: 0 (all), 1.6km (1mi), 8km (5mi), 16km (10mi), 40km (25mi)
+static const float gcDistPresets[] = {0, 1.60934f, 8.04672f, 16.0934f, 40.2336f};
+static const int GC_DIST_PRESET_COUNT = 5;
+
+static void gcFilterDistCb(lv_event_t* e) {
+  (void)e;
+  // Find current preset and cycle to next
+  int cur = 0;
+  for (int i = 0; i < GC_DIST_PRESET_COUNT; i++) {
+    if (fabs(gcFilterMaxDistKm - gcDistPresets[i]) < 0.1f) { cur = i; break; }
+  }
+  cur = (cur + 1) % GC_DIST_PRESET_COUNT;
+  gcFilterMaxDistKm = gcDistPresets[cur];
+  gcUpdateFilterLabels();
+}
+
+static void gcFilterResetCb(lv_event_t* e) {
+  (void)e;
+  gcFilterFoundMode = 0;
+  gcFilterDMin = 1.0f; gcFilterDMax = 5.0f;
+  gcFilterTMin = 1.0f; gcFilterTMax = 5.0f;
+  gcFilterMaxDistKm = 0;
+  gcSortMode = 0;
+  gcUpdateFilterLabels();
+}
+
 // ============== Button Handling ==============
 
 void handleButtons() {
@@ -7764,6 +8079,12 @@ void handleButtonCShortPress() {
         saveCacheFoundStatus();  // Persist to SD
         gcApplyFilters();        // Re-filter after found status change (#122)
       }
+    } else if (geocacheSubScreen == 3) {
+      // Filter screen: short press acts as Back (#122)
+      gcSortCacheList();
+      gcApplyFilters();
+      listHighlightIndex = 0;
+      geocacheSubScreen = 1;
     }
   }
 }
