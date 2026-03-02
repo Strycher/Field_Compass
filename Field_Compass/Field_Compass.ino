@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.50.6"
+#define FW_VERSION "0.51.0"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -2787,12 +2787,12 @@ void buildGeocacheScreen() {
   lv_obj_set_style_text_color(gcFiltLblActive, FC_COLOR_WARN, 0);
   lv_label_set_text(gcFiltLblActive, "");
 
-  // Filter button (touchable label) (#122)
+  // Filter button (touchable label in header area) (#122)
   lv_obj_t* gcFilterBtn = lv_label_create(geocacheListCtr);
-  lv_obj_set_pos(gcFilterBtn, 415, 7);
+  lv_obj_set_pos(gcFilterBtn, 300, 7);
   lv_obj_set_style_text_font(gcFilterBtn, FC_FONT_XS, 0);
-  lv_obj_set_style_text_color(gcFilterBtn, FC_COLOR_HEADER, 0);
-  lv_label_set_text(gcFilterBtn, "Filter");
+  lv_obj_set_style_text_color(gcFilterBtn, FC_COLOR_BG, 0);  // Black on cyan header
+  lv_label_set_text(gcFilterBtn, "[Filter]");
   lv_obj_add_flag(gcFilterBtn, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_set_ext_click_area(gcFilterBtn, 15);
   lv_obj_add_event_cb(gcFilterBtn, gcFilterBtnCb, LV_EVENT_CLICKED, NULL);
@@ -5726,11 +5726,14 @@ float extractXMLFloat(const String& xml, const char* startTag, const char* endTa
 
 // Parse GPX data and populate cacheList[]
 // Returns: number of caches successfully parsed
-int parseGPXFromString(const String& gpxData) {
-  cacheListCount = 0;
-  gcFilteredCount = 0;  // Reset filtered list (#122)
+int parseGPXFromString(const String& gpxData, bool append = false) {
+  if (!append) {
+    cacheListCount = 0;
+    gcFilteredCount = 0;  // Reset filtered list (#122)
+  }
 
   int searchPos = 0;
+  int added = 0;
   while (cacheListCount < MAX_CACHES) {
     // Find next <wpt> element
     int wptStart = gpxData.indexOf("<wpt", searchPos);
@@ -5784,11 +5787,19 @@ int parseGPXFromString(const String& gpxData) {
     entry.found = false;
     entry.foundTime = 0;
 
+    // Skip duplicate GC codes (same cache uploaded twice)
+    bool dup = false;
+    for (int d = 0; d < cacheListCount; d++) {
+      if (strcmp(cacheList[d].gcCode, entry.gcCode) == 0) { dup = true; break; }
+    }
+    if (dup) continue;
+
     cacheList[cacheListCount++] = entry;
+    added++;
   }
 
-  logPrintf("[GEOCACHE] Parsed %d waypoints from GPX\n", cacheListCount);
-  return cacheListCount;
+  logPrintf("[GEOCACHE] Parsed %d new waypoints (total %d)\n", added, cacheListCount);
+  return added;
 }
 
 // Update cached distances for all caches (#122)
@@ -5837,49 +5848,59 @@ void gcApplyFilters() {
   listHighlightIndex = 0;
 }
 
-// Load geocaches from saved GPX file on SD card
+// Load geocaches from all GPX files in /geocaches/ directory
 void loadGeocachesFromSD() {
   if (!sdAvailable) {
     logPrintln("[GEOCACHE] SD not available, skipping GPX load");
     return;
   }
 
-  if (!SD.exists(GEOCACHE_GPX_FILE)) {
-    logPrintln("[GEOCACHE] No saved GPX file found on SD");
-    return;
+  // Support legacy single-file format
+  if (SD.exists(GEOCACHE_GPX_FILE)) {
+    File f = sdOpenSafe(GEOCACHE_GPX_FILE, "r", true);
+    if (f) {
+      size_t fileSize = f.size();
+      if (fileSize <= GPX_MAX_FILE_SIZE) {
+        String gpxData;
+        gpxData.reserve(fileSize);
+        while (f.available()) gpxData += (char)f.read();
+        f.close();
+        recordSDSuccess();
+        parseGPXFromString(gpxData, false);  // Replace mode for legacy file
+      } else {
+        f.close();
+      }
+    }
   }
 
-  File f = sdOpenSafe(GEOCACHE_GPX_FILE, "r", true);
-  if (!f) {
-    logPrintln("[GEOCACHE] Failed to open GPX file");
-    return;
+  // Scan directory for individual GPX files (multi-file upload support)
+  if (!SD.exists(GEOCACHE_DIR)) return;
+  File dir = SD.open(GEOCACHE_DIR);
+  if (!dir || !dir.isDirectory()) return;
+
+  File entry = dir.openNextFile();
+  while (entry && cacheListCount < MAX_CACHES) {
+    String name = entry.name();
+    if (!entry.isDirectory() && name.endsWith(".gpx") && name != "caches.gpx") {
+      size_t sz = entry.size();
+      if (sz > 0 && sz <= GPX_MAX_FILE_SIZE) {
+        String gpxData;
+        gpxData.reserve(sz);
+        while (entry.available()) gpxData += (char)entry.read();
+        parseGPXFromString(gpxData, true);  // Append mode
+      }
+    }
+    entry.close();
+    entry = dir.openNextFile();
   }
+  dir.close();
 
-  // Read file into string
-  String gpxData;
-  size_t fileSize = f.size();
-  if (fileSize > GPX_MAX_FILE_SIZE) {
-    logPrintf("[GEOCACHE] GPX file too large: %d bytes (max %d)\n", fileSize, GPX_MAX_FILE_SIZE);
-    f.close();
-    return;
-  }
-
-  gpxData.reserve(fileSize);
-  while (f.available()) {
-    gpxData += (char)f.read();
-  }
-  f.close();
-  recordSDSuccess();
-
-  // Parse the GPX
-  int parsed = parseGPXFromString(gpxData);
-
-  if (parsed > 0) {
-    loadCacheFoundStatus();  // Apply saved found status
-    gcApplyFilters();        // Filter + sort (#122)
-    logPrintf("[GEOCACHE] Loaded %d caches from SD\n", parsed);
+  if (cacheListCount > 0) {
+    loadCacheFoundStatus();
+    gcApplyFilters();
+    logPrintf("[GEOCACHE] Loaded %d caches from SD\n", cacheListCount);
   } else {
-    logPrintln("[GEOCACHE] No valid waypoints in saved GPX");
+    logPrintln("[GEOCACHE] No valid waypoints found on SD");
   }
 }
 
@@ -7325,27 +7346,26 @@ void handleGeocacheUploadData() {
       return;  // Already have an error
     }
 
-    // Parse GPX data
-    int parsed = parseGPXFromString(gpxUploadBuffer);
+    // Parse GPX data (append to existing caches)
+    int parsed = parseGPXFromString(gpxUploadBuffer, true);
 
     if (parsed <= 0) {
-      gpxUploadError = "Failed to parse GPX file. No valid waypoints found.";
+      gpxUploadError = "No new waypoints found (duplicates skipped or invalid).";
       return;
     }
 
-    // Save GPX to SD card (silent — caches already in RAM, don't red-flag SD)
+    // Save GPX to SD with original filename (allows multi-file accumulation)
     if (sdAvailable) {
-      // Ensure directory exists
       if (!SD.exists(GEOCACHE_DIR)) {
         SD.mkdir(GEOCACHE_DIR);
       }
-
-      File f = sdOpenSafe(GEOCACHE_GPX_FILE, "w", true);
+      String savePath = String(GEOCACHE_DIR) + "/" + upload.filename;
+      File f = sdOpenSafe(savePath.c_str(), "w", true);
       if (f) {
         f.print(gpxUploadBuffer);
         f.close();
         recordSDSuccess();
-        logPrintf("[GEOCACHE] Saved GPX to SD: %d bytes\n", gpxUploadBuffer.length());
+        logPrintf("[GEOCACHE] Saved GPX to SD: %s (%d bytes)\n", savePath.c_str(), gpxUploadBuffer.length());
       }
     }
 
@@ -7354,7 +7374,7 @@ void handleGeocacheUploadData() {
     gcApplyFilters();        // Filter + sort (#122)
 
     gpxUploadSuccess = true;
-    logPrintf("[GEOCACHE] Loaded %d caches from upload\n", parsed);
+    logPrintf("[GEOCACHE] Added %d caches (total %d)\n", parsed, cacheListCount);
   }
 
   else if (upload.status == UPLOAD_FILE_ABORTED) {
@@ -7449,9 +7469,22 @@ void handleGeocacheClear() {
   selectedCacheIndex = 0;
   memset(cacheList, 0, sizeof(cacheList));
 
-  // Delete GPX file from SD (but keep found status)
-  if (sdAvailable && SD.exists(GEOCACHE_GPX_FILE)) {
-    SD.remove(GEOCACHE_GPX_FILE);
+  // Delete all GPX files from SD (but keep found status)
+  if (sdAvailable) {
+    if (SD.exists(GEOCACHE_GPX_FILE)) SD.remove(GEOCACHE_GPX_FILE);
+    if (SD.exists(GEOCACHE_DIR)) {
+      File dir = SD.open(GEOCACHE_DIR);
+      if (dir && dir.isDirectory()) {
+        File entry = dir.openNextFile();
+        while (entry) {
+          String name = String(GEOCACHE_DIR) + "/" + entry.name();
+          entry.close();
+          if (name.endsWith(".gpx")) SD.remove(name.c_str());
+          entry = dir.openNextFile();
+        }
+        dir.close();
+      }
+    }
     recordSDSuccess();
   }
 
