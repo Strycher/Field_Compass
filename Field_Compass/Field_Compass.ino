@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.50.2"
+#define FW_VERSION "0.50.3"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -1923,11 +1923,7 @@ static lv_obj_t* gcListLblHints = NULL;
 
 // List row handles (MAX_CACHES=20)
 static lv_obj_t* gcListRows[MAX_CACHES] = {};
-static lv_obj_t* gcListRowSelector[MAX_CACHES] = {};
-static lv_obj_t* gcListRowDist[MAX_CACHES] = {};
-static lv_obj_t* gcListRowName[MAX_CACHES] = {};
-static lv_obj_t* gcListRowFound[MAX_CACHES] = {};
-static lv_obj_t* gcListRowDT[MAX_CACHES] = {};
+static lv_obj_t* gcListRowLabel[MAX_CACHES] = {};  // Single formatted label per row
 
 // Details sub-screen labels
 static lv_obj_t* gcDetHeader = NULL;
@@ -2752,45 +2748,17 @@ void buildGeocacheScreen() {
   for (int i = 0; i < MAX_CACHES; i++) {
     gcListRows[i] = lv_obj_create(gcListScrollCtr);
     lv_obj_remove_style_all(gcListRows[i]);
-    lv_obj_set_size(gcListRows[i], 460, 28);
+    lv_obj_set_size(gcListRows[i], 460, 22);
     lv_obj_clear_flag(gcListRows[i], LV_OBJ_FLAG_SCROLLABLE);
 
-    // Selector ">"
-    gcListRowSelector[i] = lv_label_create(gcListRows[i]);
-    lv_obj_set_pos(gcListRowSelector[i], 4, 4);
-    lv_obj_set_style_text_font(gcListRowSelector[i], FC_FONT_SM, 0);
-    lv_obj_set_style_text_color(gcListRowSelector[i], FC_COLOR_HEADER, 0);
-    lv_label_set_text(gcListRowSelector[i], "");
-
-    // Distance
-    gcListRowDist[i] = lv_label_create(gcListRows[i]);
-    lv_obj_set_pos(gcListRowDist[i], 20, 4);
-    lv_obj_set_style_text_font(gcListRowDist[i], FC_FONT_SM, 0);
-    lv_obj_set_style_text_color(gcListRowDist[i], FC_COLOR_VALUE, 0);
-    lv_label_set_text(gcListRowDist[i], "");
-
-    // Name
-    gcListRowName[i] = lv_label_create(gcListRows[i]);
-    lv_obj_set_pos(gcListRowName[i], 95, 4);
-    lv_obj_set_width(gcListRowName[i], 180);
-    lv_obj_set_style_text_font(gcListRowName[i], FC_FONT_SM, 0);
-    lv_obj_set_style_text_color(gcListRowName[i], FC_COLOR_TEXT, 0);
-    lv_label_set_long_mode(gcListRowName[i], LV_LABEL_LONG_CLIP);
-    lv_label_set_text(gcListRowName[i], "");
-
-    // Found badge
-    gcListRowFound[i] = lv_label_create(gcListRows[i]);
-    lv_obj_set_pos(gcListRowFound[i], 280, 4);
-    lv_obj_set_style_text_font(gcListRowFound[i], FC_FONT_SM, 0);
-    lv_obj_set_style_text_color(gcListRowFound[i], FC_COLOR_VALUE, 0);
-    lv_label_set_text(gcListRowFound[i], "");
-
-    // D/T
-    gcListRowDT[i] = lv_label_create(gcListRows[i]);
-    lv_obj_set_pos(gcListRowDT[i], 300, 4);
-    lv_obj_set_style_text_font(gcListRowDT[i], FC_FONT_XS, 0);
-    lv_obj_set_style_text_color(gcListRowDT[i], FC_COLOR_DIM, 0);
-    lv_label_set_text(gcListRowDT[i], "");
+    // Single formatted label per row (crash fix: -80 LVGL objects)
+    gcListRowLabel[i] = lv_label_create(gcListRows[i]);
+    lv_obj_set_pos(gcListRowLabel[i], 4, 2);
+    lv_obj_set_width(gcListRowLabel[i], 452);
+    lv_obj_set_style_text_font(gcListRowLabel[i], FC_FONT_SM, 0);
+    lv_obj_set_style_text_color(gcListRowLabel[i], FC_COLOR_TEXT, 0);
+    lv_label_set_long_mode(gcListRowLabel[i], LV_LABEL_LONG_CLIP);
+    lv_label_set_text(gcListRowLabel[i], "");
 
     // Hide rows beyond current cache count
     lv_obj_add_flag(gcListRows[i], LV_OBJ_FLAG_HIDDEN);
@@ -3137,46 +3105,43 @@ void updateGeocacheData() {
       int ci = gcFilteredIndices[r];
       GeocacheEntry& c = cacheList[ci];
 
-      // Selector
-      lv_label_set_text(gcListRowSelector[r], (r == listHighlightIndex) ? ">" : " ");
-      lv_obj_set_style_text_color(gcListRowSelector[r],
-        (r == listHighlightIndex) ? FC_COLOR_HEADER : FC_COLOR_DIM, 0);
-
       // Highlight row background
       if (r == listHighlightIndex) {
         lv_obj_set_style_bg_color(gcListRows[r], lv_color_hex(0x1A1A2E), 0);
         lv_obj_set_style_bg_opa(gcListRows[r], LV_OPA_COVER, 0);
+        lv_obj_set_style_text_color(gcListRowLabel[r], FC_COLOR_HEADER, 0);
       } else {
         lv_obj_set_style_bg_opa(gcListRows[r], LV_OPA_TRANSP, 0);
+        lv_obj_set_style_text_color(gcListRowLabel[r], FC_COLOR_TEXT, 0);
       }
 
-      // Distance (use cached value when available)
+      // Format single row string: "> 2.3mi great white       * D:2 T:2"
+      char distBuf[10];
       if (gpsData.valid) {
         float dk = gcCachedDist[ci];
         if (useMetricUnits) {
-          if (dk >= 1.0f) lv_label_set_text_fmt(gcListRowDist[r], "%.1fkm", dk);
-          else lv_label_set_text_fmt(gcListRowDist[r], "%dm", (int)(dk * 1000));
+          if (dk >= 1.0f) snprintf(distBuf, sizeof(distBuf), "%.1fkm", dk);
+          else snprintf(distBuf, sizeof(distBuf), "%dm", (int)(dk * 1000));
         } else {
           float mi = dk * 0.621371f;
-          if (mi >= 0.1f) lv_label_set_text_fmt(gcListRowDist[r], "%.1fmi", mi);
-          else lv_label_set_text_fmt(gcListRowDist[r], "%dft", (int)(dk * 3280.84f));
+          if (mi >= 0.1f) snprintf(distBuf, sizeof(distBuf), "%.1fmi", mi);
+          else snprintf(distBuf, sizeof(distBuf), "%dft", (int)(dk * 3280.84f));
         }
       } else {
-        lv_label_set_text(gcListRowDist[r], "--");
+        strcpy(distBuf, "--");
       }
-
-      // Name (truncated to 16 chars)
       char nameBuf[20];
       strncpy(nameBuf, c.name, 16);
       nameBuf[16] = '\0';
       if (strlen(c.name) > 16) { nameBuf[14] = '.'; nameBuf[15] = '.'; nameBuf[16] = '\0'; }
-      lv_label_set_text(gcListRowName[r], nameBuf);
 
-      // Found badge
-      lv_label_set_text(gcListRowFound[r], c.found ? "*" : "");
-
-      // D/T
-      lv_label_set_text_fmt(gcListRowDT[r], "D:%d T:%d", (int)c.difficulty, (int)c.terrain);
+      char rowBuf[64];
+      snprintf(rowBuf, sizeof(rowBuf), "%c %-7s %-16s %c D:%d T:%d",
+        (r == listHighlightIndex) ? '>' : ' ',
+        distBuf, nameBuf,
+        c.found ? '*' : ' ',
+        (int)c.difficulty, (int)c.terrain);
+      lv_label_set_text(gcListRowLabel[r], rowBuf);
     }
 
     // Scroll highlighted row into view
