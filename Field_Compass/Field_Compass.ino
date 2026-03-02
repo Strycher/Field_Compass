@@ -511,6 +511,17 @@ int listScrollOffset = 0;             // For scrollable list display
 int geocacheSubScreen = 0;            // 0=nav, 1=list, 2=details
 int listHighlightIndex = 0;           // Currently highlighted item in list
 
+// Geocache filter state (#122)
+int gcFilterFoundMode = 0;            // 0=all, 1=unfound only, 2=found only
+float gcFilterDMin = 1.0f, gcFilterDMax = 5.0f;   // Difficulty range
+float gcFilterTMin = 1.0f, gcFilterTMax = 5.0f;   // Terrain range
+float gcFilterMaxDistKm = 0;          // 0 = disabled (show all)
+int gcSortMode = 0;                   // 0=distance, 1=name
+float gcCachedDist[MAX_CACHES];       // Cached distances for sort/filter
+int gcFilteredIndices[MAX_CACHES];    // Indices into cacheList that pass filter
+int gcFilteredCount = 0;              // Number of caches passing filter
+unsigned long gcLastSortTime = 0;     // Throttle re-sorts
+
 // Button C long-press tracking
 unsigned long buttonCPressStart = 0;
 bool buttonCLongPressHandled = false;
@@ -2978,43 +2989,57 @@ void updateGeocacheData() {
 
   // === LIST sub-screen data (sub 1) ===
   if (geocacheSubScreen == 1) {
-    lv_label_set_text_fmt(gcListLblCount, "[%d/%d]", listHighlightIndex + 1, cacheListCount);
+    // Periodic re-sort every 30s when GPS valid (#122)
+    if (gpsData.valid && cacheListCount > 0 && millis() - gcLastSortTime > 30000) {
+      gcSortCacheList();
+      gcApplyFilters();
+    }
 
-    for (int i = 0; i < MAX_CACHES; i++) {
-      if (i >= cacheListCount) {
-        lv_obj_add_flag(gcListRows[i], LV_OBJ_FLAG_HIDDEN);
+    // Clamp highlight to filtered range
+    if (gcFilteredCount > 0 && listHighlightIndex >= gcFilteredCount)
+      listHighlightIndex = gcFilteredCount - 1;
+
+    // Count label: show filtered/total
+    if (gcFilteredCount < cacheListCount)
+      lv_label_set_text_fmt(gcListLblCount, "[%d/%d shown]", gcFilteredCount, cacheListCount);
+    else
+      lv_label_set_text_fmt(gcListLblCount, "[%d/%d]", listHighlightIndex + 1, cacheListCount);
+
+    for (int r = 0; r < MAX_CACHES; r++) {
+      if (r >= gcFilteredCount) {
+        lv_obj_add_flag(gcListRows[r], LV_OBJ_FLAG_HIDDEN);
         continue;
       }
-      lv_obj_clear_flag(gcListRows[i], LV_OBJ_FLAG_HIDDEN);
-      GeocacheEntry& c = cacheList[i];
+      lv_obj_clear_flag(gcListRows[r], LV_OBJ_FLAG_HIDDEN);
+      int ci = gcFilteredIndices[r];
+      GeocacheEntry& c = cacheList[ci];
 
       // Selector
-      lv_label_set_text(gcListRowSelector[i], (i == listHighlightIndex) ? ">" : " ");
-      lv_obj_set_style_text_color(gcListRowSelector[i],
-        (i == listHighlightIndex) ? FC_COLOR_HEADER : FC_COLOR_DIM, 0);
+      lv_label_set_text(gcListRowSelector[r], (r == listHighlightIndex) ? ">" : " ");
+      lv_obj_set_style_text_color(gcListRowSelector[r],
+        (r == listHighlightIndex) ? FC_COLOR_HEADER : FC_COLOR_DIM, 0);
 
       // Highlight row background
-      if (i == listHighlightIndex) {
-        lv_obj_set_style_bg_color(gcListRows[i], lv_color_hex(0x1A1A2E), 0);
-        lv_obj_set_style_bg_opa(gcListRows[i], LV_OPA_COVER, 0);
+      if (r == listHighlightIndex) {
+        lv_obj_set_style_bg_color(gcListRows[r], lv_color_hex(0x1A1A2E), 0);
+        lv_obj_set_style_bg_opa(gcListRows[r], LV_OPA_COVER, 0);
       } else {
-        lv_obj_set_style_bg_opa(gcListRows[i], LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_opa(gcListRows[r], LV_OPA_TRANSP, 0);
       }
 
-      // Distance
+      // Distance (use cached value when available)
       if (gpsData.valid) {
-        float dk = calcDistanceKm(gpsData.latitude, gpsData.longitude,
-                                   c.latitude, c.longitude);
+        float dk = gcCachedDist[ci];
         if (useMetricUnits) {
-          if (dk >= 1.0f) lv_label_set_text_fmt(gcListRowDist[i], "%.1fkm", dk);
-          else lv_label_set_text_fmt(gcListRowDist[i], "%dm", (int)(dk * 1000));
+          if (dk >= 1.0f) lv_label_set_text_fmt(gcListRowDist[r], "%.1fkm", dk);
+          else lv_label_set_text_fmt(gcListRowDist[r], "%dm", (int)(dk * 1000));
         } else {
           float mi = dk * 0.621371f;
-          if (mi >= 0.1f) lv_label_set_text_fmt(gcListRowDist[i], "%.1fmi", mi);
-          else lv_label_set_text_fmt(gcListRowDist[i], "%dft", (int)(dk * 3280.84f));
+          if (mi >= 0.1f) lv_label_set_text_fmt(gcListRowDist[r], "%.1fmi", mi);
+          else lv_label_set_text_fmt(gcListRowDist[r], "%dft", (int)(dk * 3280.84f));
         }
       } else {
-        lv_label_set_text(gcListRowDist[i], "--");
+        lv_label_set_text(gcListRowDist[r], "--");
       }
 
       // Name (truncated to 16 chars)
@@ -3022,17 +3047,17 @@ void updateGeocacheData() {
       strncpy(nameBuf, c.name, 16);
       nameBuf[16] = '\0';
       if (strlen(c.name) > 16) { nameBuf[14] = '.'; nameBuf[15] = '.'; nameBuf[16] = '\0'; }
-      lv_label_set_text(gcListRowName[i], nameBuf);
+      lv_label_set_text(gcListRowName[r], nameBuf);
 
       // Found badge
-      lv_label_set_text(gcListRowFound[i], c.found ? "*" : "");
+      lv_label_set_text(gcListRowFound[r], c.found ? "*" : "");
 
       // D/T
-      lv_label_set_text_fmt(gcListRowDT[i], "D:%d T:%d", (int)c.difficulty, (int)c.terrain);
+      lv_label_set_text_fmt(gcListRowDT[r], "D:%d T:%d", (int)c.difficulty, (int)c.terrain);
     }
 
     // Scroll highlighted row into view
-    if (listHighlightIndex < cacheListCount) {
+    if (listHighlightIndex < gcFilteredCount) {
       lv_obj_scroll_to_view(gcListRows[listHighlightIndex], LV_ANIM_ON);
     }
     fcNavBarSetActive(gcListNavBar, currentScreen);
@@ -3040,10 +3065,11 @@ void updateGeocacheData() {
 
   // === DETAILS sub-screen data (sub 2) ===
   if (geocacheSubScreen == 2) {
-    if (listHighlightIndex >= cacheListCount) return;
-    GeocacheEntry& c = cacheList[listHighlightIndex];
+    if (gcFilteredCount == 0 || listHighlightIndex >= gcFilteredCount) return;
+    int ci = gcFilteredIndices[listHighlightIndex];
+    GeocacheEntry& c = cacheList[ci];
 
-    lv_label_set_text_fmt(gcDetLblCount, "[%d/%d]", listHighlightIndex + 1, cacheListCount);
+    lv_label_set_text_fmt(gcDetLblCount, "[%d/%d]", listHighlightIndex + 1, gcFilteredCount);
     lv_label_set_text(gcDetLblName, c.name);
     lv_label_set_text(gcDetLblGC, c.gcCode);
     lv_label_set_text_fmt(gcDetLblCoords, "%.4f%c %.4f%c",
@@ -5605,6 +5631,7 @@ float extractXMLFloat(const String& xml, const char* startTag, const char* endTa
 // Returns: number of caches successfully parsed
 int parseGPXFromString(const String& gpxData) {
   cacheListCount = 0;
+  gcFilteredCount = 0;  // Reset filtered list (#122)
 
   int searchPos = 0;
   while (cacheListCount < MAX_CACHES) {
@@ -5667,6 +5694,70 @@ int parseGPXFromString(const String& gpxData) {
   return cacheListCount;
 }
 
+// Sort cache list by distance or name, then update cached distances (#122)
+void gcSortCacheList() {
+  if (cacheListCount <= 1) return;
+  if (gcSortMode == 0 && gpsData.valid) {
+    // Sort indices by distance, then reorder cacheList to match
+    int idx[MAX_CACHES];
+    float dist[MAX_CACHES];
+    for (int i = 0; i < cacheListCount; i++) {
+      idx[i] = i;
+      dist[i] = calcDistanceKm(gpsData.latitude, gpsData.longitude,
+                                 cacheList[i].latitude, cacheList[i].longitude);
+    }
+    // Simple insertion sort (max 20 elements, no qsort index issues)
+    for (int i = 1; i < cacheListCount; i++) {
+      int key = idx[i];
+      float kd = dist[key];
+      int j = i - 1;
+      while (j >= 0 && dist[idx[j]] > kd) { idx[j + 1] = idx[j]; j--; }
+      idx[j + 1] = key;
+    }
+    // Reorder cacheList in-place via static temp (avoids stack pressure)
+    static GeocacheEntry tmp[MAX_CACHES];
+    memcpy(tmp, cacheList, sizeof(GeocacheEntry) * cacheListCount);
+    for (int i = 0; i < cacheListCount; i++) cacheList[i] = tmp[idx[i]];
+  } else if (gcSortMode == 1) {
+    // Sort by name — insertion sort (safe for 20 elements)
+    for (int i = 1; i < cacheListCount; i++) {
+      GeocacheEntry key = cacheList[i];
+      int j = i - 1;
+      while (j >= 0 && strcasecmp(cacheList[j].name, key.name) > 0) {
+        cacheList[j + 1] = cacheList[j]; j--;
+      }
+      cacheList[j + 1] = key;
+    }
+  }
+  // Update cached distances after sort
+  if (gpsData.valid) {
+    for (int i = 0; i < cacheListCount; i++) {
+      gcCachedDist[i] = calcDistanceKm(gpsData.latitude, gpsData.longitude,
+                                         cacheList[i].latitude, cacheList[i].longitude);
+    }
+  }
+  gcLastSortTime = millis();
+  selectedCacheIndex = 0;
+  listHighlightIndex = 0;
+}
+
+// Build filtered index list (#122)
+void gcApplyFilters() {
+  gcFilteredCount = 0;
+  for (int i = 0; i < cacheListCount; i++) {
+    GeocacheEntry& c = cacheList[i];
+    // Found filter
+    if (gcFilterFoundMode == 1 && c.found) continue;   // unfound only
+    if (gcFilterFoundMode == 2 && !c.found) continue;   // found only
+    // D/T filter
+    if (c.difficulty < gcFilterDMin || c.difficulty > gcFilterDMax) continue;
+    if (c.terrain < gcFilterTMin || c.terrain > gcFilterTMax) continue;
+    // Distance filter
+    if (gcFilterMaxDistKm > 0 && gpsData.valid && gcCachedDist[i] > gcFilterMaxDistKm) continue;
+    gcFilteredIndices[gcFilteredCount++] = i;
+  }
+}
+
 // Load geocaches from saved GPX file on SD card
 void loadGeocachesFromSD() {
   if (!sdAvailable) {
@@ -5706,6 +5797,8 @@ void loadGeocachesFromSD() {
 
   if (parsed > 0) {
     loadCacheFoundStatus();  // Apply saved found status
+    gcSortCacheList();       // Sort by distance/name (#122)
+    gcApplyFilters();        // Build filtered index list (#122)
     logPrintf("[GEOCACHE] Loaded %d caches from SD\n", parsed);
   } else {
     logPrintln("[GEOCACHE] No valid waypoints in saved GPX");
@@ -7180,6 +7273,8 @@ void handleGeocacheUploadData() {
 
     // Load any saved found status
     loadCacheFoundStatus();
+    gcSortCacheList();       // Sort by distance/name (#122)
+    gcApplyFilters();        // Build filtered index list (#122)
 
     gpxUploadSuccess = true;
     logPrintf("[GEOCACHE] Loaded %d caches from upload\n", parsed);
@@ -7595,25 +7690,25 @@ void handleButtons() {
 // Handle geocache-specific button actions for list/details sub-screens
 void handleGeocacheButtons(bool buttonA, bool buttonB) {
   if (geocacheSubScreen == 1) {
-    // Cache List: A=scroll up, B=scroll down
+    // Cache List: A=scroll up, B=scroll down (filtered list) (#122)
     if (buttonA && listHighlightIndex > 0) {
       listHighlightIndex--;
       if (listHighlightIndex < listScrollOffset) {
         listScrollOffset = listHighlightIndex;
       }
     }
-    if (buttonB && listHighlightIndex < cacheListCount - 1) {
+    if (buttonB && listHighlightIndex < gcFilteredCount - 1) {
       listHighlightIndex++;
       if (listHighlightIndex >= listScrollOffset + 5) {
         listScrollOffset = listHighlightIndex - 4;
       }
     }
   } else if (geocacheSubScreen == 2) {
-    // Cache Details: A=prev cache, B=next cache
+    // Cache Details: A=prev cache, B=next cache (filtered) (#122)
     if (buttonA && listHighlightIndex > 0) {
       listHighlightIndex--;
     }
-    if (buttonB && listHighlightIndex < cacheListCount - 1) {
+    if (buttonB && listHighlightIndex < gcFilteredCount - 1) {
       listHighlightIndex++;
     }
   }
@@ -7654,17 +7749,20 @@ void handleButtonCShortPress() {
       listHighlightIndex = selectedCacheIndex;
       listScrollOffset = max(0, listHighlightIndex - 2);
     } else if (geocacheSubScreen == 1) {
-      // List screen: short press selects cache and returns to nav
-      selectedCacheIndex = listHighlightIndex;
+      // List screen: short press selects cache and returns to nav (#122: map through filter)
+      if (gcFilteredCount > 0 && listHighlightIndex < gcFilteredCount)
+        selectedCacheIndex = gcFilteredIndices[listHighlightIndex];
       geocacheSubScreen = 0;
     } else if (geocacheSubScreen == 2) {
-      // Details screen: short press toggles found status
-      if (cacheListCount > 0 && listHighlightIndex < cacheListCount) {
-        cacheList[listHighlightIndex].found = !cacheList[listHighlightIndex].found;
-        if (cacheList[listHighlightIndex].found) {
-          cacheList[listHighlightIndex].foundTime = millis() / 1000;  // Simple timestamp
+      // Details screen: short press toggles found status (#122: map through filter)
+      if (gcFilteredCount > 0 && listHighlightIndex < gcFilteredCount) {
+        int ci = gcFilteredIndices[listHighlightIndex];
+        cacheList[ci].found = !cacheList[ci].found;
+        if (cacheList[ci].found) {
+          cacheList[ci].foundTime = millis() / 1000;  // Simple timestamp
         }
         saveCacheFoundStatus();  // Persist to SD
+        gcApplyFilters();        // Re-filter after found status change (#122)
       }
     }
   }
