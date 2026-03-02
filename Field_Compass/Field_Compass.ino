@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.50.1"
+#define FW_VERSION "0.50.2"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -1417,14 +1417,8 @@ static void gcFilterBtnCb(lv_event_t* e);     // (#122) filter screen callbacks
 static void gcFilterBackCb(lv_event_t* e);
 static void gcFilterFoundCb(lv_event_t* e);
 static void gcFilterSortCb(lv_event_t* e);
-static void gcFilterDMinDownCb(lv_event_t* e);
 static void gcFilterDMinUpCb(lv_event_t* e);
-static void gcFilterDMaxDownCb(lv_event_t* e);
-static void gcFilterDMaxUpCb(lv_event_t* e);
-static void gcFilterTMinDownCb(lv_event_t* e);
 static void gcFilterTMinUpCb(lv_event_t* e);
-static void gcFilterTMaxDownCb(lv_event_t* e);
-static void gcFilterTMaxUpCb(lv_event_t* e);
 static void gcFilterDistCb(lv_event_t* e);
 static void gcFilterResetCb(lv_event_t* e);
 static void screenGestureCb(lv_event_t* e);
@@ -2922,153 +2916,70 @@ void buildGeocacheScreen() {
   gcDetNavBar = fcNavBarCreate(geocacheDetailsCtr, NUM_SCREENS, SCREEN_GEOCACHE);
 
   // === Filter sub-screen container (sub 3) (#122) ===
+  // Minimal object count — no fcHeaderCreate, tap-to-cycle values
   geocacheFilterCtr = lv_obj_create(geocacheScr);
   lv_obj_remove_style_all(geocacheFilterCtr);
   lv_obj_set_size(geocacheFilterCtr, SCREEN_W, SCREEN_H);
   lv_obj_set_pos(geocacheFilterCtr, 0, 0);
+  lv_obj_set_style_bg_color(geocacheFilterCtr, FC_COLOR_BG, 0);
+  lv_obj_set_style_bg_opa(geocacheFilterCtr, LV_OPA_COVER, 0);
   lv_obj_clear_flag(geocacheFilterCtr, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(geocacheFilterCtr, LV_OBJ_FLAG_HIDDEN);
 
-  fcHeaderCreate(geocacheFilterCtr, "FILTER CACHES");
+  // Title (simple label, not full header — saves 4 objects)
+  lv_obj_t* filtTitle = lv_label_create(geocacheFilterCtr);
+  lv_obj_set_pos(filtTitle, 12, 8);
+  lv_obj_set_style_text_font(filtTitle, FC_FONT_MD, 0);
+  lv_obj_set_style_text_color(filtTitle, FC_COLOR_HEADER, 0);
+  lv_label_set_text(filtTitle, "FILTER CACHES");
 
-  // Found filter row: label + 3 toggle chips
-  lv_obj_t* fRowFound = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(fRowFound, 12, 42);
-  lv_obj_set_style_text_font(fRowFound, FC_FONT_SM, 0);
-  lv_obj_set_style_text_color(fRowFound, FC_COLOR_DIM, 0);
-  lv_label_set_text(fRowFound, "Found:");
-
+  // Each row: tappable label that cycles value. No separate [-][+] buttons.
+  // Found: tap cycles All→Unfound→Found
   gcFiltLblFound = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(gcFiltLblFound, 90, 42);
+  lv_obj_set_pos(gcFiltLblFound, 12, 45);
   lv_obj_set_style_text_font(gcFiltLblFound, FC_FONT_SM, 0);
   lv_obj_set_style_text_color(gcFiltLblFound, FC_COLOR_HEADER, 0);
-  lv_label_set_text(gcFiltLblFound, "All");
+  lv_label_set_text(gcFiltLblFound, "Found: All");
   lv_obj_add_flag(gcFiltLblFound, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(gcFiltLblFound, gcFilterFoundCb, LV_EVENT_CLICKED, NULL);
 
-  // Sort mode row
-  lv_obj_t* fRowSort = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(fRowSort, 12, 72);
-  lv_obj_set_style_text_font(fRowSort, FC_FONT_SM, 0);
-  lv_obj_set_style_text_color(fRowSort, FC_COLOR_DIM, 0);
-  lv_label_set_text(fRowSort, "Sort:");
-
+  // Sort: tap cycles Distance→Name
   gcFiltLblSort = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(gcFiltLblSort, 90, 72);
+  lv_obj_set_pos(gcFiltLblSort, 12, 75);
   lv_obj_set_style_text_font(gcFiltLblSort, FC_FONT_SM, 0);
   lv_obj_set_style_text_color(gcFiltLblSort, FC_COLOR_HEADER, 0);
-  lv_label_set_text(gcFiltLblSort, "Distance");
+  lv_label_set_text(gcFiltLblSort, "Sort: Distance");
   lv_obj_add_flag(gcFiltLblSort, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(gcFiltLblSort, gcFilterSortCb, LV_EVENT_CLICKED, NULL);
 
-  // Difficulty range row
-  lv_obj_t* fRowD = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(fRowD, 12, 102);
-  lv_obj_set_style_text_font(fRowD, FC_FONT_SM, 0);
-  lv_obj_set_style_text_color(fRowD, FC_COLOR_DIM, 0);
-  lv_label_set_text(fRowD, "D:");
-
-  // D min [-] value [+]
-  lv_obj_t* dMinDown = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(dMinDown, 50, 102);
-  lv_obj_set_style_text_font(dMinDown, FC_FONT_SM, 0);
-  lv_obj_set_style_text_color(dMinDown, FC_COLOR_HEADER, 0);
-  lv_label_set_text(dMinDown, "[-]");
-  lv_obj_add_flag(dMinDown, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(dMinDown, gcFilterDMinDownCb, LV_EVENT_CLICKED, NULL);
-
+  // D range: tap cycles through preset ranges
   gcFiltLblDRange = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(gcFiltLblDRange, 82, 102);
+  lv_obj_set_pos(gcFiltLblDRange, 12, 105);
   lv_obj_set_style_text_font(gcFiltLblDRange, FC_FONT_SM, 0);
-  lv_obj_set_style_text_color(gcFiltLblDRange, FC_COLOR_VALUE, 0);
-  lv_label_set_text(gcFiltLblDRange, "1.0-5.0");
+  lv_obj_set_style_text_color(gcFiltLblDRange, FC_COLOR_HEADER, 0);
+  lv_label_set_text(gcFiltLblDRange, "D: 1.0 - 5.0");
+  lv_obj_add_flag(gcFiltLblDRange, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(gcFiltLblDRange, gcFilterDMinUpCb, LV_EVENT_CLICKED, NULL);
 
-  lv_obj_t* dMinUp = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(dMinUp, 150, 102);
-  lv_obj_set_style_text_font(dMinUp, FC_FONT_SM, 0);
-  lv_obj_set_style_text_color(dMinUp, FC_COLOR_HEADER, 0);
-  lv_label_set_text(dMinUp, "[+]");
-  lv_obj_add_flag(dMinUp, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(dMinUp, gcFilterDMinUpCb, LV_EVENT_CLICKED, NULL);
-
-  // D max [-] [+]
-  lv_obj_t* dMaxDown = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(dMaxDown, 190, 102);
-  lv_obj_set_style_text_font(dMaxDown, FC_FONT_SM, 0);
-  lv_obj_set_style_text_color(dMaxDown, FC_COLOR_HEADER, 0);
-  lv_label_set_text(dMaxDown, "[-]");
-  lv_obj_add_flag(dMaxDown, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(dMaxDown, gcFilterDMaxDownCb, LV_EVENT_CLICKED, NULL);
-
-  lv_obj_t* dMaxUp = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(dMaxUp, 220, 102);
-  lv_obj_set_style_text_font(dMaxUp, FC_FONT_SM, 0);
-  lv_obj_set_style_text_color(dMaxUp, FC_COLOR_HEADER, 0);
-  lv_label_set_text(dMaxUp, "[+]");
-  lv_obj_add_flag(dMaxUp, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(dMaxUp, gcFilterDMaxUpCb, LV_EVENT_CLICKED, NULL);
-
-  // Terrain range row
-  lv_obj_t* fRowT = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(fRowT, 12, 132);
-  lv_obj_set_style_text_font(fRowT, FC_FONT_SM, 0);
-  lv_obj_set_style_text_color(fRowT, FC_COLOR_DIM, 0);
-  lv_label_set_text(fRowT, "T:");
-
-  lv_obj_t* tMinDown = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(tMinDown, 50, 132);
-  lv_obj_set_style_text_font(tMinDown, FC_FONT_SM, 0);
-  lv_obj_set_style_text_color(tMinDown, FC_COLOR_HEADER, 0);
-  lv_label_set_text(tMinDown, "[-]");
-  lv_obj_add_flag(tMinDown, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(tMinDown, gcFilterTMinDownCb, LV_EVENT_CLICKED, NULL);
-
+  // T range: tap cycles through preset ranges
   gcFiltLblTRange = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(gcFiltLblTRange, 82, 132);
+  lv_obj_set_pos(gcFiltLblTRange, 12, 135);
   lv_obj_set_style_text_font(gcFiltLblTRange, FC_FONT_SM, 0);
-  lv_obj_set_style_text_color(gcFiltLblTRange, FC_COLOR_VALUE, 0);
-  lv_label_set_text(gcFiltLblTRange, "1.0-5.0");
+  lv_obj_set_style_text_color(gcFiltLblTRange, FC_COLOR_HEADER, 0);
+  lv_label_set_text(gcFiltLblTRange, "T: 1.0 - 5.0");
+  lv_obj_add_flag(gcFiltLblTRange, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(gcFiltLblTRange, gcFilterTMinUpCb, LV_EVENT_CLICKED, NULL);
 
-  lv_obj_t* tMinUp = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(tMinUp, 150, 132);
-  lv_obj_set_style_text_font(tMinUp, FC_FONT_SM, 0);
-  lv_obj_set_style_text_color(tMinUp, FC_COLOR_HEADER, 0);
-  lv_label_set_text(tMinUp, "[+]");
-  lv_obj_add_flag(tMinUp, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(tMinUp, gcFilterTMinUpCb, LV_EVENT_CLICKED, NULL);
-
-  lv_obj_t* tMaxDown = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(tMaxDown, 190, 132);
-  lv_obj_set_style_text_font(tMaxDown, FC_FONT_SM, 0);
-  lv_obj_set_style_text_color(tMaxDown, FC_COLOR_HEADER, 0);
-  lv_label_set_text(tMaxDown, "[-]");
-  lv_obj_add_flag(tMaxDown, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(tMaxDown, gcFilterTMaxDownCb, LV_EVENT_CLICKED, NULL);
-
-  lv_obj_t* tMaxUp = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(tMaxUp, 220, 132);
-  lv_obj_set_style_text_font(tMaxUp, FC_FONT_SM, 0);
-  lv_obj_set_style_text_color(tMaxUp, FC_COLOR_HEADER, 0);
-  lv_label_set_text(tMaxUp, "[+]");
-  lv_obj_add_flag(tMaxUp, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(tMaxUp, gcFilterTMaxUpCb, LV_EVENT_CLICKED, NULL);
-
-  // Distance preset row
-  lv_obj_t* fRowDist = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(fRowDist, 12, 162);
-  lv_obj_set_style_text_font(fRowDist, FC_FONT_SM, 0);
-  lv_obj_set_style_text_color(fRowDist, FC_COLOR_DIM, 0);
-  lv_label_set_text(fRowDist, "Dist:");
-
+  // Distance: tap cycles All→1mi→5mi→10mi→25mi
   gcFiltLblDist = lv_label_create(geocacheFilterCtr);
-  lv_obj_set_pos(gcFiltLblDist, 90, 162);
+  lv_obj_set_pos(gcFiltLblDist, 12, 165);
   lv_obj_set_style_text_font(gcFiltLblDist, FC_FONT_SM, 0);
   lv_obj_set_style_text_color(gcFiltLblDist, FC_COLOR_HEADER, 0);
-  lv_label_set_text(gcFiltLblDist, "All");
+  lv_label_set_text(gcFiltLblDist, "Dist: All");
   lv_obj_add_flag(gcFiltLblDist, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(gcFiltLblDist, gcFilterDistCb, LV_EVENT_CLICKED, NULL);
 
-  // Reset All button
+  // Reset + Back on same row
   lv_obj_t* resetBtn = lv_label_create(geocacheFilterCtr);
   lv_obj_set_pos(resetBtn, 12, 210);
   lv_obj_set_style_text_font(resetBtn, FC_FONT_SM, 0);
@@ -3077,7 +2988,6 @@ void buildGeocacheScreen() {
   lv_obj_add_flag(resetBtn, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(resetBtn, gcFilterResetCb, LV_EVENT_CLICKED, NULL);
 
-  // Back button
   lv_obj_t* backBtn = lv_label_create(geocacheFilterCtr);
   lv_obj_set_pos(backBtn, 350, 210);
   lv_obj_set_style_text_font(backBtn, FC_FONT_SM, 0);
@@ -3199,7 +3109,6 @@ void updateGeocacheData() {
   if (geocacheSubScreen == 1) {
     // Periodic re-sort every 30s when GPS valid (#122)
     if (gpsData.valid && cacheListCount > 0 && millis() - gcLastSortTime > 30000) {
-      gcSortCacheList();
       gcApplyFilters();
     }
 
@@ -5908,68 +5817,50 @@ int parseGPXFromString(const String& gpxData) {
   return cacheListCount;
 }
 
-// Sort cache list by distance or name, then update cached distances (#122)
-void gcSortCacheList() {
-  if (cacheListCount <= 1) return;
-  if (gcSortMode == 0 && gpsData.valid) {
-    // Sort indices by distance, then reorder cacheList to match
-    int idx[MAX_CACHES];
-    float dist[MAX_CACHES];
-    for (int i = 0; i < cacheListCount; i++) {
-      idx[i] = i;
-      dist[i] = calcDistanceKm(gpsData.latitude, gpsData.longitude,
-                                 cacheList[i].latitude, cacheList[i].longitude);
-    }
-    // Simple insertion sort (max 20 elements, no qsort index issues)
-    for (int i = 1; i < cacheListCount; i++) {
-      int key = idx[i];
-      float kd = dist[key];
-      int j = i - 1;
-      while (j >= 0 && dist[idx[j]] > kd) { idx[j + 1] = idx[j]; j--; }
-      idx[j + 1] = key;
-    }
-    // Reorder cacheList in-place via static temp (avoids stack pressure)
-    static GeocacheEntry tmp[MAX_CACHES];
-    memcpy(tmp, cacheList, sizeof(GeocacheEntry) * cacheListCount);
-    for (int i = 0; i < cacheListCount; i++) cacheList[i] = tmp[idx[i]];
-  } else if (gcSortMode == 1) {
-    // Sort by name — insertion sort (safe for 20 elements)
-    for (int i = 1; i < cacheListCount; i++) {
-      GeocacheEntry key = cacheList[i];
-      int j = i - 1;
-      while (j >= 0 && strcasecmp(cacheList[j].name, key.name) > 0) {
-        cacheList[j + 1] = cacheList[j]; j--;
-      }
-      cacheList[j + 1] = key;
-    }
+// Update cached distances for all caches (#122)
+void gcUpdateDistances() {
+  if (!gpsData.valid) return;
+  for (int i = 0; i < cacheListCount; i++) {
+    gcCachedDist[i] = calcDistanceKm(gpsData.latitude, gpsData.longitude,
+                                       cacheList[i].latitude, cacheList[i].longitude);
   }
-  // Update cached distances after sort
-  if (gpsData.valid) {
-    for (int i = 0; i < cacheListCount; i++) {
-      gcCachedDist[i] = calcDistanceKm(gpsData.latitude, gpsData.longitude,
-                                         cacheList[i].latitude, cacheList[i].longitude);
-    }
-  }
-  gcLastSortTime = millis();
-  selectedCacheIndex = 0;
-  listHighlightIndex = 0;
 }
 
-// Build filtered index list (#122)
+// Build filtered + sorted index list (#122)
+// No physical reorder of cacheList — sort the filtered indices instead
 void gcApplyFilters() {
+  gcUpdateDistances();
+
+  // Step 1: filter into gcFilteredIndices
   gcFilteredCount = 0;
   for (int i = 0; i < cacheListCount; i++) {
     GeocacheEntry& c = cacheList[i];
-    // Found filter
-    if (gcFilterFoundMode == 1 && c.found) continue;   // unfound only
-    if (gcFilterFoundMode == 2 && !c.found) continue;   // found only
-    // D/T filter
+    if (gcFilterFoundMode == 1 && c.found) continue;
+    if (gcFilterFoundMode == 2 && !c.found) continue;
     if (c.difficulty < gcFilterDMin || c.difficulty > gcFilterDMax) continue;
     if (c.terrain < gcFilterTMin || c.terrain > gcFilterTMax) continue;
-    // Distance filter
     if (gcFilterMaxDistKm > 0 && gpsData.valid && gcCachedDist[i] > gcFilterMaxDistKm) continue;
     gcFilteredIndices[gcFilteredCount++] = i;
   }
+
+  // Step 2: sort filtered indices (insertion sort, max 20)
+  for (int i = 1; i < gcFilteredCount; i++) {
+    int key = gcFilteredIndices[i];
+    int j = i - 1;
+    if (gcSortMode == 0 && gpsData.valid) {
+      float kd = gcCachedDist[key];
+      while (j >= 0 && gcCachedDist[gcFilteredIndices[j]] > kd) {
+        gcFilteredIndices[j + 1] = gcFilteredIndices[j]; j--;
+      }
+    } else if (gcSortMode == 1) {
+      while (j >= 0 && strcasecmp(cacheList[gcFilteredIndices[j]].name, cacheList[key].name) > 0) {
+        gcFilteredIndices[j + 1] = gcFilteredIndices[j]; j--;
+      }
+    }
+    gcFilteredIndices[j + 1] = key;
+  }
+  gcLastSortTime = millis();
+  listHighlightIndex = 0;
 }
 
 // Load geocaches from saved GPX file on SD card
@@ -6011,8 +5902,7 @@ void loadGeocachesFromSD() {
 
   if (parsed > 0) {
     loadCacheFoundStatus();  // Apply saved found status
-    gcSortCacheList();       // Sort by distance/name (#122)
-    gcApplyFilters();        // Build filtered index list (#122)
+    gcApplyFilters();        // Filter + sort (#122)
     logPrintf("[GEOCACHE] Loaded %d caches from SD\n", parsed);
   } else {
     logPrintln("[GEOCACHE] No valid waypoints in saved GPX");
@@ -7487,8 +7377,7 @@ void handleGeocacheUploadData() {
 
     // Load any saved found status
     loadCacheFoundStatus();
-    gcSortCacheList();       // Sort by distance/name (#122)
-    gcApplyFilters();        // Build filtered index list (#122)
+    gcApplyFilters();        // Filter + sort (#122)
 
     gpxUploadSuccess = true;
     logPrintf("[GEOCACHE] Loaded %d caches from upload\n", parsed);
@@ -7833,16 +7722,25 @@ static void gcNavListBtnCb(lv_event_t* e) {
 // Helper: update filter screen labels to reflect current state
 void gcUpdateFilterLabels() {
   const char* foundLabels[] = {"All", "Unfound", "Found"};
-  lv_label_set_text(gcFiltLblFound, foundLabels[gcFilterFoundMode]);
-  lv_label_set_text(gcFiltLblSort, gcSortMode == 0 ? "Distance" : "Name");
-  lv_label_set_text_fmt(gcFiltLblDRange, "%.1f-%.1f", gcFilterDMin, gcFilterDMax);
-  lv_label_set_text_fmt(gcFiltLblTRange, "%.1f-%.1f", gcFilterTMin, gcFilterTMax);
+  lv_label_set_text_fmt(gcFiltLblFound, "Found: %s", foundLabels[gcFilterFoundMode]);
+  lv_label_set_text_fmt(gcFiltLblSort, "Sort: %s", gcSortMode == 0 ? "Distance" : "Name");
+  // D range: show as ints when whole, floats otherwise
+  int dMinI = (int)(gcFilterDMin * 10), dMaxI = (int)(gcFilterDMax * 10);
+  if (dMinI % 10 == 0 && dMaxI % 10 == 0)
+    lv_label_set_text_fmt(gcFiltLblDRange, "D: %d - %d", (int)gcFilterDMin, (int)gcFilterDMax);
+  else
+    lv_label_set_text_fmt(gcFiltLblDRange, "D: %.1f - %.1f", gcFilterDMin, gcFilterDMax);
+  int tMinI = (int)(gcFilterTMin * 10), tMaxI = (int)(gcFilterTMax * 10);
+  if (tMinI % 10 == 0 && tMaxI % 10 == 0)
+    lv_label_set_text_fmt(gcFiltLblTRange, "T: %d - %d", (int)gcFilterTMin, (int)gcFilterTMax);
+  else
+    lv_label_set_text_fmt(gcFiltLblTRange, "T: %.1f - %.1f", gcFilterTMin, gcFilterTMax);
   if (gcFilterMaxDistKm <= 0) {
-    lv_label_set_text(gcFiltLblDist, "All");
+    lv_label_set_text(gcFiltLblDist, "Dist: All");
   } else if (useMetricUnits) {
-    lv_label_set_text_fmt(gcFiltLblDist, "%.0fkm", gcFilterMaxDistKm);
+    lv_label_set_text_fmt(gcFiltLblDist, "Dist: %.0fkm", gcFilterMaxDistKm);
   } else {
-    lv_label_set_text_fmt(gcFiltLblDist, "%.0fmi", gcFilterMaxDistKm * 0.621371f);
+    lv_label_set_text_fmt(gcFiltLblDist, "Dist: %.0fmi", gcFilterMaxDistKm * 0.621371f);
   }
 }
 
@@ -7854,7 +7752,6 @@ static void gcFilterBtnCb(lv_event_t* e) {
 
 static void gcFilterBackCb(lv_event_t* e) {
   (void)e;
-  gcSortCacheList();
   gcApplyFilters();
   listHighlightIndex = 0;
   geocacheSubScreen = 1;
@@ -7872,44 +7769,26 @@ static void gcFilterSortCb(lv_event_t* e) {
   gcUpdateFilterLabels();
 }
 
-static void gcFilterDMinDownCb(lv_event_t* e) {
-  (void)e;
-  if (gcFilterDMin > 1.0f) gcFilterDMin -= 0.5f;
-  gcUpdateFilterLabels();
-}
+// D/T range presets: {min, max} pairs — tap cycles through them
+static const float gcDTPresets[][2] = {
+  {1.0f, 5.0f}, {1.0f, 2.0f}, {1.0f, 3.0f}, {2.0f, 4.0f}, {3.0f, 5.0f}
+};
+static const int GC_DT_PRESET_COUNT = 5;
+static int gcDPresetIdx = 0;
+static int gcTPresetIdx = 0;
+
 static void gcFilterDMinUpCb(lv_event_t* e) {
   (void)e;
-  if (gcFilterDMin < gcFilterDMax) gcFilterDMin += 0.5f;
-  gcUpdateFilterLabels();
-}
-static void gcFilterDMaxDownCb(lv_event_t* e) {
-  (void)e;
-  if (gcFilterDMax > gcFilterDMin) gcFilterDMax -= 0.5f;
-  gcUpdateFilterLabels();
-}
-static void gcFilterDMaxUpCb(lv_event_t* e) {
-  (void)e;
-  if (gcFilterDMax < 5.0f) gcFilterDMax += 0.5f;
-  gcUpdateFilterLabels();
-}
-static void gcFilterTMinDownCb(lv_event_t* e) {
-  (void)e;
-  if (gcFilterTMin > 1.0f) gcFilterTMin -= 0.5f;
+  gcDPresetIdx = (gcDPresetIdx + 1) % GC_DT_PRESET_COUNT;
+  gcFilterDMin = gcDTPresets[gcDPresetIdx][0];
+  gcFilterDMax = gcDTPresets[gcDPresetIdx][1];
   gcUpdateFilterLabels();
 }
 static void gcFilterTMinUpCb(lv_event_t* e) {
   (void)e;
-  if (gcFilterTMin < gcFilterTMax) gcFilterTMin += 0.5f;
-  gcUpdateFilterLabels();
-}
-static void gcFilterTMaxDownCb(lv_event_t* e) {
-  (void)e;
-  if (gcFilterTMax > gcFilterTMin) gcFilterTMax -= 0.5f;
-  gcUpdateFilterLabels();
-}
-static void gcFilterTMaxUpCb(lv_event_t* e) {
-  (void)e;
-  if (gcFilterTMax < 5.0f) gcFilterTMax += 0.5f;
+  gcTPresetIdx = (gcTPresetIdx + 1) % GC_DT_PRESET_COUNT;
+  gcFilterTMin = gcDTPresets[gcTPresetIdx][0];
+  gcFilterTMax = gcDTPresets[gcTPresetIdx][1];
   gcUpdateFilterLabels();
 }
 
@@ -7936,6 +7815,8 @@ static void gcFilterResetCb(lv_event_t* e) {
   gcFilterTMin = 1.0f; gcFilterTMax = 5.0f;
   gcFilterMaxDistKm = 0;
   gcSortMode = 0;
+  gcDPresetIdx = 0;
+  gcTPresetIdx = 0;
   gcUpdateFilterLabels();
 }
 
@@ -8099,7 +7980,6 @@ void handleButtonCShortPress() {
       }
     } else if (geocacheSubScreen == 3) {
       // Filter screen: short press acts as Back (#122)
-      gcSortCacheList();
       gcApplyFilters();
       listHighlightIndex = 0;
       geocacheSubScreen = 1;
