@@ -25,7 +25,7 @@
  */
 
 // Firmware version
-#define FW_VERSION "0.50.4"
+#define FW_VERSION "0.50.6"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -1413,6 +1413,7 @@ void initFCTheme() {
 // Forward declarations for callbacks used in widgets (#113)
 static void gearIconClickCb(lv_event_t* e);
 static void gcNavListBtnCb(lv_event_t* e);     // (#122) nav→list touch nav
+static void gcListRowTapCb(lv_event_t* e);     // (#122) tap row to select
 static void gcFilterBtnCb(lv_event_t* e);     // (#122) filter screen callbacks
 static void gcFilterBackCb(lv_event_t* e);
 static void gcFilterFoundCb(lv_event_t* e);
@@ -2711,6 +2712,7 @@ void buildGeocacheScreen() {
   lv_obj_set_style_text_color(gcNavListBtn, FC_COLOR_BG, 0);  // Black on cyan header
   lv_label_set_text(gcNavListBtn, "[List]");
   lv_obj_add_flag(gcNavListBtn, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(gcNavListBtn, 15);  // +15px invisible hit padding
   lv_obj_add_event_cb(gcNavListBtn, gcNavListBtnCb, LV_EVENT_CLICKED, NULL);
 
   // Nav bar
@@ -2761,6 +2763,10 @@ void buildGeocacheScreen() {
     lv_label_set_long_mode(gcListRowLabel[i], LV_LABEL_LONG_CLIP);
     lv_label_set_text(gcListRowLabel[i], "");
 
+    // Tap row to select (#122)
+    lv_obj_add_flag(gcListRows[i], LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(gcListRows[i], gcListRowTapCb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+
     // Hide rows beyond current cache count
     lv_obj_add_flag(gcListRows[i], LV_OBJ_FLAG_HIDDEN);
   }
@@ -2788,6 +2794,7 @@ void buildGeocacheScreen() {
   lv_obj_set_style_text_color(gcFilterBtn, FC_COLOR_HEADER, 0);
   lv_label_set_text(gcFilterBtn, "Filter");
   lv_obj_add_flag(gcFilterBtn, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(gcFilterBtn, 15);
   lv_obj_add_event_cb(gcFilterBtn, gcFilterBtnCb, LV_EVENT_CLICKED, NULL);
 
   // Nav bar
@@ -7682,6 +7689,20 @@ static void gcNavListBtnCb(lv_event_t* e) {
   geocacheSubScreen = 1;
   listHighlightIndex = 0;
   listScrollOffset = 0;
+}
+
+// List row tap callback (#122): tap to highlight, tap highlighted row to select+nav
+static void gcListRowTapCb(lv_event_t* e) {
+  int row = (int)(intptr_t)lv_event_get_user_data(e);
+  if (row < 0 || row >= gcFilteredCount) return;
+  if (row == listHighlightIndex) {
+    // Already highlighted — select and go to nav
+    selectedCacheIndex = gcFilteredIndices[row];
+    geocacheSubScreen = 0;
+  } else {
+    // First tap — just highlight this row
+    listHighlightIndex = row;
+  }
 }
 
 // ============== Geocache Filter Callbacks (#122) ==============
