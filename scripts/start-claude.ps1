@@ -195,7 +195,7 @@ You are starting a new CLI agent session for the Field Compass project. Complete
 
 3. **Sync Beads:** Run ``bd dolt pull`` then ``bd ready`` to see available work.
 
-4. **Check for in-progress claims:** Run ``bd list --status=in_progress`` — if another agent already claimed a task, pick a different one.
+4. **Check for in-progress claims:** Run ``bd list --status=in_progress``. If another agent already claimed a task, **STOP and ask the user** before proceeding — this is a single-file firmware project and parallel agents will conflict.
 
 5. **Claim exactly ONE task:** Run ``bd update <id> --status=in_progress`` on your chosen task.
 
@@ -203,7 +203,7 @@ You are starting a new CLI agent session for the Field Compass project. Complete
 
 7. **Report ready:** Tell me which task you claimed, which files you reserved. Then begin work.
 
-8. **Continuous Work Loop:** After completing each task, run the Between-Task Reset Protocol (see CLAUDE.md), then immediately check ``bd ready`` and pick the next task. Do NOT stop and ask — keep working until no tasks remain.
+8. **After completing the task:** Report results and wait for the user to verify on hardware. Do NOT auto-pick the next task unless the user has explicitly activated the Continuous Work Loop (via ``/work`` command or explicit instruction).
 "@
 
 claude --dangerously-skip-permissions $StartupMessage
