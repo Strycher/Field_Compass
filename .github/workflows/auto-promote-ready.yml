@@ -2,12 +2,12 @@ name: Auto-Promote Ready Issues
 
 # Two triggers:
 # 1. Event-driven: fires when any issue is closed
-# 2. Cron fallback: every 30 minutes in case events are missed
+# 2. Cron fallback: every 6 hours (conserves GraphQL budget)
 on:
   issues:
     types: [closed]
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '0 */6 * * *'
   workflow_dispatch: {} # Manual trigger for testing
 
 jobs:
