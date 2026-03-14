@@ -206,27 +206,28 @@ At session start, after registering with Agent Mail, check `bd list --status=in_
 
 This project has a single ~8,000-line source file (`Field_Compass.ino`). Parallel agents virtually guarantee conflicts. This is not like a multi-file web project — serialize by default.
 
-### Infrastructure Health Check (MANDATORY)
+### Dolt Server (Hetzner Docker)
 
-At the start of every session, verify all infrastructure is operational before doing any work:
+| Field        | Value                                                     |
+|--------------|-----------------------------------------------------------|
+| Container    | `dolt-beads` on Hetzner (`46.224.181.82`)                 |
+| Database     | `beads_FC`                                                |
+| Host port    | `127.0.0.1:3307` (localhost only, SSH tunnel required)    |
+| SSH          | `ssh unfocused@46.224.181.82`                             |
+| Tunnel       | `ssh -fNL 3307:127.0.0.1:3307 unfocused@46.224.181.82`   |
+| BD_DSN       | `root:@tcp(127.0.0.1:3307)/beads_FC`                     |
 
-1. **Dolt SSH Tunnel**: Verify port 3307 is listening (SSH tunnel to Hetzner `unfocused@46.224.181.82`).
-   If not running, start it:
-   ```bash
-   ssh -fNL 3307:127.0.0.1:3307 unfocused@46.224.181.82
-   ```
+### Infrastructure Health Check (AUTOMATED — Session Start)
 
-2. **Beads/Dolt**: Run `bd dolt test`. If it fails, check the Dolt Docker container on Hetzner:
-   ```bash
-   ssh unfocused@46.224.181.82 "docker ps | grep dolt"
-   ```
-   If still failing, STOP and alert the user.
+A **SessionStart hook** (`.claude/hooks/preflight.sh`) runs automatically at the start of every agent session. It verifies:
 
-3. **Agent Mail**: Verify health at `https://getunfocused.app/health/liveness`. If unreachable or returning errors, STOP and alert the user.
+1. **Dolt SSH tunnel** (port 3307) — auto-starts if down, cascades to 3308/3309 if zombie ports
+2. **Beads connectivity** — verifies `bd list` works through the tunnel
+3. **Agent Mail** — verifies `https://getunfocused.app/health/liveness` returns alive
 
-4. **Beads readiness**: Run `bd ready` to load current task state.
+**If any check fails, the session BLOCKS (exit code 2).** The agent cannot proceed until all coordination services are online.
 
-**CRITICAL**: If Beads or Agent Mail are unreachable, **STOP and tell the user immediately.** Do NOT silently fall back to GitHub-only workflows. Use the startup scripts in `scripts/` or the preflight hook in `.claude/hooks/preflight.sh` to ensure proper initialization.
+**CRITICAL**: If Beads or Agent Mail are unreachable, **STOP and tell the user immediately.** Do NOT silently fall back to GitHub-only workflows.
 
 ### Autonomous Operation Rules
 
@@ -340,23 +341,70 @@ Parallel work that modifies the same file guarantees merge conflicts, even if th
 - [ ] No two Ready tasks touch the same file without a dependency chain
 - [ ] Critical shared files (e.g., `Field_Compass.ino`) identified and serialized first
 
+### Session State Management (Compaction Recovery)
+
+> **Applies ONLY in Worker mode (`/work` invoked). In Interactive mode, ignore this section entirely.**
+
+**Problem:** Context compaction erases the agent's working memory — what task it's on, which epic, what branch. This causes duplicate tasks, phantom closures, and scope drift.
+
+**Solution:** A persistent session state file (`.claude/agent-session.json`) that lives in the primary repo and is gitignored. The preflight hook reads it and outputs the state as a system reminder, which survives compaction.
+
+**Key files:**
+- `.claude/agent-session.json` — persisted session state (epic queue, current task, budget, PR history)
+- `.claude/hooks/session-state.sh` — management script with subcommands (init, read, update-task, check-budget, etc.)
+- `.claude/hooks/preflight.sh` Section 6 — outputs session state as system reminder
+
+**How it works:**
+1. `/work` initializes the session file via `session-state.sh init`
+2. Each task claim, close, and PR creation updates the file
+3. On compaction → new SessionStart → preflight reads the file → agent sees its state
+4. `session-state.sh init` refuses to overwrite an existing session (exit 1) → agent knows to recover instead of re-init
+5. Budget enforcement: `check-budget` returns exit 2 (HARD STOP) when exhausted
+6. Epic queue: `advance-epic` returns exit 2 when all epics processed
+
+### GitHub Board Sync (Label-Based)
+
+**Board status and priority are set via labels, not GraphQL commands.**
+
+A GitHub Action (`.github/workflows/sync-labels-to-board.yml`) watches for `board:*` and `priority:*` labels and syncs them to the Project V2 board fields. Agents NEVER run `gh project` commands.
+
+**How agents update the board:**
+```bash
+# Set status (REST — zero GraphQL cost from agent)
+gh issue edit 42 --add-label "board:in-progress"
+
+# Set priority (REST — zero GraphQL cost from agent)
+gh issue edit 42 --add-label "priority:P2"
+
+# Combine in one call
+gh issue edit 42 --add-label "board:ready,priority:P2"
+```
+
+**Available labels:**
+| Label | Board Column |
+|-------|-------------|
+| `board:backlog` | Backlog |
+| `board:todo` | Todo |
+| `board:ready` | Ready |
+| `board:in-progress` | In Progress |
+| `board:testing` | Testing |
+| `board:on-hold` | On Hold |
+| `board:done` | Done |
+| `priority:P0` through `priority:P3` | Priority field |
+
+Labels are mutually exclusive within their group — the Action auto-removes old labels.
+
 ### GitHub API Rate Limit Conservation (MANDATORY)
 
 GitHub's GraphQL API has a **5,000 point/hour limit per user** — shared across ALL agents and workflows. Exhausting it blocks every agent and CI pipeline.
 
 **Rules for all agents:**
 1. **Use `gh` CLI for issues** — these use the REST API (separate 5,000/hr budget, rarely exhausted).
-2. **Minimize `gh project` commands** — these use GraphQL. Query the board ONCE at session start, then work from Beads locally.
+2. **NEVER use `gh project` commands** — they consume GraphQL budget. Use labels instead (see Label-Based Board Sync above).
 3. **Never poll or loop** — no `watch`, no retries-in-a-loop on GitHub commands.
-4. **Batch board updates** — if you need to update multiple issues on the board, consider whether all are truly needed mid-session or can wait until session end.
-5. **Beads is your working state, GitHub is the sync target.** Use `bd` commands (zero API cost) for task tracking. Only touch GitHub for issue creation and final status sync.
-6. **Check rate limit before batch operations:**
-   ```bash
-   gh api rate_limit --jq '.resources.graphql.remaining'
-   # If < 500, defer non-essential board operations
-   ```
+4. **Beads is your working state, GitHub is the sync target.** Use `bd` commands (zero API cost) for task tracking. Only touch GitHub for issue creation, label sync, and closing issues.
 
-**What costs GraphQL points (AVOID unless necessary):**
+**What costs GraphQL points (NEVER use directly — the sync Action handles this):**
 - `gh project item-list` / `gh project item-edit` / `gh project item-add`
 - Any `gh api graphql` calls
 
@@ -364,6 +412,7 @@ GitHub's GraphQL API has a **5,000 point/hour limit per user** — shared across
 - `gh issue create/list/close/comment`
 - `gh pr create/list/view/merge`
 - `gh label create/list`
+- `gh issue edit --add-label` (this is how agents set board status/priority)
 
 ### Before Each Push Checklist
 
@@ -415,4 +464,4 @@ bd close <id> --reason "done"         # Complete task
 bd dep tree <epic-id>                 # View dependency tree
 ```
 
-**Note:** Status and Priority are managed through the GitHub Project board fields, not labels.
+**Note:** Status and Priority are set via `board:*` and `priority:*` labels (REST). The `sync-labels-to-board.yml` Action translates labels → board fields via GraphQL automatically. Agents NEVER run `gh project` commands directly.
