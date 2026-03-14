@@ -1,0 +1,99 @@
+# =============================================================================
+# Version Bump — increment version tag on every merge to main
+# =============================================================================
+# Reads the commit prefix (feat/fix/chore/etc.) and bumps semver accordingly.
+# Tag-only (no version file to update).
+#
+# Safety:
+#   - Concurrency group queues concurrent runs (no cancel)
+#   - ref:main + fetch-tags + pull --rebase ensures latest state
+#   - Tag-exists check prevents duplicate tag errors
+#   - actor guard prevents infinite loop from its own push
+# =============================================================================
+
+name: Version Bump
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: auto-version-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    if: >-
+      github.repository == 'Strycher/Field_Compass'
+      && github.actor != 'github-actions[bot]'
+      && !startsWith(github.event.head_commit.message, 'chore: bump version')
+      && !startsWith(github.event.head_commit.message, 'bd:')
+      && !startsWith(github.event.head_commit.message, 'Merge')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Pull latest main (in case queued behind another bump)
+        run: git pull origin main --rebase
+
+      - name: Get latest tag
+        id: current
+        run: |
+          TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Current tag: $TAG"
+
+      - name: Determine bump type
+        id: bump
+        run: |
+          MSG=$(git log -1 --pretty=%s)
+          echo "Commit message: $MSG"
+          PREFIX=$(echo "$MSG" | grep -oP '^\w+' | head -1)
+
+          if [ "$PREFIX" = "feat" ]; then
+            echo "type=minor" >> "$GITHUB_OUTPUT"
+            echo "Bump type: MINOR (new feature)"
+          else
+            echo "type=patch" >> "$GITHUB_OUTPUT"
+            echo "Bump type: PATCH ($PREFIX)"
+          fi
+
+      - name: Calculate new version
+        id: new
+        run: |
+          TAG="${{ steps.current.outputs.tag }}"
+          VERSION="${TAG#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          case "${{ steps.bump.outputs.type }}" in
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            *)     PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEW="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "tag=$NEW" >> "$GITHUB_OUTPUT"
+          echo "New version: $NEW"
+
+      - name: Tag and push
+        run: |
+          NEW="${{ steps.new.outputs.tag }}"
+
+          if git rev-parse "$NEW" >/dev/null 2>&1; then
+            echo "⏭️ Tag $NEW already exists — another run handled this bump"
+            exit 0
+          fi
+
+          git tag -a "$NEW" -m "$NEW"
+          git push origin "$NEW"
+          echo "✅ Version bumped: ${{ steps.current.outputs.tag }} → $NEW"
