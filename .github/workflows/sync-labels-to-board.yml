@@ -1,0 +1,149 @@
+name: Sync Labels to Project Board
+
+# Maps board: and priority: labels → Project V2 board fields via GraphQL.
+# Agents set labels via REST (zero GraphQL cost from agent side).
+# This Action translates those labels into board field updates.
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    if: >-
+      startsWith(github.event.label.name, 'board:') ||
+      startsWith(github.event.label.name, 'priority:')
+    steps:
+      - name: Sync label to project board
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_PAT }}
+          script: |
+            // ── Project field IDs (Field_Compass project #3) ────────
+            const PROJECT_ID = 'PVT_kwHODGcOBc4BOJgD';
+
+            const STATUS_FIELD_ID = 'PVTSSF_lAHODGcOBc4BOJgDzg872EE';
+            const STATUS_OPTIONS = {
+              'board:backlog':     '3dcf161f',  // Backlog
+              'board:todo':        '40e1ce62',  // Todo
+              'board:ready':       'c9d9a904',  // Ready
+              'board:in-progress': 'ed9b3596',  // In Progress
+              'board:testing':     'f24c3b98',  // Testing
+              'board:on-hold':     'b8fb7ef8',  // On Hold
+              'board:done':        '0a973c3f',  // Done
+            };
+
+            const PRIORITY_FIELD_ID = 'PVTSSF_lAHODGcOBc4BOJgDzg872kc';
+            const PRIORITY_OPTIONS = {
+              'priority:P0': 'c5d8bb6a',  // P0 - Critical
+              'priority:P1': '6107e8d5',  // P1 - High
+              'priority:P2': '464bc5bf',  // P2 - Medium
+              'priority:P3': '4e96770a',  // P3 - Low/Cosmetic
+            };
+
+            // ── Determine what triggered us ─────────────────────────
+            const triggerLabel = context.payload.label.name;
+            const issueNumber = context.payload.issue.number;
+            const issueNodeId = context.payload.issue.node_id;
+            const issueLabels = context.payload.issue.labels.map(l => l.name);
+
+            core.info(`Label "${triggerLabel}" added to #${issueNumber}`);
+
+            let triggerPrefix;
+            if (triggerLabel.startsWith('board:'))    triggerPrefix = 'board:';
+            else if (triggerLabel.startsWith('priority:')) triggerPrefix = 'priority:';
+            else {
+              core.info('Not a board/priority label — skipping');
+              return;
+            }
+
+            // ── Mutual exclusion: remove other labels in the same group ─
+            const conflicting = issueLabels.filter(
+              l => l.startsWith(triggerPrefix) && l !== triggerLabel
+            );
+            for (const oldLabel of conflicting) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  name: oldLabel,
+                });
+                core.info(`Removed conflicting label: ${oldLabel}`);
+              } catch (e) {
+                core.warning(`Could not remove label "${oldLabel}": ${e.message}`);
+              }
+            }
+
+            // ── Add issue to project board (idempotent) ─────────────
+            const addMutation = `
+              mutation($projectId: ID!, $contentId: ID!) {
+                addProjectV2ItemById(input: {
+                  projectId: $projectId
+                  contentId: $contentId
+                }) {
+                  item { id }
+                }
+              }
+            `;
+
+            let itemId;
+            try {
+              const addResult = await github.graphql(addMutation, {
+                projectId: PROJECT_ID,
+                contentId: issueNodeId,
+              });
+              itemId = addResult.addProjectV2ItemById.item.id;
+              core.info(`Project item: ${itemId}`);
+            } catch (e) {
+              core.setFailed(`Failed to add #${issueNumber} to project: ${e.message}`);
+              return;
+            }
+
+            // ── Update field mutation ───────────────────────────────
+            const updateMutation = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId
+                  itemId: $itemId
+                  fieldId: $fieldId
+                  value: { singleSelectOptionId: $optionId }
+                }) {
+                  projectV2Item { id }
+                }
+              }
+            `;
+
+            // ── Sync ALL board/priority labels ──────────────────────
+            const boardLabel = issueLabels.find(l => l.startsWith('board:') && STATUS_OPTIONS[l]);
+            const priorityLabel = issueLabels.find(l => l.startsWith('priority:') && PRIORITY_OPTIONS[l]);
+
+            if (boardLabel) {
+              try {
+                await github.graphql(updateMutation, {
+                  projectId: PROJECT_ID,
+                  itemId: itemId,
+                  fieldId: STATUS_FIELD_ID,
+                  optionId: STATUS_OPTIONS[boardLabel],
+                });
+                core.info(`✅ Status → ${boardLabel}`);
+              } catch (e) {
+                core.setFailed(`Failed to set status: ${e.message}`);
+              }
+            }
+
+            if (priorityLabel) {
+              try {
+                await github.graphql(updateMutation, {
+                  projectId: PROJECT_ID,
+                  itemId: itemId,
+                  fieldId: PRIORITY_FIELD_ID,
+                  optionId: PRIORITY_OPTIONS[priorityLabel],
+                });
+                core.info(`✅ Priority → ${priorityLabel}`);
+              } catch (e) {
+                core.setFailed(`Failed to set priority: ${e.message}`);
+              }
+            }
+
+            core.info(`Done syncing #${issueNumber}`);
