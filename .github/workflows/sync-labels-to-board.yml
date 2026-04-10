@@ -29,7 +29,7 @@ jobs:
               'board:ready':       'c9d9a904',  // Ready
               'board:in-progress': 'ed9b3596',  // In Progress
               'board:testing':     'f24c3b98',  // Testing
-              'board:on-hold':     'b8fb7ef8',  // On Hold
+              'board:deferred':    'b8fb7ef8',  // Deferred
               'board:done':        '0a973c3f',  // Done
             };
 
