@@ -1,467 +1,173 @@
-# CLAUDE.md - Field Compass Project Guidelines
+# Field Compass — CLAUDE.md
+
+> **Standards:** This project follows DifferentWire standards.
+> Read and apply: `C:\Dev\DifferentWire\standards\CLAUDE-BASE.md`, `C:\Dev\DifferentWire\standards\SAFELANE.md`
+> Credential inventory: `C:\Dev\.credentials.env`
 
 ## Project Overview
 
-**Hardware Platform:** Adafruit ESP32-S3 Feather with 4MB Flash 2MB PSRAM - STEMMA QT / Qwiic
-**Project Type:** Embedded firmware development with FeatherWing and I2C peripherals
+| Field | Value |
+|-------|-------|
+| Project Name | Field Compass |
+| Organization | Strycher (personal) |
+| Repository | https://github.com/Strycher/Field_Compass |
+| Project Type | Embedded firmware (single-file Arduino `.ino`) |
+| GitHub Project | Field Compass Backlog (#3) |
+
+## Project Parameters
+
+| Parameter | Value |
+|-----------|-------|
+| PROJECT_NAME | Field Compass |
+| PROJECT_DIR | `/c/Dev/Field_Compass` |
+| BUILD_COMMAND | `arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3 Field_Compass/` |
+| CITADEL_PROJECT | `Field_Compass` |
+| GITHUB_PROJECT_ID | `PVT_kwHODGcOBc4BOJgD` |
+| INFRA_PROFILE | Maker |
+| Main Source File | `Field_Compass/Field_Compass.ino` (~8,180 lines) |
 
 ## Hardware Specifications
 
-- **MCU:** ESP32-S3 (dual-core Xtensa LX7)
-- **Flash:** 4MB
-- **PSRAM:** 2MB
-- **Connectivity:** STEMMA QT / Qwiic (I2C)
-- **Form Factor:** Adafruit Feather
+| Component | Value |
+|-----------|-------|
+| MCU | Adafruit ESP32-S3 Feather 4MB Flash 2MB PSRAM (PID 5477) |
+| Display | Hosyond 3.5" ST7796U IPS TFT 480x320 (MSP3526), TFT_eSPI rotation 1 |
+| Touch | FT6336U capacitive on I2C `0x38` (CTP_INT = GPIO14, FALLING edge) |
+| IMU | LSM6DSOX + LIS3MDL (STEMMA QT) — heading reference is X+ |
+| GPS | PA1616D (MT3339) — Serial1 @ 9600, CR1220 backup, PMTK101 hot restart |
+| SD | Adalogger FeatherWing (SD_CS = GPIO10) |
+| FRAM | MB85RS2MTA 256KB (FRAM_CS = GPIO15) — battery + weather write buffers |
+| Temp/Humidity | SHT41 on I2C `0x44` (STEMMA QT) |
+| Battery | MAX17048 on I2C `0x36` / `0x7E` |
+| UI Framework | LVGL 9.5.0 — dual 480x50 PSRAM draw buffers (~96KB) |
 
-## Development Workflow Requirements
+### Pin Assignments
 
-### Backlog Management (GitHub Issues)
+- **I2C:** SDA=GPIO3, SCL=GPIO4 (STEMMA QT)
+- **SPI:** SCK=36, MOSI=35, MISO=37
+- **TFT:** CS=18, DC=17, RST=16, BL=8 (PWM-dimmable)
+- **SD/FRAM/Touch:** SD_CS=10, FRAM_CS=15, CTP_INT=14
+- **GPS Serial1:** RX=GPIO5, TX=GPIO6
 
-All backlog items MUST be created as GitHub Issues with the following **mandatory fields**:
-
-| Field | Description | Required |
-|-------|-------------|----------|
-| **Title** | Clear, concise description of the item | Yes |
-| **Body** | Detailed description including context | Yes |
-| **Status** | Current state (see Status Labels below) | Yes |
-| **Priority** | Importance level (see Priority Labels below) | Yes |
-
-#### Status (GitHub Project Field — Board Columns)
-
-| Status | Meaning | Who Moves Here |
-|--------|---------|----------------|
-| **Backlog** | Ungroomed idea — no spec, no acceptance criteria yet. Parking lot for future work. | Anyone — this is the "idea dump" |
-| **Todo** | Groomed — has description, acceptance criteria, and design (if needed). Ready for sprint consideration. | Ben (PM) moves from Backlog after grooming |
-| **Ready** | Approved for development, fully specified, all blockers resolved. Agents pick up work from here. | Ben, or auto-promote Action when dependencies close |
-| **In Progress** | Actively being worked on by an agent or Ben. | Agent/Ben when starting work |
-| **Testing** | PR created or code ready for review/QA. | Agent when work is ready for verification |
-| **On Hold** | Deliberately paused by human decision — deprioritized, waiting on external input, scope changed. | Ben — manual decision to freeze work |
-| **Done** | Acceptance criteria met, issue closed. | Auto on issue close, or manual |
-
-```
-Backlog → Todo → Ready → In Progress → Testing → Done
- (idea)  (groomed) (approved) (coding)   (review)  (shipped)
-                                  ↕
-                               On Hold
-                          (frozen by decision)
-```
-
-#### Priority (GitHub Project Field)
-- `P0 - Critical` - Must be addressed immediately
-- `P1 - High` - Important, address soon
-- `P2 - Medium` - Normal priority
-- `P3 - Low/Cosmetic` - Nice to have, cosmetic issues
-- `P4 - Deferred` - Postponed for future consideration
-
-#### Issue Types (Labels)
-- `type:epic` — Parent issue with sub-issues
-- `enhancement` — New feature or improvement
-- `bug` — Defect or unexpected behavior
-- `documentation` — Documentation updates
-- `refactor` — Code improvement without behavior change
-
-### Issue Lifecycle
-
-1. **Create** issues when identifying work — enhancements, bugs, docs gaps
-2. **Backlog** — new ideas and ungroomed work start here
-3. **Groom** — Ben adds description, acceptance criteria, design reference. Moves to Todo.
-4. **Ready** — Ben moves groomed issues to Ready, OR the auto-promote Action moves them when dependencies resolve
-5. **In Progress** — agent or Ben picks up a Ready issue and begins work
-6. **Update** with comments for significant progress
-7. **Reference** in commit messages: `feat(#12): add compass widget`
-8. **Testing** — code ready for Ben to review/verify on device
-9. **On Hold** — if work must be paused (deprioritized, waiting on input, scope change), move here with a comment explaining why
-10. **Close** when acceptance criteria met: `gh issue close <number>`
-11. All issues must exist in GitHub Project — no local-only issues
-
-### Dependency Automation
-- Issues with `<!-- depends-on: #X, #Y -->` tags in their body are tracked by the **auto-promote GitHub Action** (`.github/workflows/auto-promote-ready.yml`).
-- When a dependency closes, the Action checks if all deps are resolved. If yes, it auto-promotes the issue from **Todo → Ready**.
-- The Action only promotes from Todo. It never touches Backlog, On Hold, or other statuses.
-- When creating issues with dependencies, always include the tag: `<!-- depends-on: #123, #456 -->`
-
-### Version Control
-
-#### Commit Strategy
-- Commit each **successfully compiled** version
-- Write clear, descriptive commit messages
-- Reference related Issue numbers in commits (e.g., `Fixes #12`)
-
-#### Version Tagging (Semantic Versioning)
-
-Format: `vMAJOR.MINOR.PATCH`
-
-| Component | When to Increment |
-|-----------|------------------|
-| **MAJOR** | Breaking changes, incompatible API changes |
-| **MINOR** | New features, backward-compatible additions |
-| **PATCH** | Bug fixes, backward-compatible fixes |
-
-**Examples:**
-- `v0.1.0` - Initial development release
-- `v1.0.0` - First stable release
-- `v1.1.0` - Added new feature
-- `v1.1.1` - Bug fix
-
-## Build Environment
-
-### Prerequisites
-- Arduino IDE or PlatformIO
-- ESP32 Board Support Package
-- Adafruit ESP32-S3 Feather board definition
-
-### Board Configuration
-```
-Board: Adafruit Feather ESP32-S3 4MB Flash 2MB PSRAM
-USB Mode: USB-OTG (TinyUSB)
-Upload Speed: 921600
-```
-
-## I2C Configuration
-
-Default I2C pins for Adafruit ESP32-S3 Feather:
-- **SDA:** GPIO 3
-- **SCL:** GPIO 4
-
-STEMMA QT connector provides dedicated I2C connection.
-
-## Code Style Guidelines
-
-- Use descriptive variable and function names
-- Comment complex logic
-- Keep functions focused and single-purpose
-- Use `#define` for hardware pin assignments
-- Group related functionality into separate files
-
-## File Structure
-
-```
-Field_Compass/
-├── CLAUDE.md           # This file - project guidelines
-├── README.md           # Project documentation
-├── src/                # Source code
-│   ├── main.cpp        # Main application entry
-│   ├── config.h        # Configuration and pin definitions
-│   └── ...
-├── lib/                # Project-specific libraries
-├── include/            # Header files
-├── test/               # Test files
-└── docs/               # Additional documentation
-```
-
-## Claude Assistant Responsibilities
-
-### Automatic Actions
-1. **Create Issues** when identifying:
-   - New enhancement opportunities
-   - Bugs or defects
-   - Documentation gaps
-
-2. **Maintain Issues** by:
-   - Adding comments for each update
-   - Updating Status labels as work progresses
-   - Documenting Specifications and Acceptance Criteria
-
-3. **Version Control** by:
-   - Committing successfully compiled code
-   - Creating version tags following semantic versioning
-   - Writing clear commit messages referencing Issues
-
-### Before Each Commit
-- [ ] Code compiles without errors
-- [ ] Related Issue(s) updated with progress
-- [ ] Commit message references Issue number(s)
-- [ ] Version tag created if milestone reached
-
-## Agent Workflow
-
-### Task Management (Beads)
-- Use `bd` (Beads) for structured task tracking during development sessions.
-- Before starting work, run `bd ready` to see what tasks are unblocked.
-- When picking up a task, run `bd update <task-id> --status=in_progress`.
-- When completing a task, run `bd close <task-id> --reason "description"`.
-- For complex features, decompose into subtasks with dependencies:
-  `bd create --title="Subtask name" -t task -p 2 --parent <epic-id>`
-- Issue prefix is `FC` — IDs look like `FC-abc`.
-
-### GitHub Board Sync
-- The GitHub Project board is the source of truth for project status.
-- When creating a Beads task from a GitHub Issue, include the issue number in the title: `"Feature name (#22)"`.
-- Include the Beads ID (e.g., FC-abc) in a GitHub Issue comment for cross-reference.
-- When moving a Beads task to in_progress, comment on the GitHub Issue with the status change.
-- When closing a Beads task, close or update the corresponding GitHub Issue.
-- Never let Beads and GitHub get out of sync — update both in the same workflow step.
-
-### Multi-Agent Coordination (Agent Mail)
-- If agent-mail MCP is available, register with a descriptive agent name (e.g., "fc-firmware-agent").
-- Before editing files, check for file reservations via agent-mail.
-- Reserve files you're working on to prevent conflicts with other agents.
-- When done with a file, release the reservation.
-
-**Parallel Agent Detection (MANDATORY):**
-At session start, after registering with Agent Mail, check `bd list --status=in_progress`. If ANY task is already claimed by another agent:
-1. **STOP and ask the user:** "Another agent is currently working on FC-xxx. Field Compass is a single-file firmware project — parallel agents will conflict. Do you really want to run a second agent?"
-2. Do NOT proceed until the user explicitly confirms.
-3. If the user says no, report what the other agent is working on and exit gracefully.
-
-This project has a single ~8,000-line source file (`Field_Compass.ino`). Parallel agents virtually guarantee conflicts. This is not like a multi-file web project — serialize by default.
-
-### Dolt Server (Hetzner Docker)
-
-| Field        | Value                                                     |
-|--------------|-----------------------------------------------------------|
-| Container    | `dolt-beads` on Hetzner (`46.224.181.82`)                 |
-| Database     | `beads_FC`                                                |
-| Host port    | `127.0.0.1:3307` (localhost only, SSH tunnel required)    |
-| SSH          | `ssh unfocused@46.224.181.82`                             |
-| Tunnel       | `ssh -fNL 3307:127.0.0.1:3307 unfocused@46.224.181.82`   |
-| BD_DSN       | `root:@tcp(127.0.0.1:3307)/beads_FC`                     |
-
-### Infrastructure Health Check (AUTOMATED — Session Start)
-
-A **SessionStart hook** (`.claude/hooks/preflight.sh`) runs automatically at the start of every agent session. It verifies:
-
-1. **Dolt SSH tunnel** (port 3307) — auto-starts if down, cascades to 3308/3309 if zombie ports
-2. **Beads connectivity** — verifies `bd list` works through the tunnel
-3. **Agent Mail** — verifies `https://getunfocused.app/health/liveness` returns alive
-
-**If any check fails, the session BLOCKS (exit code 2).** The agent cannot proceed until all coordination services are online.
-
-**CRITICAL**: If Beads or Agent Mail are unreachable, **STOP and tell the user immediately.** Do NOT silently fall back to GitHub-only workflows.
-
-### Autonomous Operation Rules
-
-**Default mode: Interactive.** Agents work on ONE task per session and report results to the user for review. The user verifies on hardware before approving the next task.
-
-- **Only pick up issues from the "Ready" column on the GitHub Project board.** Never pull from Backlog, Todo, or On Hold — Ben decides what is ready for development.
-- You may operate autonomously for:
-  - Implementing features from GitHub Issues in the "Ready" column
-  - Writing and running tests (compile checks)
-  - Updating Beads tasks and GitHub Issues
-  - Committing code that compiles successfully (per commit convention above)
-- After completing a task, **report results and wait for the user.** Do not auto-pick the next task unless the Continuous Work Loop is active (see below).
-- If unsure about a design decision, create a GitHub Issue tagged "question" rather than guessing.
-- If a task is blocked by unclear requirements, move it to On Hold and comment on the GitHub Issue explaining what's needed.
-- When creating sub-issues with dependencies, always include `<!-- depends-on: #NNN -->` in the issue body so the auto-promote Action can chain them.
-
-> **CRITICAL RULE (repeated for emphasis):** If Beads or Agent Mail are unreachable, **STOP and tell the user immediately.** Do NOT silently fall back to GitHub-only workflows. The user has invested in this infrastructure specifically so agents coordinate — ignoring failures defeats the entire purpose.
-
-### Continuous Work Loop (OPT-IN — requires explicit `/work` command)
-
-The Continuous Work Loop is **OFF by default.** It activates ONLY when the user explicitly types `/work` or includes "continuous work loop" in their launch instructions. This is intentional — Field Compass is a single-file embedded firmware project where each change should be verified on hardware before proceeding.
-
-**When active:**
-
-After completing a task, immediately check for and pick up the next available task. Do not stop and ask the user if they want to continue. Work until `bd ready` returns nothing.
-
-```
-Complete task → Reset (below) → bd ready → claim next → work → repeat
-```
-
-**Rules:**
-1. After every task completion, run the Between-Task Reset Protocol below, then run `bd ready`.
-2. If `bd ready` returns tasks, pick the highest-priority one and begin work immediately.
-3. If `bd ready` returns nothing, check `bd list --status=open` for blocked tasks and report what they're waiting on. Only THEN tell the user there's no available work.
-4. If a task you just completed unblocks downstream tasks, those will appear in `bd ready` — pick them up.
-5. The only reasons to stop working are:
-   - `bd ready` returns no tasks AND no open tasks exist
-   - You encounter a design decision that requires human input (create an issue tagged "question")
-   - Infrastructure failure (Beads/Agent Mail unreachable)
-   - You've hit a hard blocker you cannot resolve
-
-**When NOT active (default):**
-> "Task complete, pushed to main. Here's what changed: [summary]. Ready for you to verify on device."
-
-### Between-Task Reset Protocol
-
-When finishing one task and picking up another **within the same session**, you MUST reset before starting the new task. Do NOT carry over file reservations or working state from the previous task.
+## Build & Flash
 
 ```bash
-# 1. Finalize the completed task
-bd close <old-task-id> --reason "description"
-git add <files> && git commit -m "type(#issue): description"
-git push origin main
+# Compile
+arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3 Field_Compass/
 
-# 2. Release ALL file reservations from the old task
-#    release_file_reservations(project_key="...", agent_name="YourName")
+# Detect active ESP32-S3 port — DO NOT hardcode (devices move between COM ports)
+arduino-cli board list --format json \
+  | jq -r '.detected_ports[] | select(.matching_boards[]?.fqbn == "esp32:esp32:adafruit_feather_esp32s3") | .port.address' \
+  | head -1
 
-# 3. Check inbox for new coordination messages
-#    fetch_inbox(project_key="...", agent_name="YourName")
-
-# 4. Find and claim new work
-bd ready
-bd list --status=in_progress          # Verify no one else claimed it
-bd update <new-task-id> --status=in_progress
-
-# 5. Reserve files for the new task
-#    file_reservation_paths(project_key="...", agent_name="YourName", paths=[...])
-
-# 6. Begin work on new task IMMEDIATELY — do not ask for permission
+# Upload (close serial monitor first — port will be busy)
+arduino-cli upload --fqbn esp32:esp32:adafruit_feather_esp32s3 --port <detected-port> Field_Compass/
 ```
 
-**Key rule:** Never hold file reservations across tasks. Each task gets a clean slate.
+The `arduino-cli` binary lives at `C:\Program Files\Arduino CLI\arduino-cli.exe`.
+The active `lv_conf.h` lives at `C:\Users\stryc\OneDrive\Documents\Arduino\libraries\lv_conf.h`.
 
-### Session Size Limits (MANDATORY)
+## FC-Specific Overrides
 
-Working sessions MUST be limited to **15–30 minutes of effort per issue**, touching **no more than 1–3 files**. This applies to all agents and all sessions without exception.
+### Branch Strategy — Per-Issue, Not Per-Epic (override of CLAUDE-BASE)
 
-| Constraint | Target |
-|------------|--------|
-| Files touched | 1–3 files |
-| Completion time | 15–30 minutes |
-| Commit scope | Single commit |
-| Design decisions | Zero — all decisions resolved before Ready |
+CLAUDE-BASE mandates *one epic = one branch = one PR*. Field Compass overrides this to **one issue = one branch = one PR** because:
 
-- If an issue requires more than 30 minutes of work or touches more than 3 files, it MUST be decomposed into smaller sub-issues before starting.
-- Each sub-issue should be independently implementable, compilable, and testable within one session.
-- Use `<!-- depends-on: #NNN -->` to chain sub-issues so the auto-promote Action sequences them correctly.
-- Never start a large implementation in a single session — plan first, break it down, then work the pieces.
-- If you discover mid-session that an issue is larger than estimated, STOP, create sub-issues for the remaining work, and close out what you've completed.
+- Single-file source (`Field_Compass.ino`) means long-lived branches guarantee merge conflicts
+- Each compile needs hardware verification before shipping — natural serialization point
+- Firmware epics span weeks of hardware iteration, making epic branches impractical
 
-**Red flags that a task is too big:**
-- Touches 4+ files or sections across multiple subsystems
-- Requires both UI and backend/data changes
-- Needs design decisions the agent would have to make
-- Description says "implement the entire..." or "add full support for..."
+| Rule | Value |
+|------|-------|
+| Branch naming | `fc/<issue>-short-desc` (e.g., `fc/120-sd-indicator`) |
+| Scope | One GitHub issue per branch |
+| Commits | Every successful compile on the branch = commit (per SAFELANE §6) |
+| CI gate | `arduino-cli compile` on push |
+| Verification gate | Human flashes locally + verifies on hardware |
+| Merge | After human verification: agent runs `gh pr merge <N> --auto --rebase` |
+| Worktrees | Optional — parallel-agent rule (below) means usually not needed |
+| Post-merge | Tag on `main` if the commit represents a shippable milestone |
 
-### File-Convergence Rule (MANDATORY for Planning Agent)
+### Single-File Source ⇒ Serialize Parallel Agents (MANDATORY)
 
-**If two tasks touch the same file, one MUST depend on the other. No exceptions.**
+Field Compass has a single ~8,000-line source file. **Parallel agents virtually guarantee merge conflicts, even with worktrees.**
 
-Parallel work that modifies the same file guarantees merge conflicts, even if the tasks are logically independent. When breaking epics into sub-issues:
+At session start, after preflight passes, check `dw --project Field_Compass list --status in_progress`. If ANY task is already claimed:
 
-1. For each task, list every file it will create or modify.
-2. If two tasks share ANY file, add a `<!-- depends-on: #NNN -->` dependency so they execute sequentially.
-3. The task that makes foundational/structural changes goes first; the task that builds on top depends on it.
-4. When in doubt, serialize. A false dependency costs minutes; a conflict costs an entire agent session.
+1. **STOP and ask the user:** "Another agent is working on `<task-id>`. Field Compass is single-file firmware — parallel agents will conflict. Run a second agent anyway?"
+2. Do NOT proceed until the user explicitly confirms.
+3. If the user declines, report what the other agent is doing and exit gracefully.
 
-**Planning checklist before moving tasks to Ready:**
-- [ ] File-overlap matrix generated for all tasks in the batch
-- [ ] Every shared-file pair has a dependency link
-- [ ] No two Ready tasks touch the same file without a dependency chain
-- [ ] Critical shared files (e.g., `Field_Compass.ino`) identified and serialized first
+### Interactive Mode Still Requires a Citadel Task
+
+CLAUDE-BASE § *Interactive Mode — Citadel Still Applies* applies to FC without exception. Even a one-line fix the user asks for requires `dw claim` first. This is a break from FC's pre-2026-04 rules — the "interactive carve-out" is gone.
+
+### Continuous Work Loop OFF by Default
+
+CLAUDE-BASE describes Worker mode as opt-in via `/work`. FC keeps that default and reinforces **why**: hardware verification must happen between every task. After completing a task, the agent reports "compiled + flashed + observed X" and waits for human verification. The auto-pick-next-task loop only runs when the user explicitly types `/work`.
+
+### Epic Integration Testing (still mandatory)
+
+Per-issue branching does NOT exempt FC from CLAUDE-BASE § *Epic Completion Protocol*. Every FC epic still requires an integration test as its final child task — but FC runs it on hardware, not in CI.
+
+| Rule | Detail |
+|------|--------|
+| Integration test is a dedicated task | Created when the epic is groomed, not appended after-the-fact. Title: `Epic #N integration test: <scope>` |
+| Depends on all other epic children | Use `<!-- depends-on: #A, #B, #C -->` so the task only surfaces in `dw ready` after the epic's work is merged |
+| Runs on hardware | Compile, flash, and verify all epic deliverables work together — memory, timing, and cross-feature interactions |
+| Human sign-off gates close | Agent closes the integration task only after the human confirms "verified on device — epic complete" |
+| Blocks next epic's entry | The next epic's entry task MUST `depends-on` this integration test, per CLAUDE-BASE |
+
+Task-level hardware verification (per FC's per-issue branching rule) proves each piece works in isolation. The epic integration test proves the pieces work together. Both are required.
 
 ### Session State Management (Compaction Recovery)
 
-> **Applies ONLY in Worker mode (`/work` invoked). In Interactive mode, ignore this section entirely.**
+Applies only in Worker mode. See `.claude/hooks/session-state.sh` and `.claude/hooks/preflight.sh` Section 5.
 
-**Problem:** Context compaction erases the agent's working memory — what task it's on, which epic, what branch. This causes duplicate tasks, phantom closures, and scope drift.
+## Versioning
 
-**Solution:** A persistent session state file (`.claude/agent-session.json`) that lives in the primary repo and is gitignored. The preflight hook reads it and outputs the state as a system reminder, which survives compaction.
+FC follows CLAUDE-BASE's SemVer rules (`vMAJOR.MINOR.PATCH`) with one firmware-specific adaptation:
 
-**Key files:**
-- `.claude/agent-session.json` — persisted session state (epic queue, current task, budget, PR history)
-- `.claude/hooks/session-state.sh` — management script with subcommands (init, read, update-task, check-budget, etc.)
-- `.claude/hooks/preflight.sh` Section 6 — outputs session state as system reminder
+- Every successful compile on a branch = commit
+- After PR merge to `main`, tag the commit that represents a shippable milestone
+- `FW_VERSION` constant in `Field_Compass/Field_Compass.ino` must match the tag
+- **Do NOT use auto-commit version-bump workflows** — per SAFELANE §7 incident 2026-03-29 (auto-commits orphaned by rebase merges). Compute at build time or update `FW_VERSION` manually before tagging.
 
-**How it works:**
-1. `/work` initializes the session file via `session-state.sh init`
-2. Each task claim, close, and PR creation updates the file
-3. On compaction → new SessionStart → preflight reads the file → agent sees its state
-4. `session-state.sh init` refuses to overwrite an existing session (exit 1) → agent knows to recover instead of re-init
-5. Budget enforcement: `check-budget` returns exit 2 (HARD STOP) when exhausted
-6. Epic queue: `advance-epic` returns exit 2 when all epics processed
+## Board & Label Conventions (FC overrides)
 
-### GitHub Board Sync (Label-Based)
+- **Column names:** standard 7 (Backlog / Todo / Ready / In Progress / Testing / Deferred / Done) per CLAUDE-BASE. FC's legacy "On Hold" is renamed to "Deferred".
+- **Priority tiers:** 4 (P0–P3) per CLAUDE-BASE. FC's legacy `P4 - Deferred` is collapsed into `P3 - Low/Cosmetic`.
+- **Dependency tag:** `<!-- depends-on: #NNN -->` in issue body, processed by `.github/workflows/auto-promote-ready.yml`.
+- **Board sync:** Labels only. `gh issue edit <N> --add-label "board:in-progress"`. Never run `gh project` commands (GraphQL budget).
 
-**Board status and priority are set via labels, not GraphQL commands.**
-
-A GitHub Action (`.github/workflows/sync-labels-to-board.yml`) watches for `board:*` and `priority:*` labels and syncs them to the Project V2 board fields. Agents NEVER run `gh project` commands.
-
-**How agents update the board:**
-```bash
-# Set status (REST — zero GraphQL cost from agent)
-gh issue edit 42 --add-label "board:in-progress"
-
-# Set priority (REST — zero GraphQL cost from agent)
-gh issue edit 42 --add-label "priority:P2"
-
-# Combine in one call
-gh issue edit 42 --add-label "board:ready,priority:P2"
-```
-
-**Available labels:**
-| Label | Board Column |
-|-------|-------------|
-| `board:backlog` | Backlog |
-| `board:todo` | Todo |
-| `board:ready` | Ready |
-| `board:in-progress` | In Progress |
-| `board:testing` | Testing |
-| `board:on-hold` | On Hold |
-| `board:done` | Done |
-| `priority:P0` through `priority:P3` | Priority field |
-
-Labels are mutually exclusive within their group — the Action auto-removes old labels.
-
-### GitHub API Rate Limit Conservation (MANDATORY)
-
-GitHub's GraphQL API has a **5,000 point/hour limit per user** — shared across ALL agents and workflows. Exhausting it blocks every agent and CI pipeline.
-
-**Rules for all agents:**
-1. **Use `gh` CLI for issues** — these use the REST API (separate 5,000/hr budget, rarely exhausted).
-2. **NEVER use `gh project` commands** — they consume GraphQL budget. Use labels instead (see Label-Based Board Sync above).
-3. **Never poll or loop** — no `watch`, no retries-in-a-loop on GitHub commands.
-4. **Beads is your working state, GitHub is the sync target.** Use `bd` commands (zero API cost) for task tracking. Only touch GitHub for issue creation, label sync, and closing issues.
-
-**What costs GraphQL points (NEVER use directly — the sync Action handles this):**
-- `gh project item-list` / `gh project item-edit` / `gh project item-add`
-- Any `gh api graphql` calls
-
-**What uses REST (safe, separate budget):**
-- `gh issue create/list/close/comment`
-- `gh pr create/list/view/merge`
-- `gh label create/list`
-- `gh issue edit --add-label` (this is how agents set board status/priority)
-
-### Before Each Push Checklist
-
-- [ ] `arduino-cli compile` passes locally (don't push broken code)
-- [ ] `git fetch origin main` — check if main has moved ahead
-- [ ] If behind main: `git pull --rebase origin main` and resolve conflicts locally
-- [ ] Re-compile after rebase (rebase can introduce breakage)
-
-### Dev Environment Startup
-
-Startup scripts establish SSH tunnel, verify Beads, and launch Claude Code:
-- **PowerShell:** `.\scripts\start-claude.ps1`
-
-Scripts launch Claude Code in **interactive mode** by default — infrastructure is verified, but no autonomous work begins. This allows ad-hoc queries or manual exploration.
-
-Even if launched without a startup script, the **SessionStart hook** (`.claude/hooks/preflight.sh`) auto-starts the SSH tunnel and blocks the session if Beads or Agent Mail are unreachable. No agent can skip the safety net.
-
-> **CRITICAL RULE (repeated for emphasis):** If Beads or Agent Mail are unreachable at any point during a session, **STOP and tell the user immediately.** Do NOT silently fall back to GitHub-only workflows.
-
-## Quick Reference Commands
+## Quick Reference — FC-Specific
 
 ```bash
-# Issues
-gh issue create --title "Title" --body "Description" --label "enhancement"
-gh issue comment <number> --body "Progress update"
-gh issue close <number>
-gh issue list
+# ── Start a task ───────────────────────────────────────────
+dw --project Field_Compass ready                    # Find unblocked work
+dw --project Field_Compass claim FC-<id>            # Claim one task
+git checkout -b fc/<issue>-short-desc               # Per-issue branch
 
-# Project
-gh project item-add 3 --owner Strycher --url <issue-url>
-
-# Rate limit check
-gh api rate_limit --jq '.resources.graphql.remaining'
-
-# Versioning
-git tag -a v0.48.0 -m "Description"
-git push origin main --tags
-
-# Arduino CLI
+# ── Compile + flash ────────────────────────────────────────
 arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3 Field_Compass/
-arduino-cli upload --fqbn esp32:esp32:adafruit_feather_esp32s3 --port COM19 Field_Compass/
+arduino-cli board list                              # Find active port
+arduino-cli upload --fqbn esp32:esp32:adafruit_feather_esp32s3 --port <detected> Field_Compass/
 
-# Beads
-bd ready                              # Show unblocked tasks
-bd list                               # Show all tasks
-bd create --title="Name" -t task -p 2 # Create task
-bd update <id> --status=in_progress   # Claim task
-bd close <id> --reason "done"         # Complete task
-bd dep tree <epic-id>                 # View dependency tree
+# ── Commit on the branch (pre-commit hook verifies Citadel claim) ──
+git add Field_Compass/Field_Compass.ino
+git commit -m "feat(#<issue>): description"
+git push -u origin fc/<issue>-short-desc
+
+# ── Open PR, wait for human verification, enable auto-merge ───
+gh pr create --title "feat(#<issue>): description" --body "..."
+# After human verifies on hardware:
+gh pr merge <pr-number> --auto --rebase
+
+# ── Close task ─────────────────────────────────────────────
+dw --project Field_Compass close FC-<id> --reason "verified on device"
+gh issue edit <issue> --add-label "board:done"
 ```
 
-**Note:** Status and Priority are set via `board:*` and `priority:*` labels (REST). The `sync-labels-to-board.yml` Action translates labels → board fields via GraphQL automatically. Agents NEVER run `gh project` commands directly.
+See CLAUDE-BASE § *Task Management (Citadel)* for the full `dw` CLI reference.
+See CLAUDE-BASE § *GitHub Board Sync (Label-Based)* for board labels.
+See SAFELANE § 3 *Tollgating* for mandatory approval points.
