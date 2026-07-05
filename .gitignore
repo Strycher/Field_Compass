@@ -64,3 +64,6 @@ desktop.ini
 /issues.json
 /project-items.json
 PHASE*.md
+
+# Per-session identity records (runtime, local)
+.claude/sessions/
