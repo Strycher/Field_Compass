@@ -14,6 +14,13 @@ on:
     - cron: '0 */4 * * *'
   workflow_dispatch: {} # Manual trigger for testing
 
+# Least privilege, but explicit. Without this the job inherits the repository's
+# default GITHUB_TOKEN scope; if that is read-only, every promotion fails with
+# "Resource not accessible by integration" — which is exactly what happened for
+# 39 consecutive runs before #173.
+permissions:
+  issues: write
+
 jobs:
   promote:
     runs-on: ubuntu-latest
@@ -107,6 +114,7 @@ jobs:
             // The sync-labels-to-board Action handles the board field update.
             // Label mutual exclusion (removing board:todo) is also handled there.
             let promoted = 0;
+            const failures = [];
 
             for (const candidate of promotionCandidates) {
               try {
@@ -131,10 +139,25 @@ jobs:
                 );
                 promoted++;
               } catch (e) {
-                core.warning(
+                // NOT a warning. This workflow exists to make a state change;
+                // if the change did not happen, the run has failed. A green
+                // check on a no-op automation is worse than an outage, because
+                // the only visible signal says everything is fine. (#173)
+                failures.push(`#${candidate.number}: ${e.message}`);
+                core.error(
                   `Failed to promote #${candidate.number}: ${e.message}`
                 );
               }
             }
 
             core.info(`\nDone! Promoted ${promoted} issues to Ready.`);
+
+            if (failures.length > 0) {
+              core.setFailed(
+                `${failures.length} of ${promotionCandidates.length} promotions failed:\n  ` +
+                failures.join('\n  ') +
+                `\n\nIf this reads "Resource not accessible by integration", the job ` +
+                `lacks issues:write — check the permissions block and the repository's ` +
+                `default workflow permissions.`
+              );
+            }
