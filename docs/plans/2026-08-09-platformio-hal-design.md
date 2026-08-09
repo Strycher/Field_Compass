@@ -1,189 +1,155 @@
-# PlatformIO Migration + Hardware Abstraction — Design Plan
+# PlatformIO Migration + Display Portability — Design Plan
 
-**Issue:** #151
-**Status:** DRAFT — awaiting human approval. No child epics created yet.
-**Date:** 2026-08-09
+**Feature:** #151
+**Status:** Approved 2026-08-09. Epics created.
+**Revision:** 2 — narrowed scope; driver fork dropped; LovyanGFX added.
 
 ---
 
-## Initiative
+## Goal
 
-**Field Compass becomes a hardware-flexible firmware platform.**
+Make the build reproducible off one machine, and make the display a
+*configuration* rather than a compile-time weld — so components can change
+without the firmware fighting back.
 
-Two problems, one solution path:
-
-1. **The build is not reproducible.** Four project-critical files live outside
-   git, in the Arduino sketchbook. One of them
-   (`TFT_Drivers/ST7796_Rotation.h`) is a *patched vendor source file* that any
-   library upgrade silently reverts. The firmware builds on exactly one PC.
-2. **The firmware is welded to one hardware stack.** Components are about to
-   change. Today a component swap means editing an 8,700-line `.ino` and hoping.
-
-This initiative is strategy, not a GitHub issue. The Feature (#151) and its
-epics are where the work lives.
-
-## Feature label
-
-`feature:platform-modernization`
+Deliberately narrowed. The `.ino` split and a full hardware-abstraction layer
+are **out of scope** for now (see *Deferred*).
 
 ---
 
 ## Evidence base
 
-Gathered 2026-08-09, this session:
+Gathered 2026-08-09:
 
 | Finding | Evidence |
 |---|---|
 | Sketchbook is OneDrive-redirected | `arduino-cli config get directories.user` → `C:\Users\stryc\OneDrive\Documents\Arduino` |
 | LVGL config outside git | `libraries/lv_conf.h`, 52 KB |
-| Active display setup outside git | `User_Setup_Select.h:30` includes `<User_Setups/Setup_Field_Compass_ESP32S3_ST7789.h>` — filename says ST7789, panel is ST7796 |
-| **Vendor library source is patched** | `TFT_Drivers/ST7796_Rotation.h` carries project-authored comments swapping rotation pairs |
-| No CI gate exists | `.github/workflows/` has no compile workflow; `gh pr checks` → "no checks reported" on #145 and #148 |
-| Scale of the single file | 8,702 lines, 162 top-level functions, ~1,550 `lv_*` call sites, 47 `SD.` and 27 `bme` references |
-| pioarduino already standard here | 25 `platformio.ini` files under `C:\Dev`; meshcore/Crosswire pin `pioarduino/platform-espressif32` release `53.03.13-1` |
+| Display setup outside git | `User_Setup_Select.h:30` → `Setup_Field_Compass_ESP32S3_ST7789.h` (name says ST7789; panel is ST7796) |
+| Vendor library source is patched | `TFT_Drivers/ST7796_Rotation.h`, project-authored rotation swap |
+| **The patch is unnecessary** | Its `case 1` writes `MX\|MY\|MV\|COLOR_ORDER` — identical to stock `case 3`. Source calls `setRotation(1)` once (line 1353) and never uses rotations 4–7 |
+| Display coupling is thin | 12 distinct `tft.*` methods, ~25 call sites. LVGL does the drawing |
+| No CI gate | `.github/workflows/` has no compile workflow; `gh pr checks` → "no checks reported" on #145, #148 |
+| pioarduino already standard here | 25 `platformio.ini` under `C:\Dev`; meshcore/Crosswire pin release `53.03.13-1` |
+
+### The rotation finding, in full
+
+`ST7796_Rotation.h` was patched because the Hosyond MSP3526 panel is mounted 180°
+from TFT_eSPI's assumption. The patch swaps MADCTL values between complementary
+rotation pairs — its own comment reads *"case 1: Landscape — uses Bodmer's
+original rotation 3 MADCTL."*
+
+Since the firmware only ever calls `setRotation(1)`, **stock TFT_eSPI with
+`setRotation(3)` produces the identical MADCTL byte and identical width/height.**
+A one-line source change replaces a maintained fork of a third-party library.
+
+This must be verified on hardware before the patched library is discarded.
 
 ---
 
-## Sequencing rationale
+## Sequencing
 
 ```
-E1 vendor config ──▶ E2 PlatformIO ──▶ E3 CI gate ──▶ E4 translation units ──▶ E5 HAL
-                            │
-                            └──▶ #147 credential provisioning (needs build flags)
+A: stop depending on patched/external config
+     │
+     ▼
+B: PlatformIO + pioarduino  ──────▶  #147 credential provisioning (needs build flags)
+     │
+     ▼
+C: CI compile gate (closes #150)
+     │
+     ▼
+D: TFT_eSPI → LovyanGFX
 ```
 
-One choice in this order matters more than the rest:
+Two rules drive this order:
 
-> **The CI gate lands BEFORE the refactoring epics, not after.**
-
-E4 and E5 move thousands of lines of working firmware. Doing that without an
-automated compile gate means every mistake is found by a human flashing a board.
-CI is cheap once the build is reproducible (E2), so it goes third — as a safety
-net for the risky work, not a victory lap after it.
-
-`arduino-cli` keeps working in parallel until E2's integration test passes.
-There is always a path back.
+1. **CI before the display swap.** D changes the performance-critical LVGL flush
+   path. It gets a safety net first.
+2. **One variable at a time.** B and D are *not* combined. If a parity check
+   fails after changing both the toolchain and the display library, the failure
+   is unattributable.
 
 ---
 
-## Epic 1 — Reproducible build: vendor external config into the repo
+## Epic A — Stop depending on patched and external config
 
-Independently valuable, low risk, and everything later depends on it. Still
-`arduino-cli` at the end of this epic — no toolchain change yet.
+Still `arduino-cli`. No toolchain change. Removes the two hardest external
+dependencies; the `User_Setup*.h` dependency dies in Epic B via `build_flags`.
 
-| # | Task | Files |
-|---|---|---|
-| 1.1 | Vendor `lv_conf.h` into `include/`; document how the build finds it | 2 |
-| 1.2 | Vendor the active TFT_eSPI setup header; decide + document the `User_Setup_Select.h` strategy | 2 |
-| 1.3 | **Capture the `ST7796_Rotation.h` patch** — see open decision below. Must record *why* the rotation pairs are swapped; that rationale exists only as a code comment on one machine | 2–3 |
-| 1.4 | Record exact installed library versions as a manifest — the evidence base for pinning in 2.2 | 1 |
-| 1.5 | Rename the setup header: says `ST7789`, panel is `ST7796` | 1 |
-| 1.6 | **Integration test:** move the OneDrive library config aside, build from a clean checkout, confirm success | — |
+| # | Task |
+|---|---|
+| A1 | Replace the rotation patch with `setRotation(3)` + a comment recording *why* (panel mounted 180°). Reinstall stock TFT_eSPI. **Hardware-verify orientation before discarding the patched copy** |
+| A2 | Vendor `lv_conf.h` into `include/`; document how the build resolves it |
+| A3 | Record exact installed library versions as a manifest — the evidence base for pinning in B3 |
+| A4 | **Integration test:** stock TFT_eSPI + in-repo `lv_conf.h` → build, flash, verify orientation and UI |
 
-**Open decision (1.3).** Vendoring the whole TFT_eSPI driver into `lib/` forks it
-from upstream and you own the maintenance. A patch script keeps upstream but is
-fragile across versions. Recommendation: **vendor it** — the patch is small, the
-library is stable, and a fork you can see beats a patch that silently fails.
-Owner's call.
-
-## Epic 2 — PlatformIO / pioarduino build
-
-Platform string, matching the meshcore family already in `C:\Dev`:
+## Epic B — PlatformIO / pioarduino
 
 ```ini
 platform = https://github.com/pioarduino/platform-espressif32/releases/download/53.03.13-1/platform-espressif32.zip
 ```
 
-Not `platformio/espressif32` — Espressif stopped maintaining PlatformIO support
-and the official platform tops out at Arduino core 2.x. FC is on 3.3.8.
-
-| # | Task | Notes |
-|---|---|---|
-| 2.1 | `platformio.ini`: pioarduino platform, board, PSRAM + partition + flash flags | `board_build.arduino.memory_type` must be right or PSRAM silently vanishes and the LVGL draw buffers die |
-| 2.2 | Pin `lib_deps` to versions captured in 1.4 | |
-| 2.3 | Source layout `src/` / `include/` / `lib/`, `.ino` still compiling as-is | No logic change |
-| 2.4 | Build-time `-DFW_VERSION` from `git describe` | Closes the `0.51.1` vs `v0.51.10` drift |
-| 2.5 | **Parity check** vs the arduino-cli build: flash size, RAM size, boot log | Evidence, not vibes |
-| 2.6 | **Integration test:** flash the PIO artifact; verify display, touch, GPS, IMU, SD, FRAM, sensors, web | Human sign-off. `arduino-cli` retired only after this passes |
-
-## Epic 3 — CI compile gate (closes #150)
+Not `platformio/espressif32` — Espressif stopped maintaining PlatformIO support;
+the official platform tops out at Arduino core 2.x. FC is on 3.3.8.
 
 | # | Task |
 |---|---|
-| 3.1 | GH Actions workflow running `pio run` over the env matrix, on firmware-touching paths |
-| 3.2 | Cache the platform + libraries — a full S3 LVGL build is slow |
-| 3.3 | **Verify the gate actually gates:** push a deliberate syntax error, confirm red, revert |
-| 3.4 | Correct the CI-gate row in `CLAUDE.md` (it claims a gate that never existed) |
-| 3.5 | **Integration test:** throwaway PR confirms the check is required and blocking |
+| B1 | `platformio.ini`: platform, board, PSRAM + partition + flash flags. `board_build.arduino.memory_type` must be right or PSRAM silently vanishes and the LVGL draw buffers die |
+| B2 | TFT_eSPI configuration via `build_flags` — retires `User_Setup.h` / `User_Setup_Select.h` / `Setup_Field_Compass_*.h` |
+| B3 | Pin `lib_deps` to the A3 manifest |
+| B4 | `src/` / `include/` / `lib/` layout; `.ino` still compiling as-is, no logic change |
+| B5 | Build-time `-DFW_VERSION` from `git describe` — closes the `0.51.1` vs `v0.51.10` drift |
+| B6 | **Parity check** vs the arduino-cli binary: flash size, RAM size, boot log |
+| B7 | **Integration test:** flash the PIO artifact; verify display, touch, GPS, IMU, SD, FRAM, sensors, web. `arduino-cli` retired only after this passes |
 
-## Epic 4 — `.ino` → translation units
-
-The risky one. Arduino's preprocessor auto-generates function prototypes today;
-that goes away.
-
-> **File-convergence warning.** Every extraction touches `main.cpp`. These tasks
-> MUST be strictly serialized via `depends-on`. No parallel agents.
+## Epic C — CI compile gate (closes #150)
 
 | # | Task |
 |---|---|
-| 4.1 | `.ino` → `src/main.cpp` with explicit prototypes. Mechanical, zero logic change; becomes the size/behaviour baseline |
-| 4.2 | Extract storage (SD + FRAM) → `src/storage/` |
-| 4.3 | Extract sensors (SHT41, BME688, IMU, battery) → `src/sensors/` |
-| 4.4 | Extract GPS/NMEA → `src/gnss/` |
-| 4.5 | Extract web server → `src/web/` |
-| 4.6 | Extract UI/LVGL screens → `src/ui/` — largest, likely splits per screen |
-| 4.7 | **Integration test:** full hardware pass + flash/RAM comparison against the 4.1 baseline |
+| C1 | GH Actions workflow running `pio run`, on firmware-touching paths |
+| C2 | Cache platform + libraries — a full S3 LVGL build is slow |
+| C3 | **Verify the gate gates:** push a deliberate syntax error, confirm red, revert |
+| C4 | Correct the CI-gate row in `CLAUDE.md` (it claims a gate that never existed) |
+| C5 | **Integration test:** throwaway PR confirms the check is required and blocking |
 
-## Epic 5 — Hardware Abstraction Layer
+## Epic D — TFT_eSPI → LovyanGFX
 
-The epic that serves *"I intend to change components rapidly."* Two mechanisms,
-solving different problems:
+**Why:** LovyanGFX configures the panel at *runtime*, in a config struct in our
+own source. A second panel becomes a config struct rather than a rebuild of
+library headers — and it drives SSD1306/SH110x too, bringing the OLEDs under one
+driver instead of a separate `Adafruit_SH110X` path.
 
-- **Compile-time — board profiles.** One header per hardware variant holding
-  every pin, I2C address, and a capability list; PlatformIO `[env:]` selects it.
-  This makes a different display or MCU a *build target* rather than a branch.
-- **Runtime — capability discovery.** An I2C probe at boot builds a
-  present/absent map. A sensor that is unplugged, swapped, or readdressed
-  degrades the UI gracefully instead of hanging or showing stale values. **This
-  is what makes rapid swapping survivable** — you can pull a part and still boot.
+The migration is small: 12 methods, ~25 sites, all with direct equivalents.
 
 | # | Task |
 |---|---|
-| 5.1 | `include/boards/fc_v1.h` — every pin + I2C address currently scattered through `main` collected into one profile (settles #149) |
-| 5.2 | Runtime I2C probe → capability flags; boot log states what was found and what was missing, loudly (SAFELANE §6) |
-| 5.3 | UI degradation: an absent sensor renders unavailable, never a stale or zero value |
-| 5.4 | Sensor interface + adapters for current parts (SHT41, BME688, LSM6DSOX/LIS3MDL, MAX17048) |
-| 5.5 | Input abstraction: touch / encoder / buttons behind one interface — the seam MCP23017 + joystick plug into |
-| 5.6 | Display abstraction. **Hardest.** TFT_eSPI binds pins at compile time via its own headers, so a second panel means a second env, not a runtime switch |
-| 5.7 | Second `[env:]` proving a variant builds — target TBD |
-| 5.8 | **Integration test:** both envs build; primary hardware fully verified; one sensor physically unplugged to prove graceful degradation |
-
-### ⚠ Blocked on input — which components were purchased?
-
-Tasks 5.4–5.7 cannot be specified without this. The BOM lists MCP23017, tactile
-buttons, and the 5-way joystick as *evaluating / not ordered*, and the ambient
-light sensor as *wired, not yet in firmware*.
-
-- **If input hardware** (buttons / joystick / MCP23017): 5.5 carries the epic,
-  5.6 is deferrable, epic is moderate.
-- **If the display or MCU changed:** 5.6 becomes the centre of gravity, likely
-  needs its own epic, and **LovyanGFX is worth evaluating against TFT_eSPI** —
-  Desk Command Center already uses it and it handles multi-panel far better.
+| D1 | LovyanGFX panel + bus config struct for ST7796 on the existing SPI pins |
+| D2 | Port the LVGL flush callback. **Byte-swap semantics differ** — `pushPixels` vs `pushColors(..., true)`; wrong here shows up as wrong colours |
+| D3 | Port boot splash, `init`, `setRotation`, and the MIPI DCS sleep in/out commands |
+| D4 | **Re-verify 80 MHz SPI + SD bus sharing (#116).** Those workarounds were tuned against TFT_eSPI's DMA behaviour |
+| D5 | Remove the TFT_eSPI dependency and its build flags |
+| D6 | **Integration test:** full hardware pass — orientation, colour accuracy, redraw performance, SD coexistence under load |
 
 ---
 
-## Out of scope
+## Deferred (explicitly not now)
 
-- **#147** (WiFi credentials in firmware) — slots after E2, once build flags
-  and/or SD-backed config exist. Doing it earlier means doing it twice.
-- **#149** (CLAUDE.md pin table) — settled naturally by task 5.1.
+| Item | Why deferred | Notes for later |
+|---|---|---|
+| `.ino` → translation units | High risk, no forcing need yet | 8,702 lines, 162 functions. Must be strictly serialized — every extraction touches one file |
+| Full hardware abstraction layer | Epic D delivers most of the display-portability benefit far cheaper | Revisit if sensor/input churn actually starts hurting |
+| SparkFun uBlox GPS | Not blocking | **Two changes, not one:** dropping the PA1616D also drops its backup-RTC role. The Adalogger PCF8523 becomes the timekeeper |
+| Buttons / dial / joystick / MCP23017 | Still being chosen | 3 free GPIOs (D11/D12/D13). More than 3 inputs needs the expander |
+| Additional OLEDs | Lands naturally with Epic D | LovyanGFX drives SH110x/SSD1306 |
+| LoRa | Whole separate initiative | MeshCore fork and Meshtastic experience already exist under `C:\Dev` |
 
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
-| PIO build differs subtly from arduino-cli (PSRAM, partitions, flash mode) | Task 2.5 parity check; arduino-cli kept alive until 2.6 signs off |
-| Losing the ST7796 rotation-patch rationale | Task 1.3 requires recording *why*, not just *what* |
-| Epic 4 breaking working firmware | CI gate (E3) lands first; 4.1 is behaviour-neutral and becomes the baseline |
-| Parallelism causing merge hell in one large file | E4 strictly serialized via `depends-on` |
-| Scope drift into "rewrite the firmware" | Every epic ends in a hardware integration test with human sign-off |
+| `setRotation(3)` assumption wrong on real hardware | A1 requires hardware verification *before* the patched library is discarded |
+| PIO build differs subtly (PSRAM, partitions, flash mode) | B6 parity check; arduino-cli alive until B7 signs off |
+| LovyanGFX colour/byte-order regression | D2 called out explicitly; D6 verifies colour accuracy |
+| SD/TFT bus contention returning under LovyanGFX | D4 is a dedicated task, not an afterthought |
+| Scope drift back into "rewrite the firmware" | Deferred list above is binding; every epic ends in hardware sign-off |
