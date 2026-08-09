@@ -92,6 +92,10 @@ PHASE*.md
 /serial_capture.ps1
 /serial_diag.ps1
 
+# Local secrets — WiFi credentials etc. (#146). NEVER commit.
+HARDWARE.local.md
+CLAUDE.local.md
+
 # Canonical governance artifacts — synced from DifferentWire/standards by preflight.
 # Local/generated; standards is their source of truth. Do NOT track. (standards#249)
 .claude/commands/bootstrap.md
