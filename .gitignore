@@ -123,3 +123,6 @@ scripts/llm-consult.py
 # Python bytecode (pio-flash + tests)
 __pycache__/
 *.py[cod]
+
+# PlatformIO build output
+.pio/
