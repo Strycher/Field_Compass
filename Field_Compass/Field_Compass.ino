@@ -1350,7 +1350,17 @@ void initTFT() {
   pinMode(TFT_BL, OUTPUT);
   analogWrite(TFT_BL, TFT_BL_PWM);
 
-  tft.setRotation(1);  // Landscape mode (480x320) — rotation 1 for Hosyond MSP3526 panel
+  // Landscape mode (480x320). Rotation 3, NOT 1 — the Hosyond MSP3526 panel is
+  // mounted 180 degrees from TFT_eSPI's assumption, so the orientation we want is
+  // the complement of the nominal landscape rotation. Rotation 3 writes MADCTL
+  // MX|MY|MV|COLOR_ORDER, which is what this panel needs.
+  //
+  // This previously required patching TFT_eSPI's TFT_Drivers/ST7796_Rotation.h to
+  // swap the complementary rotation pairs, so that setRotation(1) emitted case 3's
+  // MADCTL. That patch lived only in the local Arduino libraries folder, outside
+  // git, and any library upgrade silently reverted it. Stock case 3 is byte-identical
+  // to what the patch made case 1, so this one-line change replaces the fork. (#157)
+  tft.setRotation(3);
   tft.fillScreen(TFT_RED);  // Flash red to confirm TFT is working
   delay(100);
   tft.fillScreen(COLOR_BG);
