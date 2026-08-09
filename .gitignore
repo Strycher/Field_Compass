@@ -92,9 +92,10 @@ PHASE*.md
 /serial_capture.ps1
 /serial_diag.ps1
 
-# Local secrets — WiFi credentials etc. (#146). NEVER commit.
-HARDWARE.local.md
-CLAUDE.local.md
+# Local secrets and per-host overrides — WiFi credentials etc. (#146).
+# NEVER commit. Root-anchored, and the trailing * catches .bak / editor
+# swap copies (HARDWARE.local.md~, HARDWARE.local.md.bak).
+/*.local.md*
 
 # Canonical governance artifacts — synced from DifferentWire/standards by preflight.
 # Local/generated; standards is their source of truth. Do NOT track. (standards#249)
