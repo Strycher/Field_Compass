@@ -78,9 +78,8 @@ PHASE*.md
 /TFT_Test/
 /SD1/
 
-# Local test fixtures and captures
+# Local captures and scratch output
 /test_data/
-/docs/test_gpx/
 /logs/
 /crash_log.txt
 /serial_diag_output.txt
@@ -92,9 +91,6 @@ PHASE*.md
 /read_serial.ps1
 /serial_capture.ps1
 /serial_diag.ps1
-
-# Mechanical drawings / enclosure working files (binary, local)
-/hardware/
 
 # Canonical governance artifacts — synced from DifferentWire/standards by preflight.
 # Local/generated; standards is their source of truth. Do NOT track. (standards#249)
