@@ -58,6 +58,7 @@ jobs:
             }
 
             // ── Mutual exclusion: remove other labels in the same group ─
+            const labelRemovalFailures = [];
             const conflicting = issueLabels.filter(
               l => l.startsWith(triggerPrefix) && l !== triggerLabel
             );
@@ -71,7 +72,16 @@ jobs:
                 });
                 core.info(`Removed conflicting label: ${oldLabel}`);
               } catch (e) {
-                core.warning(`Could not remove label "${oldLabel}": ${e.message}`);
+                // A 404 is benign — the label was already gone, which is the
+                // desired end state. Anything else means the issue is left
+                // carrying two labels from the same mutually-exclusive group,
+                // and that must be visible rather than warned past. (#175)
+                if (e.status === 404) {
+                  core.info(`Label "${oldLabel}" already absent — nothing to remove`);
+                } else {
+                  labelRemovalFailures.push(`${oldLabel}: ${e.message}`);
+                  core.error(`Could not remove label "${oldLabel}": ${e.message}`);
+                }
               }
             }
 
@@ -115,8 +125,28 @@ jobs:
             `;
 
             // ── Sync ALL board/priority labels ──────────────────────
-            const boardLabel = issueLabels.find(l => l.startsWith('board:') && STATUS_OPTIONS[l]);
-            const priorityLabel = issueLabels.find(l => l.startsWith('priority:') && PRIORITY_OPTIONS[l]);
+            // issueLabels is the webhook payload snapshot, captured BEFORE the
+            // mutual-exclusion removal above ran. It therefore still contains
+            // the label we just deleted, and .find() returns whichever appears
+            // first — an order GitHub does not guarantee by recency.
+            //
+            // That set the Status field to the *removed* label. Observed on
+            // #173: added board:done, removed board:in-progress, then wrote
+            // Status = In Progress. Filter the removed labels out first so the
+            // field reflects what the issue actually carries. (#175)
+            const effectiveLabels = issueLabels.filter(l => !conflicting.includes(l));
+
+            // For the group that fired this run, the trigger label is
+            // authoritative — it is what was just set, and it stays correct
+            // even if a removal above failed and left a stale label behind.
+            // The other group falls back to the effective set.
+            const boardLabel = (triggerPrefix === 'board:' && STATUS_OPTIONS[triggerLabel])
+              ? triggerLabel
+              : effectiveLabels.find(l => l.startsWith('board:') && STATUS_OPTIONS[l]);
+
+            const priorityLabel = (triggerPrefix === 'priority:' && PRIORITY_OPTIONS[triggerLabel])
+              ? triggerLabel
+              : effectiveLabels.find(l => l.startsWith('priority:') && PRIORITY_OPTIONS[l]);
 
             if (boardLabel) {
               try {
@@ -147,3 +177,13 @@ jobs:
             }
 
             core.info(`Done syncing #${issueNumber}`);
+
+            if (labelRemovalFailures.length > 0) {
+              core.setFailed(
+                `#${issueNumber} is left carrying conflicting labels — ` +
+                `mutual exclusion failed for:\n  ` +
+                labelRemovalFailures.join('\n  ') +
+                `\n\nThe board Status was still set from the trigger label, so ` +
+                `the board is correct, but the labels disagree with it.`
+              );
+            }
