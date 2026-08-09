@@ -25,6 +25,7 @@ Behavior
 Tier A patterns blocked (state-changing, every invocation resets the chip)
 - esptool / esptool.py / esptool.exe / python -m esptool ANY subcommand
 - pio run -t upload | -t erase | -t uploadfs
+- arduino-cli upload | burn-bootloader | compile -u/--upload      (#179)
 - meshtastic --reboot | --configure | --set | --ch-set
 - raw esptool write_flash, erase_flash, erase_region (already covered above)
 
@@ -65,6 +66,15 @@ WRAPPER_PATH = "scripts/pio-flash"
 # Whitespace alone is NOT enough - whitespace happens inside string arguments.
 CMD_BOUNDARY = r"(?:^|[;&|`]\s*|(?:&&|\|\|)\s*|\$\(\s*)"
 
+# arduino-cli, optionally as a quoted absolute path (#179). The optional group
+# consumes an opening quote plus a path ending in a separator, so both of these
+# match when anchored on CMD_BOUNDARY:
+#     arduino-cli upload ...
+#     "C:\Program Files\Arduino CLI\arduino-cli.exe" upload ...
+# and neither of these does (no boundary before the quote):
+#     gh issue comment --body "run arduino-cli upload to flash"
+ARDUINO_CLI = r"(?:[\"'][^\"';&|]*[\\/])?arduino-cli(?:\.exe)?[\"']?"
+
 # Patterns: (regex, human_name, suggested_subcommand)
 # Patterns are matched against the FULL command line.
 TIER_A_PATTERNS = [
@@ -85,6 +95,29 @@ TIER_A_PATTERNS = [
         re.compile(CMD_BOUNDARY + r"meshtastic\b[^;&|]*--(?:reboot|configure|set|ch-set)\b"),
         "meshtastic state-changing flag (--reboot/--configure/--set/--ch-set)",
         f"Use {WRAPPER_PATH} read-mac for identity then meshtastic via the wrapper (subcommand pending)",
+    ),
+    # ---- Field Compass: arduino-cli write paths (#179) -------------------
+    # This project flashes with arduino-cli, not pio, until epic #154 lands.
+    # Without these the hook would block esptool (used only for BOOTLOADER
+    # ENTRY) while leaving the command that actually writes firmware wide
+    # open -- protection theatre.
+    #
+    # ARDUINO_CLI allows an optional quoted, path-prefixed form because that is
+    # how it is really invoked here:
+    #     "C:\Program Files\Arduino CLI\arduino-cli.exe" upload ...
+    # The leading quote must still sit on a CMD_BOUNDARY, so the trigger words
+    # inside a quoted ARGUMENT -- e.g. gh issue comment --body "run
+    # arduino-cli upload" -- do not fire. That false positive is not
+    # hypothetical; this session wrote exactly that text many times.
+    (
+        re.compile(CMD_BOUNDARY + ARDUINO_CLI + r"[^;&|]*?\b(?:upload|burn-bootloader)\b"),
+        "arduino-cli upload / burn-bootloader",
+        f"{WRAPPER_PATH} preview <device> --artifact <bin>  then  {WRAPPER_PATH} confirm <device> --token <file>",
+    ),
+    (
+        re.compile(CMD_BOUNDARY + ARDUINO_CLI + r"[^;&|]*?\bcompile\b[^;&|]*?(?:^|\s)(?:-u|--upload)\b"),
+        "arduino-cli compile with -u/--upload",
+        f"Compile without -u, then {WRAPPER_PATH} preview <device> --artifact <bin>",
     ),
 ]
 

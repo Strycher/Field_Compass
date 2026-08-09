@@ -47,6 +47,16 @@
             "timeout": 5000
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-raw-flash.py\"",
+            "timeout": 5000
+          }
+        ]
       }
     ]
   }
