@@ -29,13 +29,31 @@ from __future__ import annotations
 import argparse
 import hashlib
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 REPO_COPY = Path(__file__).resolve().parent.parent / "include" / "lv_conf.h"
 
-# arduino-cli's `directories.user`. Overridable for a non-default sketchbook.
-DEFAULT_SKETCHBOOK = Path.home() / "OneDrive" / "Documents" / "Arduino"
+ARDUINO_CLI = r"C:\Program Files\Arduino CLI\arduino-cli.exe"
+
+
+def discover_sketchbook() -> Path | None:
+    """Ask arduino-cli where the sketchbook is rather than hardcoding a path.
+
+    The sketchbook is wherever `directories.user` points — commonly a
+    OneDrive-redirected Documents folder on Windows, but that is a property of
+    the machine, not something this script should assume.
+    """
+    for exe in (ARDUINO_CLI, "arduino-cli"):
+        try:
+            out = subprocess.run([exe, "config", "get", "directories.user"],
+                                 capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if out.returncode == 0 and out.stdout.strip():
+            return Path(out.stdout.strip())
+    return None
 
 
 def digest(path: Path) -> str:
@@ -45,11 +63,18 @@ def digest(path: Path) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--check", action="store_true", help="report drift, change nothing, exit 1 if they differ")
-    ap.add_argument("--sketchbook", type=Path, default=DEFAULT_SKETCHBOOK,
-                    help=f"Arduino sketchbook dir (default: {DEFAULT_SKETCHBOOK})")
+    ap.add_argument("--sketchbook", type=Path, default=None,
+                    help="Arduino sketchbook dir (default: ask arduino-cli for directories.user)")
     args = ap.parse_args()
 
-    target = args.sketchbook / "libraries" / "lv_conf.h"
+    sketchbook = args.sketchbook or discover_sketchbook()
+    if sketchbook is None:
+        print("FAIL: could not determine the Arduino sketchbook directory.", file=sys.stderr)
+        print("      arduino-cli was not runnable or returned nothing for directories.user.", file=sys.stderr)
+        print("      Pass --sketchbook <path> explicitly.", file=sys.stderr)
+        return 2
+
+    target = sketchbook / "libraries" / "lv_conf.h"
 
     if not REPO_COPY.is_file():
         print(f"FAIL: repo copy missing: {REPO_COPY}", file=sys.stderr)
