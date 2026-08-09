@@ -233,11 +233,14 @@ The Feather form factor breaks out 21 GPIO pins on its headers. **18 are in use;
 
 ## WiFi Configuration
 
-| Network | SSID | Password | Band |
-|---------|------|----------|------|
-| Home 2.4G | tsunami | Ch33t0s! | 2.4 GHz |
-| Home 5G | tsunami_5G | Ch33t0s! | 5 GHz |
-| Mobile Hotspot | SM-N950UD60 | 5132547071 | 2.4 GHz |
+**Credentials are not stored in this repository.** SSIDs and passwords live in
+`HARDWARE.local.md` at the repo root — untracked and gitignored. See CLAUDE-BASE
+§ *Security Rules*: no secrets in the repo, ever.
+
+The firmware is provisioned against three networks: a home 2.4 GHz AP, a home
+5 GHz AP, and a phone hotspot for field use. The 2.4 GHz AP is the one that
+matters for the ESP32-S3 — its radio is 2.4 GHz only, so the 5 GHz entry exists
+for the bench workstation, not the device.
 
 ## Mechanical
 
