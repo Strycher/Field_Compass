@@ -68,6 +68,34 @@ PHASE*.md
 # Per-session identity records (runtime, local)
 .claude/sessions/
 
+# Vendor SDK / datasheet archives (large, re-downloadable from vendor)
+/3.5inch_SPI_Module_*.zip
+/Bosch-BSEC2-Library-*.zip
+/rufus-*.exe
+
+# Standalone hardware bring-up sketches (not part of the firmware build)
+/MinimalTest/
+/TFT_Test/
+/SD1/
+
+# Local test fixtures and captures
+/test_data/
+/docs/test_gpx/
+/logs/
+/crash_log.txt
+/serial_diag_output.txt
+
+# Serial/GPS diagnostic scratch scripts (local bench tooling)
+/crash_capture.py
+/serial_read.py
+/poll_gps.ps1
+/read_serial.ps1
+/serial_capture.ps1
+/serial_diag.ps1
+
+# Mechanical drawings / enclosure working files (binary, local)
+/hardware/
+
 # Canonical governance artifacts — synced from DifferentWire/standards by preflight.
 # Local/generated; standards is their source of truth. Do NOT track. (standards#249)
 .claude/commands/bootstrap.md
