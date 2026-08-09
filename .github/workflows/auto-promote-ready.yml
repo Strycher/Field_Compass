@@ -18,6 +18,9 @@ on:
 # default GITHUB_TOKEN scope; if that is read-only, every promotion fails with
 # "Resource not accessible by integration" — which is exactly what happened for
 # 39 consecutive runs before #173.
+# Retained even though the job now passes PROJECT_PAT: this block governs the
+# default GITHUB_TOKEN, so it keeps the job working if the PAT is ever removed
+# or expires — which PROJECT_PAT already did once, silently, for three weeks.
 permissions:
   issues: write
 
@@ -28,7 +31,22 @@ jobs:
       - name: Promote unblocked issues to Ready
         uses: actions/github-script@v7
         with:
-          # Default GITHUB_TOKEN is sufficient — REST only, no GraphQL.
+          # PROJECT_PAT, not the default GITHUB_TOKEN.
+          #
+          # GitHub deliberately does NOT trigger workflows from events caused by
+          # the default GITHUB_TOKEN. So when this job added `board:ready`, the
+          # `labeled` event was suppressed and sync-labels-to-board never ran —
+          # leaving every auto-promoted issue carrying BOTH `board:todo` and
+          # `board:ready`, with its project Status field never updated.
+          #
+          # Observed on #184: promoted at 19:28:07, no sync run followed, board
+          # still read "Todo" while the issue was Ready. #147 and #154 had the
+          # same history; the manual backfill in #175 masked it because a label
+          # added by a human DOES trigger the sync.
+          #
+          # REST-only is still true, so the comment above was not wrong about
+          # scope — it was wrong about consequences. (#177)
+          github-token: ${{ secrets.PROJECT_PAT }}
           script: |
             const OWNER = 'Strycher';
             const REPO = 'Field_Compass';
