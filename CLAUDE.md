@@ -4,6 +4,23 @@
 > Read and apply: `C:\Dev\DifferentWire\standards\CLAUDE-BASE.md`, `C:\Dev\DifferentWire\standards\SAFELANE.md`
 > Credential inventory: `C:\Dev\.credentials.env`
 
+## ⚠ Diagnosing hardware? Read `docs/DIAGNOSTICS.md` FIRST
+
+The device publishes its own health over WiFi at `http://fieldcompass.local/` —
+20 endpoints including per-peripheral OK/N-A status, a JSON API, and downloadable
+SD-backed serial logs.
+
+```bash
+curl -s http://fieldcompass.local/diags | sed 's/<[^>]*>//g'
+```
+
+**Do this before asking a human to observe anything, capture serial, or press a
+button.** In #166 one request to `/diags` identified a dead SPI bus that a serial
+capture would not have shown as clearly. See [`docs/DIAGNOSTICS.md`](docs/DIAGNOSTICS.md)
+for the endpoint reference, the triage order, and the **button-free flash
+procedure** (the BOOT button is buried inside the enclosure — never ask for a
+physical press).
+
 ## Project Overview
 
 | Field | Value |
