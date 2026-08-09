@@ -119,3 +119,7 @@ scripts/llm-consult.py
 .claude/hooks/checkpoint_write.py
 .claude/hooks/block-skip-bypass.py
 .claude/hooks/dw-approve-bypass.py
+
+# Python bytecode (pio-flash + tests)
+__pycache__/
+*.py[cod]
