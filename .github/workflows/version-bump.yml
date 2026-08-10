@@ -16,6 +16,23 @@ name: Version Bump
 on:
   push:
     branches: [main]
+    # FIRMWARE CHANGES ONLY (#191).
+    #
+    # This used to tag every merge. On 2026-08-09 that produced 14 tags against
+    # ONE firmware commit — docs, workflow fixes, hook wiring and a flash-guard
+    # script all got version tags, and v0.52.0 was a MINOR bump because a commit
+    # began with "feat:". Meanwhile FW_VERSION in the source read 0.51.1 and the
+    # firmware had not changed since 2026-03-02. The tags claimed releases that
+    # did not exist.
+    #
+    # These four paths are the ones that change the binary:
+    paths:
+      - 'Field_Compass/**'    # the source
+      - 'include/**'          # lv_conf.h — LVGL memory model (#158, #164)
+      - 'platformio.ini'      # partition table, PSRAM mode, build flags (#183)
+      - 'partitions/**'       # flash layout
+    # Deliberately excluded: docs/**, .github/**, .claude/**, scripts/**.
+    # None of them alter the firmware image, so none of them earn a version.
 
 concurrency:
   group: auto-version-bump
@@ -58,10 +75,17 @@ jobs:
         id: bump
         run: |
           MSG=$(git log -1 --pretty=%s)
+          BODY=$(git log -1 --pretty=%b)
           echo "Commit message: $MSG"
           PREFIX=$(echo "$MSG" | grep -oP '^\w+' | head -1)
 
-          if [ "$PREFIX" = "feat" ]; then
+          # MAJOR: conventional-commits breaking marker. Nothing bumped MAJOR
+          # before this — feat gave minor, everything else patch — so a breaking
+          # firmware change was indistinguishable from a typo fix. (#191)
+          if echo "$MSG" | grep -qE '^\w+(\([^)]*\))?!:' || echo "$BODY" | grep -q 'BREAKING CHANGE'; then
+            echo "type=major" >> "$GITHUB_OUTPUT"
+            echo "Bump type: MAJOR (breaking change)"
+          elif [ "$PREFIX" = "feat" ]; then
             echo "type=minor" >> "$GITHUB_OUTPUT"
             echo "Bump type: MINOR (new feature)"
           else
@@ -77,6 +101,7 @@ jobs:
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
 
           case "${{ steps.bump.outputs.type }}" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
             minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
             *)     PATCH=$((PATCH + 1)) ;;
           esac
@@ -90,8 +115,21 @@ jobs:
           NEW="${{ steps.new.outputs.tag }}"
 
           if git rev-parse "$NEW" >/dev/null 2>&1; then
-            echo "⏭️ Tag $NEW already exists — another run handled this bump"
-            exit 0
+            # FAIL, do not exit 0. (#191)
+            #
+            # Runs are serialised by the concurrency group above, so a queued
+            # run cannot legitimately collide — it pulls latest main and
+            # recomputes first. A collision therefore means the version
+            # calculation is wrong, and exiting 0 hid that behind a green check.
+            #
+            # This is the exact silent-skip shape of the 2026-03-29 incident in
+            # SAFELANE section 7: a bumper that ran 270 times, found the tag
+            # already present, and skipped silently every time while the version
+            # went stale.
+            echo "::error::Tag $NEW already exists. Runs are serialised, so this"
+            echo "::error::means the version calculation is wrong, not that a"
+            echo "::error::queued run raced. Current tag was ${{ steps.current.outputs.tag }}."
+            exit 1
           fi
 
           git tag -a "$NEW" -m "$NEW"
