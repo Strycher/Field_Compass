@@ -1,2 +1,28 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# ── Files that SHELL reads must be LF, always (#205) ────────────────────────
+# `* text=auto` above stores LF in the repo but checks out native line endings,
+# and this is a Windows box with core.autocrlf=true. So these arrive as CRLF,
+# and a carriage return is invisible until it changes behaviour.
+#
+# It already did. #201 added `.claude/hooks/dw-project` holding the Citadel
+# project name. The canonical pre-commit hook reads it with `read -r PROJECT`,
+# which does NOT strip the trailing \r, so the project name became
+# "Field_Compass\r" and the API query became a malformed URL:
+#
+#     curl ".../projects/Field_Compass\r/tasks"   ->  HTTP 000
+#     curl ".../projects/Field_Compass/tasks"     ->  HTTP 200
+#
+# pre-commit reads the empty response as a service outage and refuses every
+# commit with "Citadel unreachable" while Citadel is answering health checks
+# in 0.22s. The fix shipped broken and its verification passed, because the
+# file was tested as WRITTEN (LF) rather than as CHECKED OUT (CRLF).
+#
+# Shell scripts are the same hazard: bash on a CRLF script fails with the
+# famously unhelpful `$'\r': command not found`. Both tracked .sh files here
+# were CRLF.
+#
+# Nothing on this project needs CRLF, so pin LF wherever a shell will read it.
+.claude/hooks/dw-project text eol=lf
+*.sh                     text eol=lf
