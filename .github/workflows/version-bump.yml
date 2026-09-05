@@ -27,8 +27,9 @@ on:
     #
     # These four paths are the ones that change the binary:
     paths:
-      - 'Field_Compass/**'    # the source
+      - 'src/**'              # the source — moved from Field_Compass/ by B4 (#186)
       - 'include/**'          # lv_conf.h — LVGL memory model (#158, #164)
+      - 'lib/**'              # vendored libraries — compiled in, so they count (#186)
       - 'platformio.ini'      # partition table, PSRAM mode, build flags (#183)
       - 'partitions/**'       # flash layout
     # Deliberately excluded: docs/**, .github/**, .claude/**, scripts/**.
