@@ -40,7 +40,7 @@
  * - LV_STDLIB_RTTHREAD:    RT-Thread implementation
  * - LV_STDLIB_CUSTOM:      Implement the functions externally
  */
-/* CUSTOM, not BUILTIN — see Field_Compass/lv_psram_alloc.c and issue #164.
+/* CUSTOM, not BUILTIN — see src/lv_psram_alloc.c and issue #164.
  * BUILTIN declares its pool as a static array (`work_mem_int`) in internal DRAM.
  * At LV_MEM_SIZE 160KB that is 48% of the 333.8KB dram0_0_seg, and as of ESP32
  * core 3.3.8 it pushed the link over by 4,296 bytes — the firmware would not
