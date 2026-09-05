@@ -64,7 +64,22 @@ WRAPPER_PATH = "scripts/pio-flash"
 #   - After a backtick or $(...) command substitution opener
 #
 # Whitespace alone is NOT enough - whitespace happens inside string arguments.
-CMD_BOUNDARY = r"(?:^|[;&|`]\s*|(?:&&|\|\|)\s*|\$\(\s*)"
+# NOTE: the backtick is deliberately NOT a boundary character (#195).
+#
+# It was, and that made the hook fire on prose. A command wrapped in a markdown
+# code span — which is how every command appears in an issue body, PR
+# description, commit message or code comment in this repo — matched the
+# boundary and tripped the pattern. It blocked a memory-file edit containing
+# nothing but documentation text, and it would block the very documentation
+# that explains the flash procedure.
+#
+# Backtick command substitution is legacy shell syntax that nothing in this
+# project writes; $(...) is covered separately below and is what is actually
+# used. Dropping the backtick removes the false-positive class without
+# weakening any real protection.
+#
+# A guard that blocks legitimate work is a guard that gets switched off.
+CMD_BOUNDARY = r"(?:^|[;&|]\s*|(?:&&|\|\|)\s*|\$\(\s*)"
 
 # arduino-cli, optionally as a quoted absolute path (#179). The optional group
 # consumes an opening quote plus a path ending in a separator, so both of these
