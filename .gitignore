@@ -130,3 +130,13 @@ __pycache__/
 # Generated into the sketch dir by the pioarduino build (#183)
 Field_Compass/idf_component.yml
 Field_Compass/idf_component.yml.orig
+
+# Device state moved to C:\Dev\.field_compass (#198). These entries are a
+# backstop, not the mechanism: pio-flash resolves the fixed path directly and
+# never looks here. They exist so that a stray copy - a restored backup, a
+# rebase artefact, someone running an old pio-flash - cannot get recommitted
+# and quietly become a second source of truth again.
+hardware-devices.yaml
+flash-history.jsonl
+flash-backups/
+registry-backups/
