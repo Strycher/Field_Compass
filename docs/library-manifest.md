@@ -98,7 +98,44 @@ Two files are *not* library versions but are equally load-bearing:
 resolved — #157 replaced the patch with `setRotation(3)` in our own source, so
 the library is stock. Do not re-patch it.
 
-## Reproducing this capture
+## Final arduino-cli baseline (B4, #186) — cannot be regenerated
+
+Captured on **2026-09-05** from `main` at `b18886d`, immediately before B4 moved
+the firmware into `src/`. This is the **last** arduino-cli build of this tree.
+
+| build | Flash | RAM |
+|-------|-------|-----|
+| **arduino-cli** (this baseline) | 1,787,670 B (61%) | 106,372 B (32%) |
+| **PlatformIO** `pio run -e feather_s3` | 1,855,926 B (64.4%) | 103,232 B (31.5%) |
+| delta (PlatformIO − arduino-cli) | **+68,256 B** | **−3,140 B** |
+
+Both from the same source, and — deliberately — the same Arduino core 3.3.8, so
+this compares two build systems rather than two cores (`platformio.ini` pins
+pioarduino `55.03.38-1` for exactly this reason).
+
+**The deltas are unexplained and that is B6's job (#188).** Recorded here rather
+than hand-waved: PlatformIO produces a ~68 KB larger image while using ~3 KB
+less internal RAM. Plausible causes are different default optimisation or
+debug-level flags, differing linker garbage-collection settings, and a
+different set of compiled-in core components — but none of that is verified,
+and a 3.8% flash increase deserves a real answer before #161 signs off.
+
+### Why this baseline is frozen
+
+After #186 the firmware lives at `src/Field_Compass.ino`. `arduino-cli`
+requires a sketch at `<dir>/<dir>.ino` and fails with `main file missing from
+sketch: src\src.ino` — pointed at either the directory or the file. So the
+numbers above cannot be reproduced from the current tree, only from history:
+
+```bash
+git checkout b18886d
+arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3 Field_Compass/
+```
+
+The build was clean: 0 errors, 1 warning (a linker `.note.GNU-stack` deprecation
+notice from `libc`, not from our code).
+
+## Reproducing the library capture
 
 ```bash
 arduino-cli version
@@ -109,3 +146,7 @@ arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3 Field_Compass/ -
 The `Used library` block near the end of a verbose build is the authoritative
 list. `arduino-cli lib list` shows everything installed, which is a much larger
 and misleading set.
+
+Note that this too now requires a checkout of `b18886d` or earlier, for the
+reason above. The PlatformIO equivalent is `pio run -e feather_s3 -v`, whose
+dependency graph block serves the same purpose.

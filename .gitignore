@@ -127,9 +127,11 @@ __pycache__/
 # PlatformIO build output
 .pio/
 
-# Generated into the sketch dir by the pioarduino build (#183)
-Field_Compass/idf_component.yml
-Field_Compass/idf_component.yml.orig
+# Generated into the source dir by the pioarduino build (#183).
+# Path moved with the source in B4 (#186) — an ignore rule pointing at a
+# directory that no longer exists silently stops ignoring anything.
+src/idf_component.yml
+src/idf_component.yml.orig
 
 # Device state moved to C:\Dev\.field_compass (#198). These entries are a
 # backstop, not the mechanism: pio-flash resolves the fixed path directly and

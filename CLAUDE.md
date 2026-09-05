@@ -37,11 +37,11 @@ physical press).
 |-----------|-------|
 | PROJECT_NAME | Field Compass |
 | PROJECT_DIR | `/c/Dev/Field_Compass` |
-| BUILD_COMMAND | `arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3 Field_Compass/` |
+| BUILD_COMMAND | `pio run -e feather_s3` |
 | CITADEL_PROJECT | `Field_Compass` |
 | GITHUB_PROJECT_ID | `PVT_kwHODGcOBc4BOJgD` |
 | INFRA_PROFILE | Maker |
-| Main Source File | `Field_Compass/Field_Compass.ino` (~8,180 lines) |
+| Main Source File | `src/Field_Compass.ino` (~8,700 lines) |
 
 ## Hardware Specifications
 
@@ -66,23 +66,57 @@ physical press).
 - **SD/FRAM/Touch:** SD_CS=10, FRAM_CS=15, CTP_INT=14
 - **GPS Serial1:** RX=GPIO5, TX=GPIO6
 
+## Repository Layout (#186)
+
+Standard PlatformIO layout. There is no `Field_Compass/` sketch directory any more.
+
+| Path | Contents |
+|------|----------|
+| `src/` | `Field_Compass.ino` (the firmware) + `lv_psram_alloc.c` (LVGL PSRAM allocator, #164) |
+| `include/` | `lv_conf.h` — vendored, #158. Reached via `-I include` in `build_flags` |
+| `lib/` | Vendored libraries. Empty; everything is pinned in `lib_deps` |
+| `partitions/` | Flash layout CSV |
+
 ## Build & Flash
 
 ```bash
-# Compile
-arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3 Field_Compass/
-
-# Detect active ESP32-S3 port — DO NOT hardcode (devices move between COM ports)
-arduino-cli board list --format json \
-  | jq -r '.detected_ports[] | select(.matching_boards[]?.fqbn == "esp32:esp32:adafruit_feather_esp32s3") | .port.address' \
-  | head -1
-
-# Upload (close serial monitor first — port will be busy)
-arduino-cli upload --fqbn esp32:esp32:adafruit_feather_esp32s3 --port <detected-port> Field_Compass/
+pio run -e feather_s3
 ```
 
-The `arduino-cli` binary lives at `C:\Program Files\Arduino CLI\arduino-cli.exe`.
-The active `lv_conf.h` lives at `C:\Users\stryc\OneDrive\Documents\Arduino\libraries\lv_conf.h`.
+```bash
+python scripts/pio-flash.py list
+```
+
+**Flashing goes through the wrapper, never raw.** `pio-flash` verifies the board's
+identity against the registry before it writes anything, and
+`.claude/hooks/block-raw-flash.py` refuses raw `arduino-cli upload`, `pio run -t
+upload` and `esptool` invocations. Preview then confirm:
+
+```bash
+python scripts/pio-flash.py preview <device> --env feather_s3
+```
+
+Never hardcode a COM port — app and bootloader modes enumerate on *different*
+ports, so re-detect every time. The board needs a manual RESET press after a
+bootloader-mode flash; do not script the bootloader exit. Device state
+(registry, flash history) lives at `C:\Dev\.field_compass\`, outside every git
+working tree — see the Device State section below.
+
+### arduino-cli is no longer a working fallback
+
+`arduino-cli` requires a sketch at `<dir>/<dir>.ino`. With the firmware at
+`src/Field_Compass.ino` it fails with `main file missing from sketch:
+src\src.ino`, whether pointed at the directory or the file. Verified, not
+assumed.
+
+Renaming the sketch to `src/src.ino` would restore it, at the cost of a
+meaningless filename referenced across every doc, issue and memory. That
+tradeoff was declined. The last live arduino-cli baseline is recorded in
+`docs/library-manifest.md` for B6's parity check (#188); it cannot be
+regenerated from this tree.
+
+The `arduino-cli` binary still lives at `C:\Program Files\Arduino CLI\arduino-cli.exe`
+if you need it for an out-of-tree sketch.
 
 ## Device State — one fixed location, never in the repo (#198)
 
@@ -133,7 +167,7 @@ CLAUDE-BASE mandates *one epic = one branch = one PR*. Field Compass overrides t
 | Branch naming | `fc/<issue>-short-desc` (e.g., `fc/120-sd-indicator`) |
 | Scope | One GitHub issue per branch |
 | Commits | Every successful compile on the branch = commit (per SAFELANE §6) |
-| CI gate | `arduino-cli compile` on push |
+| CI gate | `pio run -e feather_s3` on push — **not yet implemented**, tracked as #150 |
 | Verification gate | Human flashes locally + verifies on hardware |
 | Merge | After human verification: agent runs `gh pr merge <N> --auto --rebase` |
 | Worktrees | Optional — parallel-agent rule (below) means usually not needed |
@@ -181,7 +215,7 @@ FC follows CLAUDE-BASE's SemVer rules (`vMAJOR.MINOR.PATCH`) with one firmware-s
 
 - Every successful compile on a branch = commit
 - After PR merge to `main`, tag the commit that represents a shippable milestone
-- `FW_VERSION` constant in `Field_Compass/Field_Compass.ino` must match the tag
+- `FW_VERSION` constant in `src/Field_Compass.ino` must match the tag
 - **Do NOT use auto-commit version-bump workflows** — per SAFELANE §7 incident 2026-03-29 (auto-commits orphaned by rebase merges). Compute at build time or update `FW_VERSION` manually before tagging.
 
 ## Board & Label Conventions (FC overrides)
@@ -200,12 +234,14 @@ dw --project Field_Compass claim FC-<id>            # Claim one task
 git checkout -b fc/<issue>-short-desc               # Per-issue branch
 
 # ── Compile + flash ────────────────────────────────────────
-arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3 Field_Compass/
-arduino-cli board list                              # Find active port
-arduino-cli upload --fqbn esp32:esp32:adafruit_feather_esp32s3 --port <detected> Field_Compass/
+pio run -e feather_s3                               # Build (#186 layout)
+python scripts/pio-flash.py list                    # Enumerate + match registry
+python scripts/pio-flash.py preview <device> --env feather_s3
+python scripts/pio-flash.py confirm <device> --token <token-file>
+# Raw arduino-cli/esptool/pio upload are refused by block-raw-flash.py
 
 # ── Commit on the branch (pre-commit hook verifies Citadel claim) ──
-git add Field_Compass/Field_Compass.ino
+git add src/Field_Compass.ino
 git commit -m "feat(#<issue>): description"
 git push -u origin fc/<issue>-short-desc
 
