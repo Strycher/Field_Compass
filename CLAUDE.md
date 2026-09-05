@@ -84,6 +84,40 @@ arduino-cli upload --fqbn esp32:esp32:adafruit_feather_esp32s3 --port <detected-
 The `arduino-cli` binary lives at `C:\Program Files\Arduino CLI\arduino-cli.exe`.
 The active `lv_conf.h` lives at `C:\Users\stryc\OneDrive\Documents\Arduino\libraries\lv_conf.h`.
 
+## Device State — one fixed location, never in the repo (#198)
+
+Everything `pio-flash` knows about physical hardware lives at `C:\Dev\.field_compass\`
+and **nowhere else**:
+
+| File | What it is |
+|------|-----------|
+| `hardware-devices.yaml` | Device registry — which physical board each name means |
+| `flash-history.jsonl` | Append-only flash log |
+| `registry-backups/` | Timestamped snapshot before every registry write |
+| `flash-backups/` | Flash images from `pio-flash backup` |
+
+This path is **fixed and absolute**, not resolved relative to the repo. That is
+deliberate. It used to be a tracked file, which meant every worktree carried its
+own copy and `git checkout` could rewrite device identities as a side effect —
+so sessions in different worktrees held different views of the hardware and
+argued about which was right. `.gitignore` does not fix that: worktrees are
+separate directories, so an ignored file in the primary clone is invisible from
+a worktree and the guard just refuses there.
+
+**Do not** create `hardware-devices.yaml` in the repo, hand-edit the registry, or
+"sync" it anywhere. Registrations go through the wrapper, which reads identity
+off the live board:
+
+```bash
+python scripts/pio-flash.py bootstrap <name> --port <COMx>
+```
+
+`.claude/hooks/block-registry-edit.py` refuses direct edits. Reads are unrestricted.
+
+This is Field Compass's own registry — meshcore-firmware, wadamesh and LoRa each
+keep their own. A future central registry has to model devices that move between
+projects; see #198 for that sketch.
+
 ## FC-Specific Overrides
 
 ### Branch Strategy — Per-Issue, Not Per-Epic (override of CLAUDE-BASE)

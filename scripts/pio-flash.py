@@ -2,15 +2,20 @@
 """
 scripts/pio-flash.py - flash-discipline wrapper (Python body)
 
-FIELD COMPASS DEPLOYMENT (Strycher/Field_Compass#172). Ported from
-meshcore-firmware with NO behavioural changes - only this docstring differs.
-Keep it that way: divergent hand-edited copies are the problem tracked in
-DifferentWire/standards#259.
+FIELD COMPASS DEPLOYMENT (Strycher/Field_Compass#172), diverging from the
+meshcore-firmware original ONLY in where device state lives (#198). Logic,
+gating and exit codes are unchanged; keep them that way, because divergent
+hand-edited copies are the problem tracked in DifferentWire/standards#259.
 
-Reads PROJECT_ROOT/hardware-devices.yaml, where PROJECT_ROOT is resolved
-RELATIVE TO THIS SCRIPT (not a hardcoded path), so the wrapper works inside
-worktrees. This repo's registry is TRACKED IN GIT - the meshcore and wadamesh
-copies are not, which is why pio-flash refuses in most of their worktrees.
+Reads C:\\Dev\\.field_compass\\hardware-devices.yaml - a FIXED location outside
+every git working tree, not PROJECT_ROOT-relative and not tracked in git. See
+the FC_STATE_DIR block below for why; the short version is that a registry
+whose job is preventing a wrong-device flash must not be rewritten by
+`git checkout`, and must read identically from the clone and every worktree.
+
+This is Field Compass's own registry. meshcore-firmware, wadamesh and LoRa each
+keep their own; there is no shared fleet registry yet. A future central one has
+to model devices that move between projects - see #198 for the sketch.
 
 Enumerates present USB serial ports via Windows PowerShell, and gates all
 device-touching operations on:
@@ -21,7 +26,7 @@ device-touching operations on:
                           requires preview -> token -> confirm two-stage
 
 Tracks:   Strycher/Field_Compass#172 (this port), Strycher/LoRa#47 (original)
-Registry: <repo>/hardware-devices.yaml (tracked)
+Registry: C:\\Dev\\.field_compass\\hardware-devices.yaml (untracked, fixed) (#198)
 Hook:     .claude/hooks/block-raw-flash.py
 Proposal: C:\\Dev\\LoRa\\proposal-flash-discipline.md
 Fleet:    DifferentWire/standards#259 (registry fragmentation)
@@ -57,6 +62,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -80,8 +86,41 @@ from firmware_identity import get_firmware_identity  # noqa: E402
 # Constants
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-REGISTRY_PATH = PROJECT_ROOT / "hardware-devices.yaml"
-FLASH_HISTORY_PATH = PROJECT_ROOT / "flash-history.jsonl"
+
+# ---------------------------------------------------------------------------
+# FC_STATE_DIR — device state lives OUTSIDE every git working tree (#198)
+# ---------------------------------------------------------------------------
+# Deliberately a fixed absolute path, NOT PROJECT_ROOT-relative.
+#
+# The registry used to live in the repo. Two consequences, both bad:
+#
+#   1. Every worktree got its own copy. Work happens in C:\Dev\.worktrees\...,
+#      so PROJECT_ROOT resolved THERE and the guard read whatever copy that
+#      branch carried — stale, edited, or predating a registration. Different
+#      sessions in different worktrees then held genuinely different views of
+#      the hardware. Owner on meshcore-firmware, where this played out for
+#      months: "kept having the damn thing copied and re-copied and re-copied
+#      and sessions bitching at each other about it being out of date."
+#
+#   2. A checkout could clobber it. Branch switches, rebases and PR merges
+#      rewrote device identities as a side effect of ordinary git operations.
+#      A registry whose job is preventing a wrong-device flash must not be
+#      mutable by `git checkout`.
+#
+# .gitignore does NOT solve this: worktrees are separate directories, so an
+# ignored file in the primary clone is invisible from a worktree and the guard
+# simply refuses there — meshcore's other failure mode.
+#
+# This is Field Compass's OWN state. It is not shared with LoRa, wadamesh or
+# meshcore-firmware; each project keeps its own. Location confirmed by the
+# owner 2026-09-05: outside C:\Dev\*repo*, no OneDrive exposure (verified —
+# OneDrive redirects only Desktop/Documents/Pictures on this host), and
+# alongside existing trusted state like C:\Dev\.keys.
+FC_STATE_DIR = Path(os.environ.get("FIELD_COMPASS_STATE_DIR", r"C:\Dev\.field_compass"))
+
+REGISTRY_PATH = FC_STATE_DIR / "hardware-devices.yaml"
+FLASH_HISTORY_PATH = FC_STATE_DIR / "flash-history.jsonl"
+REGISTRY_BACKUP_DIR = FC_STATE_DIR / "registry-backups"
 # #500 OWNER RULING: tokens have NO wall-clock expiry. ONE APPROVAL = ONE
 # FLASH; the owner's GO does not rot while he is away. A token is single-use
 # (deleted on confirm) and hard-invalidates on real state drift — port,
@@ -158,13 +197,52 @@ def refuse(msg: str, *, exit_code: int = 1) -> "NoReturn":
 
 
 # ---------------------------------------------------------------------------
+# Registry backup (#198)
+# ---------------------------------------------------------------------------
+# The registry left git, which means it also left git's undo. `git checkout --
+# hardware-devices.yaml` used to recover a botched write; nothing does now. So
+# every write snapshots the previous file first.
+#
+# Retention is deliberately dumb: keep everything. The file is a few KB and
+# registrations happen a handful of times a year. A pruning rule is one more
+# thing that can delete the copy you needed.
+REGISTRY_BACKUP_RETAIN = None  # None = keep all; see comment above.
+
+
+def backup_registry(reason: str) -> "Path | None":
+    """Snapshot the current registry before a write. Never fatal.
+
+    A failed backup must not block a registration - refusing to register a
+    board because a backup directory was unwritable would be the guard
+    obstructing normal work, which is how guards get switched off. Warn loudly
+    and continue.
+    """
+    if not REGISTRY_PATH.exists():
+        return None  # First bootstrap: nothing to preserve.
+    try:
+        REGISTRY_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", reason)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        dest = REGISTRY_BACKUP_DIR / f"hardware-devices-{stamp}-{safe}.yaml"
+        shutil.copy2(REGISTRY_PATH, dest)
+        return dest
+    except OSError as e:
+        err(f"registry backup failed ({e}); continuing with the write anyway")
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Registry loading
 # ---------------------------------------------------------------------------
 def load_registry() -> dict:
     if not REGISTRY_PATH.exists():
         refuse(
-            f"hardware-devices.yaml not found at {REGISTRY_PATH}. "
-            "Run A1 first or fix PROJECT_ROOT in this script."
+            f"hardware-devices.yaml not found at {REGISTRY_PATH}.\n"
+            "This path is fixed and lives outside every git working tree "
+            "(#198), so it is NOT created by cloning or by making a worktree.\n"
+            "Register a device to create it:\n"
+            "  python scripts/pio-flash.py bootstrap <name> --port <COMx>\n"
+            "Override the location only for testing, via FIELD_COMPASS_STATE_DIR."
         )
     with REGISTRY_PATH.open(encoding="utf-8") as f:
         data = yaml.safe_load(f)
@@ -1576,8 +1654,11 @@ def cmd_backup(args, registry):
     port, entry = resolve_device(args.device, registry)
     _verify_bridge_mac(port, entry, args.device)  # #468: chip resets anyway
 
-    backups_dir = PROJECT_ROOT / "flash-backups"
-    backups_dir.mkdir(exist_ok=True)
+    # #198: out of the tree with the rest of the device state. These are
+    # multi-MB flash images; in-repo they showed up as untracked clutter in
+    # every worktree and sat one `git clean -fdx` from gone.
+    backups_dir = FC_STATE_DIR / "flash-backups"
+    backups_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", args.device)
@@ -1934,17 +2015,29 @@ def cmd_bootstrap(args, registry):
     registry["devices"][name] = new_entry
 
     # Atomic write: dump to temp file, then rename.
+    # #198: the registry is no longer in git, so a bad write is no longer
+    # recoverable with `git checkout --`. Snapshot the previous file before
+    # replacing it. Cheap (a few KB), and it is the only undo that now exists.
+    backup_registry("bootstrap")
+
+    FC_STATE_DIR.mkdir(parents=True, exist_ok=True)
     tmp = REGISTRY_PATH.with_suffix(".yaml.tmp")
     with tmp.open("w", encoding="utf-8") as f:
-        # Preserve the header comment by reading + rewriting. Simpler: just
-        # dump the data structure and re-add a short header. The full header
-        # lives in the original file; bootstrap-modified files lose the long
-        # documentation header. Document the trade-off here.
+        # Bootstrap regenerates the file from the parsed structure, so the long
+        # schema header in the hand-written original is lost on first write.
+        # Keep a short header pointing at where the documentation actually is.
         f.write(
             "# hardware-devices.yaml (regenerated via pio-flash bootstrap)\n"
+            "# Field Compass device registry. Fixed location outside every git\n"
+            "# working tree - see FC_STATE_DIR in scripts/pio-flash.py (#198).\n"
+            "#\n"
+            "# DO NOT HAND-EDIT. Registrations go through:\n"
+            "#   python scripts/pio-flash.py bootstrap <name> --port <COMx>\n"
+            "# Prior versions are in ./registry-backups/.\n"
             "# Original schema documentation: see git history or "
             "proposal-flash-discipline.md section 3.\n"
-            "# Tracks: Strycher/LoRa#46 (A1) and Strycher/LoRa#47 (A2 bootstrap path)\n\n"
+            "# Tracks: Strycher/LoRa#46 (A1), Strycher/LoRa#47 (A2 bootstrap path),\n"
+            "#         Strycher/Field_Compass#198 (out-of-tree relocation)\n\n"
         )
         yaml.safe_dump(registry, f, sort_keys=False, allow_unicode=True)
     tmp.replace(REGISTRY_PATH)
