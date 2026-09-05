@@ -136,15 +136,46 @@ arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3 src/
 The arduino-cli baseline build was clean: 0 errors, 1 warning (a linker
 `.note.GNU-stack` deprecation notice from `libc`, not from our code).
 
-**One unexplained 8 bytes.** Rebuilding with arduino-cli after the
-`Field_Compass.ino` → `src.ino` rename gives identical flash (1,787,670 B) but
-RAM of 106,380 B — **+8 bytes** against the 106,372 B baseline. The PlatformIO
-figures are byte-identical across the same rename, so this is specific to the
-arduino-cli path. Most likely a filename-length artifact in an embedded string
-(the generated translation unit changes name), but that is a guess and has not
-been confirmed. Recorded rather than rounded away, because B6's whole job is
-explaining cross-toolchain deltas and an unexplained 8 bytes is a smaller
-version of the same question as the unexplained 68 KB.
+**The arduino-cli +8 bytes.** After the `Field_Compass.ino` → `src.ino` rename,
+arduino-cli reports identical flash (1,787,670 B) and RAM of 106,380 B — **+8
+bytes** against the 106,372 B baseline.
+
+The explanation is link order, not filename length. Renaming the sketch renames
+its translation unit (`Field_Compass.ino.cpp.o` → `src.ino.cpp.o`), which moves
+it in the link line, which changes where its sections land and therefore how
+much alignment padding sits between them. An earlier draft of this note guessed
+"filename-length artifact in an embedded string"; that was wrong on two counts,
+and the adversarial review caught it — a *shorter* name would have shrunk such a
+string, and `__FILE__` strings live in flash, not static RAM.
+
+## Layout verification (#186)
+
+`identical size totals` is not `identical binary`, so the PlatformIO build was
+compared at symbol level between `b18886d` (pre-move) and the #186 branch:
+
+| | |
+|---|---|
+| symbol set, sizes, types | **identical** — 14,958 symbols, zero differences |
+| RAM / Flash totals | **identical** — 103,232 B / 1,855,926 B |
+| symbol addresses | **608 of 14,958 differ** (~4%) |
+| `firmware.bin` | **not** byte-identical |
+
+The 608 are 386 in the DRAM region (`3fca…`) and 222 in flash-mapped text and
+rodata (`4205…`), across `b`/`B` (bss), `t`/`T` (text) and `W` (weak). Same
+cause as the 8 bytes: the translation unit moved in link order, so identical
+code and data were placed at different addresses.
+
+**So "behaviour-neutral" means the code and data are identical, not that the
+image is.** Nothing was added, removed or resized; placement shifted. That is
+the honest claim, and it is what the acceptance criterion — unchanged flash and
+RAM figures — actually establishes. Reproduce with:
+
+```bash
+xtensa-esp32s3-elf-nm --print-size --defined-only firmware.elf | sort
+```
+
+comparing the size/type/name columns for equality and the address column
+separately.
 
 The sketch is `src/src.ino` because arduino-cli resolves the parent directory
 and demands a matching filename. PlatformIO does not care what the `.ino` is

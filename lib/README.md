@@ -24,5 +24,17 @@ version or commit, and what was changed. Without that it becomes an
 unmaintainable fork, which is worse than the problem it solved.
 
 Layout: `lib/<LibName>/` with the library's own `src/` and `library.json`
-inside. PlatformIO's Library Dependency Finder picks it up automatically and it
-takes precedence over anything in `lib_deps`.
+inside. PlatformIO's Library Dependency Finder picks it up automatically, and a
+library here takes precedence over one of the same name in `lib_deps`.
+
+Two caveats on that precedence, because it is easy to over-trust:
+
+- It holds for the LDF's default `chain` mode. `platformio.ini` does not set
+  `lib_ldf_mode`, so the default applies — but if that ever changes, re-check
+  this claim rather than assuming.
+- Precedence covers the vendored library itself, **not its dependencies**. If a
+  vendored library pulls in something that is also in `lib_deps` at a different
+  version, the LDF resolves that transitively and you can end up with two
+  versions of the same code in one image, or a silent downgrade. Vendoring a
+  leaf library is safe; vendoring one with its own dependency tree needs the
+  resulting `pio run -v` dependency graph read carefully before it is trusted.
