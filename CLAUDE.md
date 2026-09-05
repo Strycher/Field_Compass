@@ -41,7 +41,7 @@ physical press).
 | CITADEL_PROJECT | `Field_Compass` |
 | GITHUB_PROJECT_ID | `PVT_kwHODGcOBc4BOJgD` |
 | INFRA_PROFILE | Maker |
-| Main Source File | `src/Field_Compass.ino` (~8,700 lines) |
+| Main Source File | `src/src.ino` (~8,700 lines) — named for the directory, see Build & Flash |
 
 ## Hardware Specifications
 
@@ -72,7 +72,7 @@ Standard PlatformIO layout. There is no `Field_Compass/` sketch directory any mo
 
 | Path | Contents |
 |------|----------|
-| `src/` | `Field_Compass.ino` (the firmware) + `lv_psram_alloc.c` (LVGL PSRAM allocator, #164) |
+| `src/` | `src.ino` (the firmware) + `lv_psram_alloc.c` (LVGL PSRAM allocator, #164) |
 | `include/` | `lv_conf.h` — vendored, #158. Reached via `-I include` in `build_flags` |
 | `lib/` | Vendored libraries. Empty; everything is pinned in `lib_deps` |
 | `partitions/` | Flash layout CSV |
@@ -102,21 +102,37 @@ bootloader-mode flash; do not script the bootloader exit. Device state
 (registry, flash history) lives at `C:\Dev\.field_compass\`, outside every git
 working tree — see the Device State section below.
 
-### arduino-cli is no longer a working fallback
+### Why the sketch is called `src.ino` and not `Field_Compass.ino`
 
-`arduino-cli` requires a sketch at `<dir>/<dir>.ino`. With the firmware at
-`src/Field_Compass.ino` it fails with `main file missing from sketch:
-src\src.ino`, whether pointed at the directory or the file. Verified, not
-assumed.
+Because `arduino-cli` demands a sketch at `<dir>/<dir>.ino`. It resolves the
+parent directory and looks for a file matching its name, so with the firmware
+at `src/Field_Compass.ino` it fails — pointed at the directory *or* at the
+`.ino` file itself:
 
-Renaming the sketch to `src/src.ino` would restore it, at the cost of a
-meaningless filename referenced across every doc, issue and memory. That
-tradeoff was declined. The last live arduino-cli baseline is recorded in
-`docs/library-manifest.md` for B6's parity check (#188); it cannot be
-regenerated from this tree.
+```
+Can't open sketch: main file missing from sketch: src\src.ino
+```
 
-The `arduino-cli` binary still lives at `C:\Program Files\Arduino CLI\arduino-cli.exe`
-if you need it for an out-of-tree sketch.
+PlatformIO does not care what the `.ino` is called; it compiles any of them in
+`src/`. So `src.ino` is the one name that satisfies both toolchains, and both
+are verified building from it. The name is ugly and says nothing about the
+project — that is the price of keeping the arduino-cli path alive until #161
+signs off on PlatformIO, and it is a one-line rename to undo afterwards.
+
+Both build commands:
+
+```bash
+pio run -e feather_s3
+```
+
+```bash
+arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3 src/
+```
+
+`arduino-cli` lives at `C:\Program Files\Arduino CLI\arduino-cli.exe`. Note it
+builds a *different image* from PlatformIO — see the baseline comparison in
+`docs/library-manifest.md`, whose deltas B6 (#188) still has to explain. Use
+PlatformIO for anything you intend to flash.
 
 ## Device State — one fixed location, never in the repo (#198)
 
@@ -215,7 +231,7 @@ FC follows CLAUDE-BASE's SemVer rules (`vMAJOR.MINOR.PATCH`) with one firmware-s
 
 - Every successful compile on a branch = commit
 - After PR merge to `main`, tag the commit that represents a shippable milestone
-- `FW_VERSION` constant in `src/Field_Compass.ino` must match the tag
+- `FW_VERSION` constant in `src/src.ino` must match the tag
 - **Do NOT use auto-commit version-bump workflows** — per SAFELANE §7 incident 2026-03-29 (auto-commits orphaned by rebase merges). Compute at build time or update `FW_VERSION` manually before tagging.
 
 ## Board & Label Conventions (FC overrides)
@@ -241,7 +257,7 @@ python scripts/pio-flash.py confirm <device> --token <token-file>
 # Raw arduino-cli/esptool/pio upload are refused by block-raw-flash.py
 
 # ── Commit on the branch (pre-commit hook verifies Citadel claim) ──
-git add src/Field_Compass.ino
+git add src/src.ino
 git commit -m "feat(#<issue>): description"
 git push -u origin fc/<issue>-short-desc
 
