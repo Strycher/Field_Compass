@@ -206,7 +206,7 @@ check("503: no impersonation across serials", (kind, name) == (None, None),
 # 6. resolve_device: legacy-hash entry vs serial-bearing port -> refuse without
 #    approval; matches with CLASS_MATCH_APPROVED.
 S3_PORT = {"com": "COM8", "vid_pid": "303A:0002", "instance_hash": "8&AAAA",
-           "deviceid_full": "USB\VID_303A&PID_0002&MI_00\8&AAAA&0&0000",
+           "deviceid_full": r"USB\VID_303A&PID_0002&MI_00\8&AAAA&0&0000",
            "usb_serial": "F85B1BA61450", "description": "USB Serial Device"}
 reg_legacy = {"devices": {"legacy-hash-only": reg503["devices"]["legacy-hash-only"]},
               "foreign_devices": {}}

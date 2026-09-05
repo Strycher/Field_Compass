@@ -105,14 +105,48 @@ def test_class_only_entry_does_not_shadow_a_real_serial_match():
 
 # --------------------------------------------------------------------------
 # Tier 2: legacy fallback, for entries predating usb_serial
+#
+# The gate on this tier is the PORT, not the entry (#503). It runs only when the
+# port exposes no serial at all — a CH340/CP2102-class bridge. A port that does
+# expose a serial is resolved by serial or not at all.
+#
+# A previous test here asserted the opposite: that a serial-BEARING port would
+# fall back to a legacy hash entry. That was the pre-#503 model, and the test
+# was never updated when the ruling landed — it arrived in this repo already
+# failing, in the same commit that ported the tool (#172, 55870d8). It is
+# replaced by the two below, which pin what the code actually contracts to do.
+# See #200. meshcore-firmware and wadamesh carry the same stale test.
 # --------------------------------------------------------------------------
-def test_legacy_hash_still_matches_when_no_serial_recorded():
+def test_legacy_hash_matches_when_the_port_has_no_serial():
+    """The real Tier 2 path, which the removed test never exercised.
+
+    A serial-less port (bridge chips expose none) against an entry that predates
+    the usb_serial column still resolves by port-path hash.
+    """
     r = reg({"Old": {
         "vid_pid": [VID],
         "discriminators": {"windows": {"runtime_deviceid_instance": "8&519AF3A"}},
     }})
-    kind, name, _ = find_in_registry(r, VID, "8&519AF3A", "E8F60ACA4E54")
+    kind, name, _ = find_in_registry(r, VID, "8&519AF3A", "")
     assert (kind, name) == ("device", "Old")
+
+
+def test_serial_bearing_port_never_falls_back_to_legacy_hash():
+    """#503: a port with a serial that matches nothing is honestly unregistered.
+
+    It must NOT drop through to port-path matching. VID:PID is a device CLASS,
+    never an identity — many identical boards share it on this bench — so a
+    fallback here would let an unknown board inherit the identity of whoever
+    last occupied its socket, which is exactly the #323 defect.
+
+    This is the case the removed test asserted backwards.
+    """
+    r = reg({"Old": {
+        "vid_pid": [VID],
+        "discriminators": {"windows": {"runtime_deviceid_instance": "8&519AF3A"}},
+    }})
+    kind, name, entry = find_in_registry(r, VID, "8&519AF3A", "E8F60ACA4E54")
+    assert (kind, name, entry) == (None, None, None)
 
 
 def test_serial_entry_beats_legacy_hash_entry_on_same_port():

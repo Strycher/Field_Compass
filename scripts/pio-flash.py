@@ -601,10 +601,12 @@ def resolve_device(name: str, registry: dict) -> tuple[dict, dict]:
             refuse(
                 f"'{name}' would match {m['com']} only by legacy port-path hash, but "
                 f"that port exposes usb_serial {m.get('usb_serial')} -- identity is "
-                "available and this entry doesn't record it. Record "
-                f"'usb_serial: {m.get('usb_serial')}' on the entry (permanent fix), or "
-                "re-run with --approve-class-match after explicit owner approval in "
-                "chat (#503)."
+                "available and this entry doesn't record it.\n"
+                "Permanent fix -- re-register, which reads the serial off the live "
+                f"board:\n  python scripts/pio-flash.py bootstrap {name} "
+                f"--port {m['com']}\n"
+                "One-off -- re-run with --approve-class-match after explicit owner "
+                "approval in chat (#503)."
             )
         if not matches:
             present_summary = ", ".join(
