@@ -25,6 +25,31 @@
             "type": "command",
             "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/require-checkpoint.py\"",
             "timeout": 10000
+          },
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-skip-bypass.py\"",
+            "timeout": 10000
+          },
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/audit-log.py\"",
+            "timeout": 10000
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-bash-file-mutation.py\"",
+            "timeout": 10000
+          },
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-direct-citadel-db.py\"",
+            "timeout": 10000
           }
         ]
       },
@@ -55,6 +80,18 @@
             "type": "command",
             "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-raw-flash.py\"",
             "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__agent-mail__register_agent|mcp__agent-mail__macro_start_session",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/persist-am-identity.py\"",
+            "timeout": 10000
           }
         ]
       }
