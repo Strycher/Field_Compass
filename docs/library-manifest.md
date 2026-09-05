@@ -98,10 +98,16 @@ Two files are *not* library versions but are equally load-bearing:
 resolved — #157 replaced the patch with `setRotation(3)` in our own source, so
 the library is stock. Do not re-patch it.
 
-## Final arduino-cli baseline (B4, #186) — cannot be regenerated
+## Toolchain baseline comparison (B4, #186)
 
 Captured on **2026-09-05** from `main` at `b18886d`, immediately before B4 moved
-the firmware into `src/`. This is the **last** arduino-cli build of this tree.
+the firmware into `src/`.
+
+Both toolchains still build this tree. B4 initially broke the arduino-cli path —
+it requires a sketch at `<dir>/<dir>.ino` — and the sketch was renamed to
+`src/src.ino` to keep it alive until #161 signs off. So these numbers remain
+reproducible rather than frozen; the "cannot be regenerated" caveat in the first
+draft of this section no longer applies.
 
 | build | Flash | RAM |
 |-------|-------|-----|
@@ -120,33 +126,43 @@ debug-level flags, differing linker garbage-collection settings, and a
 different set of compiled-in core components — but none of that is verified,
 and a 3.8% flash increase deserves a real answer before #161 signs off.
 
-### Why this baseline is frozen
-
-After #186 the firmware lives at `src/Field_Compass.ino`. `arduino-cli`
-requires a sketch at `<dir>/<dir>.ino` and fails with `main file missing from
-sketch: src\src.ino` — pointed at either the directory or the file. So the
-numbers above cannot be reproduced from the current tree, only from history:
+### Reproducing both sides
 
 ```bash
-git checkout b18886d
-arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3 Field_Compass/
+pio run -e feather_s3
+arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3 src/
 ```
 
-The build was clean: 0 errors, 1 warning (a linker `.note.GNU-stack` deprecation
-notice from `libc`, not from our code).
+The arduino-cli baseline build was clean: 0 errors, 1 warning (a linker
+`.note.GNU-stack` deprecation notice from `libc`, not from our code).
+
+**One unexplained 8 bytes.** Rebuilding with arduino-cli after the
+`Field_Compass.ino` → `src.ino` rename gives identical flash (1,787,670 B) but
+RAM of 106,380 B — **+8 bytes** against the 106,372 B baseline. The PlatformIO
+figures are byte-identical across the same rename, so this is specific to the
+arduino-cli path. Most likely a filename-length artifact in an embedded string
+(the generated translation unit changes name), but that is a guess and has not
+been confirmed. Recorded rather than rounded away, because B6's whole job is
+explaining cross-toolchain deltas and an unexplained 8 bytes is a smaller
+version of the same question as the unexplained 68 KB.
+
+The sketch is `src/src.ino` because arduino-cli resolves the parent directory
+and demands a matching filename. PlatformIO does not care what the `.ino` is
+called, so that one name satisfies both. See CLAUDE.md § *Why the sketch is
+called `src.ino`*.
 
 ## Reproducing the library capture
 
 ```bash
 arduino-cli version
 arduino-cli core list
-arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3 Field_Compass/ -v
+arduino-cli compile --fqbn esp32:esp32:adafruit_feather_esp32s3 src/ -v
 ```
 
 The `Used library` block near the end of a verbose build is the authoritative
 list. `arduino-cli lib list` shows everything installed, which is a much larger
 and misleading set.
 
-Note that this too now requires a checkout of `b18886d` or earlier, for the
-reason above. The PlatformIO equivalent is `pio run -e feather_s3 -v`, whose
-dependency graph block serves the same purpose.
+The PlatformIO equivalent is `pio run -e feather_s3 -v`, whose dependency graph
+block serves the same purpose and reflects `lib_deps` rather than whatever
+happens to be installed in the sketchbook.
