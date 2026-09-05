@@ -56,6 +56,17 @@ ALLOWED = [
     'gh issue comment 1 --body "run arduino-cli upload to flash it"',
     'gh pr create --body "then arduino-cli burn-bootloader on the device"',
     'git commit -m "docs: explain arduino-cli upload workflow"',
+    # FALSE POSITIVES, MARKDOWN CODE SPANS (#195). The original CMD_BOUNDARY
+    # treated a backtick as a command-substitution opener, so a command wrapped
+    # in a markdown code span — how every command appears in an issue body, PR
+    # description, commit message or code comment in this repo — tripped it.
+    #
+    # The first two are the actual commands that were blocked on 2026-09-05:
+    # a memory-file edit carrying documentation text, and an issue comment.
+    'python - <<PYEOF\nold = "- Upload: `arduino-cli upload --port COM19 sketch/`"\nPYEOF',
+    'gh issue comment 1 --body "the `arduino-cli upload` path is documented in DIAGNOSTICS.md"',
+    "echo 'see `esptool --chip esp32s3 chip-id` for identity'",
+    'git commit -m "docs: `pio run -t upload` is blocked, use the wrapper"',
 ]
 
 
