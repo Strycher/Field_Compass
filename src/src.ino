@@ -8710,3 +8710,12 @@ void drawOLEDNavBar() {
   sprintf(buf, "[%d/%d]", currentScreen + 1, NUM_SCREENS);
   oled.print(buf);
 }
+
+// ---------------------------------------------------------------------------
+// C3 PROBE - DELIBERATE SYNTAX ERROR. THROWAWAY, MUST NEVER MERGE.
+// Missing semicolon, so the compile fails the way a real mistake would.
+// Exists to prove the compile gate goes red. The branch is deleted afterwards.
+// ---------------------------------------------------------------------------
+void fcCiProbeDeliberateBreak() {
+  int deliberatelyBroken = 1
+}
