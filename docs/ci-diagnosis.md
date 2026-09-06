@@ -283,10 +283,41 @@ testable. Testability is a product of the decomposition, not a prerequisite.
 
 ---
 
-## Open questions for the owner
+## Owner decisions
 
-1. The **+3,616 byte** environment delta — fold into #188, or its own investigation?
-2. Adopt the `.github/scripts/` convention (new for FC, established in meshcore-client)?
-3. Should the review gate cover `.claude/hooks/**`? Those are governance code, and three
-   hook defects shipped in one day (#203, #205, #208) — arguably the highest-value place for
-   mandatory review.
+**1. The +3,616 byte environment delta folds into #188.** It is the same question at a
+smaller scale — why do builds of identical source disagree — and #188 already owns it. #188's
+investigation must therefore control for build environment, not just toolchain.
+
+**2. Adopt the `.github/scripts/` convention.** New for Field Compass, whose three workflows
+are inline today; established in meshcore-client (`release-gate.sh`, `check_no_emdash.py`).
+Gate logic lives in a script, the workflow YAML stays thin.
+
+**3. The review gate covers `.claude/hooks/**`.** Governance code gets mandatory review.
+
+`[TOOL]` Coverage is narrower than it first appears, and worth stating precisely so nobody
+over-trusts it. Only six files under `.claude/` are tracked in this repo:
+
+```
+.claude/hooks/block-raw-flash.py        .claude/hooks/block-registry-edit.py
+.claude/hooks/dw-project                .claude/hooks/session-state.sh
+.claude/settings.json                   .claude/settings.local.json
+```
+
+The canonical hooks — `require-checkpoint.py`, `block-bash-file-mutation.py`,
+`block-primary-clone-edit.py`, `pre-commit`, `pre-push` and the rest — are distributed by
+DifferentWire/standards and are **not tracked here**, so a Field Compass gate cannot cover
+them. Their review belongs upstream.
+
+Against the four hook defects found on 2026-09-05:
+
+| defect | file | covered? |
+|---|---|---|
+| #195 backtick false positive | `block-raw-flash.py` | **yes** |
+| #205 CRLF marker regression | `.gitattributes`, `dw-project` | **yes** |
+| #208 redirect false positive | `block-registry-edit.py` | **yes** |
+| #203 newline bypass | `block-bash-file-mutation.py` | no — canonical, upstream |
+
+Three of four. **Exclude `.claude/settings.local.json`** — it is machine-local permission
+churn, changes constantly, and requiring review of it would train people to override the
+gate.
