@@ -148,3 +148,50 @@ jobs:
       - name: Report size
         if: needs.discover.outputs.firmware_changed == 'true'
         run: pio run -e ${{ matrix.env }} --target size
+
+  # THIS is the job to require in branch protection — never `build (feather_s3)`.
+  #
+  # `build`'s job name is GENERATED from the matrix, which is generated from the
+  # discovered envs. Requiring the generated name by hand undoes the discovery
+  # design in both directions:
+  #
+  #   - add the UM FeatherS3 profile and you get `build (um_feathers3)`, which is
+  #     NOT in the required list — the new env ships unguarded, which is exactly
+  #     the meshcore NimBLE failure discovery exists to prevent
+  #   - rename or drop `feather_s3` and the required check never reports again;
+  #     every PR blocks forever on a check stuck at "expected"
+  #
+  # `compile-gate` has a fixed name whatever the env list does, so protection is
+  # written once and never revisited.
+  #
+  # It also closes the skipped-matrix hole at the protection level. `needs:`
+  # treats a skipped job as success, so an empty matrix would otherwise satisfy
+  # a required check having compiled nothing. Here `skipped` is not `success`
+  # and the gate fails — belt and braces with the zero-env guard in `discover`.
+  #
+  # `if: always()` is required: without it this job is itself skipped when a
+  # dependency fails, and a skipped required check never reports.
+  #
+  # Verified before this job existed (#223): a deliberate syntax error made
+  # `build (feather_s3)` fail, and the PR still reported mergeable=MERGEABLE,
+  # mergeStateStatus=UNSTABLE — red, and merge allowed anyway.
+  compile-gate:
+    needs: [discover, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggregate job results
+        run: |
+          echo "discover = ${{ needs.discover.result }}"
+          echo "build    = ${{ needs.build.result }}"
+          failed=0
+          if [ "${{ needs.discover.result }}" != "success" ]; then
+            echo "::error::discover did not succeed (${{ needs.discover.result }})"
+            failed=1
+          fi
+          if [ "${{ needs.build.result }}" != "success" ]; then
+            echo "::error::build did not succeed (${{ needs.build.result }})"
+            failed=1
+          fi
+          [ "$failed" -eq 0 ] || exit 1
+          echo "Compile gate passed."
