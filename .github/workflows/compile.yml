@@ -164,10 +164,12 @@ jobs:
   # `compile-gate` has a fixed name whatever the env list does, so protection is
   # written once and never revisited.
   #
-  # It also closes the skipped-matrix hole at the protection level. `needs:`
-  # treats a skipped job as success, so an empty matrix would otherwise satisfy
-  # a required check having compiled nothing. Here `skipped` is not `success`
-  # and the gate fails — belt and braces with the zero-env guard in `discover`.
+  # It also closes the skipped-matrix hole at the protection level. Two distinct
+  # meanings of "skipped" are easy to conflate, so precisely: `needs:` treats a
+  # skipped dependency as satisfied for DEPENDENCY RESOLUTION — a downstream job
+  # still starts — but `needs.<job>.result` is the string `skipped`, which is not
+  # `success`. So requiring `success` here does close the hole, while the older
+  # phrasing ("needs: treats a skipped job as success") was imprecise.
   #
   # `if: always()` is required: without it this job is itself skipped when a
   # dependency fails, and a skipped required check never reports.
@@ -180,18 +182,37 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      # FAILS CLOSED, cancellation included, and that is deliberate.
+      #
+      # The adversarial review argued a cancelled run should exit 0 so a manual
+      # cancel does not leave a red required check. Rejected: that turns Cancel
+      # into a one-click bypass — cancel the build, the gate reports success,
+      # and unverified firmware becomes mergeable. For a gate, "nothing was
+      # verified" must never read as "verified fine".
+      #
+      # Accepted cost: cancelling a run leaves this check red on that commit
+      # until it is re-run or a new commit is pushed. `concurrency` already
+      # cancels superseded runs, but those sit on commits that are no longer
+      # head, so the common case is unaffected.
+      #
+      # Cancelled is reported distinctly from failed so the log says which
+      # happened rather than leaving someone hunting a compile error that does
+      # not exist.
       - name: Aggregate job results
         run: |
-          echo "discover = ${{ needs.discover.result }}"
-          echo "build    = ${{ needs.build.result }}"
-          failed=0
-          if [ "${{ needs.discover.result }}" != "success" ]; then
-            echo "::error::discover did not succeed (${{ needs.discover.result }})"
-            failed=1
+          d='${{ needs.discover.result }}'
+          b='${{ needs.build.result }}'
+          echo "discover = $d"
+          echo "build    = $b"
+
+          if [ "$d" = "cancelled" ] || [ "$b" = "cancelled" ]; then
+            echo "::error::Run was cancelled, so nothing was verified. The gate fails closed - re-run it or push again. This is NOT a compile error."
+            exit 1
           fi
-          if [ "${{ needs.build.result }}" != "success" ]; then
-            echo "::error::build did not succeed (${{ needs.build.result }})"
-            failed=1
-          fi
-          [ "$failed" -eq 0 ] || exit 1
+
+          rc=0
+          [ "$d" = "success" ] || { echo "::error::discover did not succeed ($d)"; rc=1; }
+          [ "$b" = "success" ] || { echo "::error::build did not succeed ($b)"; rc=1; }
+          [ "$rc" -eq 0 ] || exit 1
+
           echo "Compile gate passed."
