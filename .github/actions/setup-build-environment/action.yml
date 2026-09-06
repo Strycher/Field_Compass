@@ -1,0 +1,40 @@
+name: Setup Build Environment
+description: Install Python and PlatformIO for a Field Compass firmware build.
+
+# Shape follows meshcore-firmware's action of the same name, so the two repos
+# stay recognisable to each other. Deliberately NOT identical: meshcore also
+# generates a dummy secrets stub for config interpolation (its platformio.ini
+# requires PIO_SECRETS_FILE) and extracts a version from the git tag. Field
+# Compass needs neither — platformio.ini has no interpolated secrets, and
+# FW_VERSION is a source constant until B5 (#187) derives it from git.
+#
+# Caching is deliberately absent here. It is C2 (#222), kept separate so the
+# speed-up can be measured against this baseline rather than assumed. When it
+# lands it caches ~/.cache/pip and ~/.platformio/.cache — the DOWNLOADS. It must
+# not cache the core directory: measured at 5.6 GB (packages 3.4 G, tools 1.5 G,
+# dist 428 M), which costs more to upload and restore than re-downloading.
+# See docs/ci-diagnosis.md.
+
+# Action majors are the current ones, verified against the registry when this
+# was written: setup-python v7, checkout v7, cache v6. meshcore pins older
+# majors (setup-python v6, checkout v5, cache v5); the divergence is deliberate
+# — a brand-new workflow has no reason to inherit staleness, and alignment with
+# meshcore is about shape, not version pinning.
+
+runs:
+  using: composite
+  steps:
+    - name: Install Python
+      uses: actions/setup-python@v7
+      with:
+        python-version: '3.13'
+
+    - name: Install PlatformIO
+      shell: bash
+      run: pip install --upgrade platformio
+
+    - name: Record versions
+      shell: bash
+      run: |
+        pio --version
+        python --version
