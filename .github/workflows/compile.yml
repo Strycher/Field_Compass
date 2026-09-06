@@ -63,23 +63,35 @@ jobs:
       - name: Discover build environments
         id: find
         run: |
-          python - <<'PY' >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          python - <<'PY' > /tmp/envs.json
           import configparser, json
           cp = configparser.ConfigParser(strict=False, inline_comment_prefixes=(';',))
           cp.read('platformio.ini', encoding='utf-8')
           envs = sorted(s[4:] for s in cp.sections() if s.startswith('env:') and s != 'env:')
-          print("envs=" + json.dumps(envs, separators=(',', ':')))
-          print(f"count={len(envs)}", flush=True)
+          print(json.dumps(envs, separators=(',', ':')))
           PY
-          echo "Discovered: $(grep '^envs=' "$GITHUB_OUTPUT" | tail -1)"
+          envs=$(cat /tmp/envs.json)
+          count=$(python -c "import json,sys; print(len(json.load(sys.stdin)))" < /tmp/envs.json)
+          echo "Discovered $count environment(s): $envs"
+          echo "envs=$envs"   >> "$GITHUB_OUTPUT"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
 
       # A matrix over an empty list is SKIPPED, and `needs:` treats a skipped job
       # as success — so zero envs would make this workflow a green light that
       # compiled nothing. That is the exact failure the gate exists to prevent,
       # reintroduced one level up.
+      #
+      # Reads the STEP OUTPUT, not the file. $GITHUB_OUTPUT is a distinct file
+      # per step, so grepping it from a later step always sees an empty file.
+      # That bug failed this workflow on its very first run: discovery correctly
+      # found feather_s3, the guard read an empty file, and the gate went red
+      # claiming zero envs. Only a live run could surface it — locally the
+      # discovery logic and the guard logic were each verified in isolation, and
+      # the wiring between them exists only on GitHub.
       - name: Fail if no environments were discovered
         run: |
-          count=$(grep '^count=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)
+          count="${{ steps.find.outputs.count }}"
           if [ "${count:-0}" -eq 0 ]; then
             echo "::error::No [env:*] sections found in platformio.ini"
             exit 1
