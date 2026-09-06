@@ -1,0 +1,99 @@
+name: Compile
+
+# The compile gate. Until this existed, a PR could merge with firmware that does
+# not build: PRs #202, #204 and #207 each merged with 0 checks reported, and
+# CLAUDE.md asserted a CI gate that had never been written (#150).
+#
+# C1 of Epic #155, Feature #217. Scoped to running the build and reporting a
+# check. Making it BLOCK is C3 (#223) — advisory first, promoted to a required
+# check only after it is proven to go red on a real break, and only after the
+# close-before-push ordering in standards#359 is settled. That gate closes the
+# issue and Citadel task BEFORE any push, so a required check that fails would
+# leave a closed issue against a red branch.
+#
+# Uses `pio run`, not `arduino-cli`. #150 was written against
+# `arduino-cli compile Field_Compass/`, a directory #186 deleted.
+#
+# A clean build from an empty PLATFORMIO_CORE_DIR was verified before this
+# workflow was written — 183.86 s, 0 errors, all 21 libraries resolved from
+# lib_deps. #150's stated blocker (lv_conf.h and TFT_eSPI's User_Setup.h living
+# outside the repo) was already closed by Epic B: #158 vendored lv_conf.h, #184
+# moved TFT_eSPI to build_flags, #185 pinned lib_deps. See docs/ci-diagnosis.md.
+
+on:
+  push:
+    branches: [main]
+    paths: &firmware_paths
+      - 'src/**'
+      - 'include/**'
+      - 'lib/**'
+      - 'platformio.ini'
+      - 'partitions/**'
+      - '.github/workflows/compile.yml'
+      - '.github/actions/setup-build-environment/**'
+  pull_request:
+    paths: *firmware_paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Envs are DISCOVERED from platformio.ini, never listed here.
+  #
+  # There is one env today (feather_s3) and a UM FeatherS3 profile coming. A
+  # hardcoded list means the new env is covered only if somebody remembers to
+  # add it — which is precisely how meshcore's NimBLE defect recurred four times,
+  # in envs that were neither built in CI nor able to fail a release. Discovery
+  # costs the same to write and cannot be forgotten.
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      envs: ${{ steps.find.outputs.envs }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Discover build environments
+        id: find
+        run: |
+          set -euo pipefail
+          envs=$(grep -oP '^\[env:\K[^\]]+' platformio.ini | sort -u | jq -R . | jq -sc .)
+          count=$(echo "$envs" | jq 'length')
+          echo "Discovered $count env(s): $envs"
+          # A build matrix over zero envs silently succeeds, which would make
+          # this whole workflow a green light that checked nothing.
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No [env:*] sections found in platformio.ini"
+            exit 1
+          fi
+          echo "envs=$envs" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false        # one broken env must not hide the state of others
+      matrix:
+        env: ${{ fromJson(needs.discover.outputs.envs) }}
+    name: build (${{ matrix.env }})
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-build-environment
+
+      - name: Build ${{ matrix.env }}
+        run: pio run -e ${{ matrix.env }}
+
+      - name: Report size
+        if: always()
+        run: |
+          elf=".pio/build/${{ matrix.env }}/firmware.elf"
+          if [ -f "$elf" ]; then
+            pio run -e ${{ matrix.env }} --target size 2>/dev/null | grep -E 'RAM:|Flash:' || true
+          else
+            echo "no ELF produced for ${{ matrix.env }}"
+          fi
