@@ -29,9 +29,17 @@ runs:
       with:
         python-version: '3.13'
 
+    # PINNED, not --upgrade. platformio.ini pins the platform (55.03.38-1) and
+    # all 15 libraries precisely so a build is reproducible; leaving the tool
+    # that reads it floating abandons that discipline at the most important
+    # layer. This is not theoretical: 6.1.19 produced every verified build for
+    # this work, while the current release is 6.2.0 — `--upgrade` would have put
+    # CI on a version that had never built this firmware, from day one.
+    #
+    # Bump deliberately, with a local build to confirm, never incidentally.
     - name: Install PlatformIO
       shell: bash
-      run: pip install --upgrade platformio
+      run: pip install platformio==6.1.19
 
     - name: Record versions
       shell: bash
