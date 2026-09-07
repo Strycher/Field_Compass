@@ -163,6 +163,55 @@ jobs:
       - name: Report size
         run: pio run -e ${{ matrix.env }} --target size
 
+  # The Python suite covering scripts/ — pio-flash and the guards around it (#249).
+  #
+  # DELIBERATELY NOT gated on firmware_changed, and deliberately not `needs:`
+  # anything. It runs on every event, always, in parallel with discovery.
+  #
+  # Skipping is what created the gap this closes. Until now the gate compiled
+  # firmware and nothing else, so `scripts/` had no CI coverage at all — and
+  # test_legacy_hash_still_matches_when_no_serial_recorded sat red on `main`
+  # from the #172 port until #200, with nothing able to report it. It was found
+  # because a human asked about an unmerged branch.
+  #
+  # What is being guarded is not incidental: pio-flash decides WHICH PHYSICAL
+  # BOARD gets written, and these tests cover its identity matching plus the
+  # guards refusing raw flashing and registry hand-edits. #200 was itself a
+  # device-identity defect. The whole suite takes under two seconds, so there is
+  # no runtime argument for conditioning it on anything.
+  #
+  # Both versions are PINNED to the pair the suite is actually verified on --
+  # Python 3.14.2 and pytest 9.0.2 on the dev box, 54 passed. Same discipline as
+  # `platformio==6.1.19` in the composite action, and for the same reason: a
+  # floating version means CI runs a configuration nobody has ever seen pass.
+  #
+  # Note this diverges from the build environment's Python 3.13, deliberately.
+  # That pin exists to run PlatformIO; this one exists to run these tests, and
+  # they are independent. Matching the newer interpreter also surfaces
+  # future-Python breakage earliest -- the class of defect #200's SyntaxWarning
+  # fix was about, which would otherwise appear locally before appearing here.
+  #
+  # Bump either deliberately, with a local run to confirm, never incidentally.
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+
+      - name: Install pytest
+        run: pip install pytest==9.0.2
+
+      - name: Record versions
+        run: |
+          python --version
+          python -m pytest --version
+
+      - name: Run the scripts/ suite
+        run: python -m pytest scripts/ -v
+
   # THIS is the job to require in branch protection — never `build (feather_s3)`.
   #
   # `build`'s job name is GENERATED from the matrix, which is generated from the
@@ -192,7 +241,7 @@ jobs:
   # `build (feather_s3)` fail, and the PR still reported mergeable=MERGEABLE,
   # mergeStateStatus=UNSTABLE — red, and merge allowed anyway.
   compile-gate:
-    needs: [discover, build]
+    needs: [discover, build, tests]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -216,13 +265,23 @@ jobs:
         run: |
           d='${{ needs.discover.result }}'
           b='${{ needs.build.result }}'
+          t='${{ needs.tests.result }}'
           fw='${{ needs.discover.outputs.firmware_changed }}'
           echo "discover          = $d"
           echo "build             = $b"
+          echo "tests             = $t"
           echo "firmware_changed  = $fw"
 
-          if [ "$d" = "cancelled" ] || [ "$b" = "cancelled" ]; then
+          if [ "$d" = "cancelled" ] || [ "$b" = "cancelled" ] || [ "$t" = "cancelled" ]; then
             echo "::error::Run was cancelled, so nothing was verified. The gate fails closed - re-run it or push again. This is NOT a compile error."
+            exit 1
+          fi
+
+          # tests are unconditional: no event, path or condition makes a
+          # non-success acceptable. `skipped` here would mean the suite did not
+          # run, which is the gap #249 closes -- so it fails like a failure.
+          if [ "$t" != "success" ]; then
+            echo "::error::the scripts/ test suite did not succeed ($t)"
             exit 1
           fi
 
