@@ -70,39 +70,10 @@
 #include "ui_state.h"
 #include "touch.h"
 #include "web.h"
+#include "lvgl_port.h"
 
-// Set to 1 to enable LVGL test rendering (label in corner during boot).
-// Set to 0 for normal operation where sprite pipeline handles all rendering.
-#define LVGL_TEST_MODE 0
-
-// LVGL display object and draw buffers (PSRAM-backed for performance)
-static lv_display_t* lvglDisplay = NULL;
-
-// Two 480x50 partial-render buffers in PSRAM (~48KB each, 96KB total)
-// Allocated dynamically in initLVGL() via heap_caps_malloc(MALLOC_CAP_SPIRAM);
-// LVGL_BUF_LINES / LVGL_BUF_SIZE are in display.h (the diagnostics page shows them)
-static uint8_t* lvglBuf1 = NULL;
-static uint8_t* lvglBuf2 = NULL;
-
-// LVGL initialization flag
-static bool lvglAvailable = false;
-
-// LVGL input devices (#106)
-static lv_indev_t* lvglTouchIndev = NULL;   // FT6336U → LV_INDEV_TYPE_POINTER
-static lv_indev_t* lvglEncoderIndev = NULL; // Buttons → LV_INDEV_TYPE_ENCODER
-static lv_group_t* lvglGroup = NULL;        // Focus group for encoder navigation
-
-// LVGL named styles — Field Compass theme (#107)
-static lv_style_t fcStyleHeader;   // Cyan, XL (24) — screen titles
-static lv_style_t fcStyleValue;    // Green, LG (20) — sensor values
-static lv_style_t fcStyleHero;     // Green, HERO (32) — large numbers
-static lv_style_t fcStyleBody;     // White, MD (18) — body text
-static lv_style_t fcStyleLabel;    // Gray, SM (16) — secondary labels
-static lv_style_t fcStyleWarn;     // Orange, MD (18) — warnings
-static lv_style_t fcStyleError;    // Red, MD (18) — errors
 
 // ============== Configuration ==============
-
 
 
 // TFT Display pins (ST7796U 3.5" IPS, SPI) — TFT_CS=18, TFT_DC=17, TFT_RST=16 are
@@ -112,14 +83,6 @@ static lv_style_t fcStyleError;    // Red, MD (18) — errors
 
 
 // FRAM Memory Map (256KB = 262,144 bytes, MB85RS2MTA)
-
-// SPI pins (explicit definition for PSRAM variant compatibility)
-// Adafruit ESP32-S3 Feather default SPI pins
-
-// Button pins (directly wired, active LOW)
-#define BUTTON_A 9
-#define BUTTON_B 6
-#define BUTTON_C 5
 
 
 // Screen dimensions (landscape mode after rotation)
@@ -186,112 +149,17 @@ bool buttonCLongPressHandled = false;
 
 // ============== LVGL Tick Callback ==============
 
-// LVGL needs a tick source to track elapsed time for animations/timers.
-// On ESP32-S3, esp_timer_get_time() returns microseconds since boot.
-static uint32_t lvglTickCb(void) {
-  return (uint32_t)(esp_timer_get_time() / 1000ULL);  // Convert µs to ms
-}
-
 // ============== LVGL Flush Callback ==============
-
-// Called by LVGL when a rendered region is ready to be sent to the display.
-// Uses TFT_eSPI's SPI transaction-safe pushColors with byte swap.
-void lvglFlushCb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
-  uint32_t w = (area->x2 - area->x1 + 1);
-  uint32_t h = (area->y2 - area->y1 + 1);
-
-  tft.startWrite();
-  tft.setAddrWindow(area->x1, area->y1, w, h);
-  // swap=true: byte-swaps from LVGL native little-endian to ST7796U big-endian
-  tft.pushColors((uint16_t*)px_map, w * h, true);
-  tft.endWrite();
-
-  lv_display_flush_ready(disp);
-}
 
 // ============== LVGL Log Callback ==============
 
 #if LV_USE_LOG != 0
-void lvglLogCb(lv_log_level_t level, const char* buf) {
-  LV_UNUSED(level);
-  Serial.println(buf);
-  Serial.flush();
-}
 #endif
 
 // ============== LVGL Touch Read Callback (#106) ==============
 
-// Called by LVGL's indev timer (~33ms). Polls FT6336U over I2C.
-// I2C reads are non-destructive — both legacy and LVGL read the same hardware.
-// Touch diagnostics: track press/release transitions for debugging (#112)
-static uint32_t touchPressCount = 0;
-static uint32_t touchReleaseCount = 0;
-static bool     touchWasPressed = false;
-static int32_t  lastTouchX = -1;          // Last LVGL-space touch X (for diagnostics)
-static int32_t  lastTouchY = -1;          // Last LVGL-space touch Y (for diagnostics)
-
-void lvglTouchReadCb(lv_indev_t* indev, lv_indev_data_t* data) {
-  (void)indev;
-
-  if (!touchAvailable) {
-    data->state = LV_INDEV_STATE_RELEASED;
-    return;
-  }
-
-  if (ctp.touched()) {
-    TS_Point p = ctp.getPoint();
-    // Same coordinate transform as legacy pipeline:
-    data->point.x = (int32_t)(480 - p.y);  // horizontal 0-479
-    data->point.y = (int32_t)(p.x);        // vertical   0-319
-    data->state   = LV_INDEV_STATE_PRESSED;
-    lastTouchX = data->point.x;
-    lastTouchY = data->point.y;
-    lastActivityTime = millis();  // DIAG: keep TFT awake on LVGL screens too
-    if (!touchWasPressed) {
-      touchPressCount++;
-      touchWasPressed = true;
-      logPrintf("[TOUCH] PRESS @(%ld,%ld) scr=%d sub=%d\n",
-                data->point.x, data->point.y, currentScreen, settingsSubScreen);
-    }
-  } else {
-    data->state = LV_INDEV_STATE_RELEASED;
-    if (touchWasPressed) {
-      touchReleaseCount++;
-      touchWasPressed = false;
-      // DIAG: log what LVGL thinks is pressed at touch coordinates
-      lv_obj_t* hit = lv_indev_search_obj(lv_screen_active(), &data->point);
-      logPrintf("[TOUCH] RELEASE #%lu → hit_obj=%p (scr=%d sub=%d)\n",
-                touchPressCount, (void*)hit, currentScreen, settingsSubScreen);
-    }
-  }
-}
 
 // ============== LVGL Encoder Read Callback (#106) ==============
-
-// Maps A/B/C buttons to LVGL encoder: A=prev(-1), B=next(+1), C=enter.
-// Edge detection emits a single enc_diff pulse per press.
-void lvglEncoderReadCb(lv_indev_t* indev, lv_indev_data_t* data) {
-  (void)indev;
-
-  static bool prevA = false, prevB = false, prevC = false;
-
-  bool curA = !digitalRead(BUTTON_A);  // active LOW
-  bool curB = !digitalRead(BUTTON_B);
-  bool curC = !digitalRead(BUTTON_C);
-
-  int16_t diff = 0;
-
-  // Edge detect: fire once on press-down
-  if (curA && !prevA) diff = -1;   // A = previous
-  if (curB && !prevB) diff = +1;   // B = next
-
-  data->enc_diff = diff;
-  data->state = curC ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
-
-  prevA = curA;
-  prevB = curB;
-  prevC = curC;
-}
 
 // ============== Setup ==============
 
@@ -595,52 +463,6 @@ void scanI2C() {
 }
 
 // ============== Field Compass LVGL Theme (#107) ==============
-void initFCTheme() {
-  // Initialize default dark theme with cyan primary, green secondary
-  lv_theme_t* theme = lv_theme_default_init(
-      lvglDisplay,
-      FC_COLOR_HEADER,    // primary — focus rings, active elements
-      FC_COLOR_VALUE,     // secondary — accents, toggles
-      true,               // dark mode
-      FC_FONT_MD          // default app font = 18px Montserrat
-  );
-  lv_display_set_theme(lvglDisplay, theme);
-
-  // Screen background: black
-  lv_obj_set_style_bg_color(lv_screen_active(), FC_COLOR_BG, 0);
-
-  // Initialize named styles
-  lv_style_init(&fcStyleHeader);
-  lv_style_set_text_color(&fcStyleHeader, FC_COLOR_HEADER);
-  lv_style_set_text_font(&fcStyleHeader, FC_FONT_XL);
-
-  lv_style_init(&fcStyleValue);
-  lv_style_set_text_color(&fcStyleValue, FC_COLOR_VALUE);
-  lv_style_set_text_font(&fcStyleValue, FC_FONT_LG);
-
-  lv_style_init(&fcStyleHero);
-  lv_style_set_text_color(&fcStyleHero, FC_COLOR_VALUE);
-  lv_style_set_text_font(&fcStyleHero, FC_FONT_HERO);
-
-  lv_style_init(&fcStyleBody);
-  lv_style_set_text_color(&fcStyleBody, FC_COLOR_TEXT);
-  lv_style_set_text_font(&fcStyleBody, FC_FONT_MD);
-
-  lv_style_init(&fcStyleLabel);
-  lv_style_set_text_color(&fcStyleLabel, FC_COLOR_DIM);
-  lv_style_set_text_font(&fcStyleLabel, FC_FONT_SM);
-
-  lv_style_init(&fcStyleWarn);
-  lv_style_set_text_color(&fcStyleWarn, FC_COLOR_WARN);
-  lv_style_set_text_font(&fcStyleWarn, FC_FONT_MD);
-
-  lv_style_init(&fcStyleError);
-  lv_style_set_text_color(&fcStyleError, FC_COLOR_ERROR);
-  lv_style_set_text_font(&fcStyleError, FC_FONT_MD);
-
-  logPrintln("[LVGL] Field Compass theme initialized (7 styles)");
-}
-
 // ============== FC Widget Library (#108) ==============
 
 // Forward declarations for callbacks used in widgets (#113)

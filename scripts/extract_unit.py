@@ -251,6 +251,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--unit", required=True)
     ap.add_argument("--functions", default="")
+    ap.add_argument("--publish-functions", default="",
+                    help="moved functions that lose `static` and gain a prototype: a caller stays behind")
     ap.add_argument("--move-vars", default="", help="variables moved into the .cpp, kept private")
     ap.add_argument("--publish-vars", default="", help="variables moved into the .cpp and declared extern in the header")
     ap.add_argument("--move-defines", default="")
@@ -273,6 +275,8 @@ def main() -> int:
 
     split = lambda s: [n for n in s.split(",") if n]
     names, mvars, pvars = split(a.functions), split(a.move_vars), split(a.publish_vars)
+    pfuncs = split(a.publish_functions)
+    names += [n for n in pfuncs if n not in names]
     defines, decls = split(a.move_defines), split(a.move_decls)
 
     # ---- locate everything first; only then mutate --------------------------
@@ -281,7 +285,7 @@ def main() -> int:
         d = find_definition(lines, n)
         b = signature_end(lines, d)
         e = block_end(lines, b)
-        moves.append((comment_start(lines, d), d, b, e, n, is_static(lines, d)))
+        moves.append((comment_start(lines, d), d, b, e, n, is_static(lines, d) and n not in pfuncs))
     moves.sort()
     for x, y in zip(moves, moves[1:]):
         if y[0] <= x[3]:
@@ -374,7 +378,10 @@ def main() -> int:
         existing = {n: t for _, (n, t) in protos.items()}
         for c, d, b, e, n, st in moves:
             if not st:
-                h.append(existing.get(n, prototype(lines, d, b)) + nl)
+                p = existing.get(n, prototype(lines, d, b))
+                if n in pfuncs:
+                    p = re.sub(r"^static\s+", "", p)
+                h.append(p + nl)
 
     cpp = []
     if not a.header_only:
@@ -400,6 +407,8 @@ def main() -> int:
             cpp.append(nl)
             for i in range(c, e + 1):
                 l = lines[i]
+                if i == d and n in pfuncs:
+                    l = re.sub(r"^static\s+", "", l)     # published: a caller stays behind
                 if d <= i <= b and not st:
                     # a default argument may appear once: the header's prototype
                     # carries it, so the definition must not (parseGPXFromString)
