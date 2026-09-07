@@ -98,29 +98,51 @@ jobs:
           fi
           echo "$count environment(s) discovered"
 
+      # FAIL-SAFE DEFAULT: firmware=true unless a diff is successfully computed
+      # AND proves no firmware path was touched. Once `build` is skipped rather
+      # than merely idle (see the job's `if:`), a detector that silently returns
+      # nothing would skip the compile and still report a green gate. Defaulting
+      # to true means a broken detector costs four minutes, not a false pass.
+      # Pattern follows CoreScope-OKI's `changes` job.
       - name: Detect firmware changes
         id: changed
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          firmware=true
+
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            base="origin/${{ github.base_ref }}"
-            git fetch --quiet origin "${{ github.base_ref }}"
-            files=$(git diff --name-only "$base"...HEAD)
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+            if [ -n "$base" ] && git cat-file -e "$base" 2>/dev/null; then
+              files=$(git diff --name-only "$base" "$head" 2>/dev/null || true)
+              echo "Changed files:"; printf '%s\n' "$files" | sed 's/^/  /'
+              if [ -n "$files" ] && ! printf '%s\n' "$files" \
+                   | grep -qE '^(src/|include/|lib/|partitions/|platformio\.ini|\.github/workflows/compile\.yml|\.github/actions/setup-build-environment/)'; then
+                firmware=false
+              fi
+            else
+              echo "Base sha unavailable — defaulting to a full build."
+            fi
           else
-            # push to main, or manual dispatch: always build
-            echo "firmware=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "Changed files:"; echo "$files" | sed 's/^/  /'
-          if echo "$files" | grep -qE '^(src/|include/|lib/|partitions/|platformio\.ini|\.github/workflows/compile\.yml|\.github/actions/setup-build-environment/)'; then
-            echo "firmware=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "firmware=false" >> "$GITHUB_OUTPUT"
-            echo "No firmware paths touched — build steps will be skipped, check still reports."
+            echo "Push to main or manual dispatch — always build."
           fi
 
+          echo "firmware = $firmware"
+          [ "$firmware" = "true" ] || echo "No firmware paths touched — the build job will be skipped entirely."
+          echo "firmware=$firmware" >> "$GITHUB_OUTPUT"
+
+  # Skipped ENTIRELY on a docs-only PR — the job never starts, rather than
+  # starting a runner to evaluate a handful of `if:` conditions and echo a
+  # notice. Owner ruling, aligned with CoreScope-OKI, whose downstream jobs
+  # carry `if: needs.changes.outputs.code == 'true'`.
+  #
+  # This is why `discover`'s detector defaults to firmware=true: a skipped
+  # build reports `skipped`, and `compile-gate` only tolerates that when
+  # firmware_changed is genuinely false. A detector that failed open the other
+  # way would skip the compile and still pass the gate.
   build:
     needs: discover
+    if: needs.discover.outputs.firmware_changed == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false        # one broken env must not hide the state of others
@@ -128,25 +150,17 @@ jobs:
         env: ${{ fromJson(needs.discover.outputs.envs) }}
     name: build (${{ matrix.env }})
     steps:
-      - name: Skip notice
-        if: needs.discover.outputs.firmware_changed != 'true'
-        run: echo "No firmware changes in this PR — nothing to build. Reporting success."
-
       - uses: actions/checkout@v7
-        if: needs.discover.outputs.firmware_changed == 'true'
 
       - uses: ./.github/actions/setup-build-environment
-        if: needs.discover.outputs.firmware_changed == 'true'
 
       - name: Build ${{ matrix.env }}
-        if: needs.discover.outputs.firmware_changed == 'true'
         run: pio run -e ${{ matrix.env }}
 
       # `pio run --target size` rather than binutils `size`: the host `size` on
       # the runner is x86 binutils and is not guaranteed to read an Xtensa ELF,
       # whereas pio dispatches the toolchain's own. It recompiles nothing.
       - name: Report size
-        if: needs.discover.outputs.firmware_changed == 'true'
         run: pio run -e ${{ matrix.env }} --target size
 
   # THIS is the job to require in branch protection — never `build (feather_s3)`.
@@ -202,17 +216,37 @@ jobs:
         run: |
           d='${{ needs.discover.result }}'
           b='${{ needs.build.result }}'
-          echo "discover = $d"
-          echo "build    = $b"
+          fw='${{ needs.discover.outputs.firmware_changed }}'
+          echo "discover          = $d"
+          echo "build             = $b"
+          echo "firmware_changed  = $fw"
 
           if [ "$d" = "cancelled" ] || [ "$b" = "cancelled" ]; then
             echo "::error::Run was cancelled, so nothing was verified. The gate fails closed - re-run it or push again. This is NOT a compile error."
             exit 1
           fi
 
-          rc=0
-          [ "$d" = "success" ] || { echo "::error::discover did not succeed ($d)"; rc=1; }
-          [ "$b" = "success" ] || { echo "::error::build did not succeed ($b)"; rc=1; }
-          [ "$rc" -eq 0 ] || exit 1
+          # discover must always succeed. Everything below trusts its outputs,
+          # so a failed discover can never be waved through as a docs-only PR.
+          if [ "$d" != "success" ]; then
+            echo "::error::discover did not succeed ($d)"
+            exit 1
+          fi
+
+          if [ "$fw" = "true" ]; then
+            # Firmware changed: the build must have run and passed. `skipped`
+            # here would mean the compile silently did not happen.
+            if [ "$b" != "success" ]; then
+              echo "::error::firmware changed but build did not succeed ($b)"
+              exit 1
+            fi
+          else
+            # Docs-only: the build job is skipped by design, and that is the
+            # ONLY circumstance in which a non-success build result passes.
+            case "$b" in
+              skipped|success) echo "No firmware changes; build legitimately skipped." ;;
+              *) echo "::error::build reported '$b' on a docs-only change, which should not happen"; exit 1 ;;
+            esac
+          fi
 
           echo "Compile gate passed."
