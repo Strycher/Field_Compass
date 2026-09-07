@@ -126,22 +126,64 @@ def is_static(lines: list[str], start: int) -> bool:
 
 
 # Type may be several words (`unsigned long`, `const char*`); each word may end
-# in `*`. The name follows, optionally an array suffix, then `=` or `;`.
-VAR_RE_TMPL = r"^\s*(?:static\s+)?(?:volatile\s+)?(?:const\s+)?(?:[A-Za-z_][\w:<>]*\*?\s+)+\**{name}\s*(?:\[[^\]]*\])*\s*(?:=|;)"
+# in `*`. The name follows, optionally an array suffix, then `=`, `;` or `,`.
+# Column 0 only: file-scope declarations are, and an indented
+# `else gprmcFixThisCycle = true;` reads as a declaration otherwise (band 3b).
+VAR_RE_TMPL = r"^(?:static\s+)?(?:volatile\s+)?(?:const\s+)?(?:[A-Za-z_][\w:<>]*\*?\s+)+\**{name}\s*(?:\[[^\]]*\])*\s*(?:=|;|,)"
 
 
-def find_var(lines: list[str], name: str) -> int:
+# A name that is not the first declarator on its line: `float a = 0, b = 0, c;`
+# (band 3b: the magnetometer offsets). Column 0 only, and never a prototype.
+COMMA_RE_TMPL = r"^(?:static\s+)?(?:volatile\s+)?(?:const\s+)?(?:[A-Za-z_][\w:<>]*\*?\s+)+[^;{{()]*?,\s*\**{name}\s*(?:\[[^\]]*\])*\s*(?:=|;|,)"
+# An instance declared with its struct: `struct GpsData { ... } gpsData;`
+INST_RE_TMPL = r"^\}}\s*{name}\s*;"
+STRUCT_START_RE = re.compile(r"^(?:typedef\s+)?struct\s+(\w+)\s*\{")
+
+
+def declarators(line: str) -> list[str]:
+    """Names declared on one line: `static float a = 0, b = 0, c;` -> [a, b, c]."""
+    body = re.sub(r"//.*$", "", line.rstrip("\r\n")).strip().rstrip(";")
+    body = re.sub(r"^(?:static\s+)?(?:volatile\s+)?(?:const\s+)?(?:[A-Za-z_][\w:<>]*\*?\s+)+", "", body, count=1)
+    out = []
+    for part in body.split(","):
+        m = re.match(r"\s*\**(\w+)", part)
+        if m:
+            out.append(m.group(1))
+    return out
+
+
+def locate_var(lines: list[str], name: str) -> tuple[int, int, str | None]:
+    """(first line, last line, struct type or None) of a file-scope variable."""
     pat = re.compile(VAR_RE_TMPL.format(name=re.escape(name)))
-    return one([i for i, l in enumerate(lines)
-                if pat.match(l) and not l.lstrip().startswith("extern ")], f"variable {name}")
+    cpat = re.compile(COMMA_RE_TMPL.format(name=re.escape(name)))
+    hits = [i for i, l in enumerate(lines)
+            if (pat.match(l) or cpat.match(l)) and not l.lstrip().startswith("extern ")]
+    if hits:
+        i = one(hits, f"variable {name}")
+        # a table initialiser (`= {` ... `};`) spans lines: carry the whole block
+        end = block_end(lines, i) if "{" in lines[i] and "}" not in lines[i] else i
+        return i, end, None
+    ipat = re.compile(INST_RE_TMPL.format(name=re.escape(name)))
+    e = one([i for i, l in enumerate(lines) if ipat.match(l)], f"variable {name}")
+    s = e
+    while s >= 0 and not STRUCT_START_RE.match(lines[s]):
+        s -= 1
+    if s < 0:
+        sys.exit(f"refusing: no `struct T {{` above `}} {name};` at line {e + 1}")
+    return s, e, STRUCT_START_RE.match(lines[s]).group(1)
 
 
 def extern_decl(line: str) -> str:
-    """`static volatile uint16_t x = 0;  // c` -> `extern volatile uint16_t x;`"""
+    """`static volatile uint16_t x = 0;  // c` -> `extern volatile uint16_t x;`
+    `float a = 0, b = 0, c = 0;` -> `extern float a, b, c;`"""
     body = line.rstrip("\r\n")
     body = re.sub(r"//.*$", "", body).strip()
     body = re.sub(r"^static\s+", "", body)
-    body = body.split("=", 1)[0].rstrip().rstrip(";").rstrip()
+    if "{" in body:
+        body = body.split("=", 1)[0]
+    else:
+        body = re.sub(r"\s*=\s*[^,;]+", "", body)   # each declarator's initialiser
+    body = body.rstrip().rstrip(";").rstrip()
     return "extern " + body + ";"
 
 
@@ -185,11 +227,16 @@ def main() -> int:
         if y[0] <= x[3]:
             sys.exit(f"refusing: {x[4]} and {y[4]} overlap")
 
-    var_lines = {n: find_var(lines, n) for n in mvars + pvars}
-    # a table initialiser (`static const TZPreset tzPresets[] = {` ... `};`) spans
-    # lines: carry the whole block, not just its first line (band 3a)
-    var_ends = {n: (block_end(lines, i) if "{" in lines[i] and "}" not in lines[i] else i)
-                for n, i in var_lines.items()}
+    var_loc = {n: locate_var(lines, n) for n in mvars + pvars}
+    var_lines = {n: v[0] for n, v in var_loc.items()}
+    var_ends = {n: v[1] for n, v in var_loc.items()}
+    var_inst = {n: v[2] for n, v in var_loc.items() if v[2]}   # name -> struct type
+    # a comma line moves whole, so every declarator on it must have been asked for
+    for n, i in var_lines.items():
+        if n not in var_inst and "{" not in lines[i]:
+            others = [d for d in declarators(lines[i]) if d not in mvars + pvars]
+            if others:
+                sys.exit(f"refusing: line {i + 1} also declares {others}; name them too")
     def_lines = {n: one([i for i, l in enumerate(lines)
                         if re.match(r"^\s*#define\s+" + re.escape(n) + r"\b", l)], f"#define {n}")
                  for n in defines}
@@ -243,6 +290,11 @@ def main() -> int:
             s, e = decl_ranges[n]
             h.append(nl)
             h.extend(lines[s:e + 1])
+    for n, t in var_inst.items():
+        # the struct goes to the header without its instance; the .cpp defines `T n;`
+        h.append(nl)
+        h.extend(lines[var_lines[n]:var_ends[n]])
+        h.append("};" + nl)
     if hdr_range:
         # verbatim block goes BEFORE the externs and prototypes: it is types and
         # macros, and an extern of a struct type needs the struct first (band 3a)
@@ -250,7 +302,13 @@ def main() -> int:
         h.extend(lines[hdr_range[0]:hdr_range[1] + 1])
     if pvars:
         h.append(nl)
-        h.extend(extern_decl(lines[var_lines[n]]) + nl for n in pvars)
+        seen = set()
+        for n in pvars:
+            if var_lines[n] in seen:
+                continue                     # a comma line: one extern names them all
+            seen.add(var_lines[n])
+            h.append((f"extern {var_inst[n]} {n};" if n in var_inst
+                      else extern_decl(lines[var_lines[n]])) + nl)
     if not a.header_only and moves:
         h.append(nl)
         existing = {n: t for _, (n, t) in protos.items()}
@@ -266,10 +324,18 @@ def main() -> int:
             cpp.append(inc_line(inc))
         if mvars or pvars:
             cpp.append(nl)
+            done = set()
             for n in sorted(mvars + pvars, key=lambda x: var_lines[x]):
-                l = lines[var_lines[n]]
+                i = var_lines[n]
+                if i in done:
+                    continue                 # a comma line carries several names; once
+                done.add(i)
+                if n in var_inst:
+                    cpp.append(f"{var_inst[n]} {n};" + nl)
+                    continue
+                l = lines[i]
                 cpp.append(re.sub(r"^(\s*)static\s+", r"\1", l) if n in pvars else l)
-                cpp.extend(lines[var_lines[n] + 1:var_ends[n] + 1])
+                cpp.extend(lines[i + 1:var_ends[n] + 1])
         for c, d, b, e, n, st in moves:
             cpp.append(nl)
             cpp.extend(lines[c:e + 1])
@@ -281,7 +347,8 @@ def main() -> int:
     for n in mvars:
         print(f"  var   {n:<28} line {var_lines[n] + 1} -> .cpp (private)")
     for n in pvars:
-        print(f"  var   {n:<28} line {var_lines[n] + 1} -> .cpp, published: {extern_decl(lines[var_lines[n]])}")
+        ext = f"extern {var_inst[n]} {n};" if n in var_inst else extern_decl(lines[var_lines[n]])
+        print(f"  var   {n:<28} line {var_lines[n] + 1} -> .cpp, published: {ext}")
     for n in defines:
         print(f"  define {n:<27} line {def_lines[n] + 1} -> header")
     for n in decls:
@@ -323,7 +390,7 @@ def main() -> int:
         t = lines[i].rstrip("\r\n")
         return t.lstrip().startswith("//") and not BANNER_RE.match(t)
 
-    for i in sorted(remove):
+    for i in sorted(remove, reverse=True):     # bottom-up: a swept comment can orphan the one above it
         if i == 0 or (i - 1) in remove or not is_comment(i - 1):
             continue
         j = i

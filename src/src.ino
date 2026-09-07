@@ -40,11 +40,6 @@
 #include <Adafruit_SH110X.h>
 #include <bsec2.h>
 
-// BSEC2 IAQ config for BME680/688 at 3.3V, 3-second sample rate, 4-day calibration
-const uint8_t bsec2_config[] = {
-  #include "config/bme680/bme680_iaq_33v_3s_4d/bsec_iaq.txt"
-};
-
 #include <Adafruit_LSM6DSOX.h>
 #include <Adafruit_LIS3MDL.h>
 #include <Adafruit_MAX1704X.h>
@@ -65,6 +60,10 @@ const uint8_t bsec2_config[] = {
 #include "fram.h"
 #include "settings.h"
 #include "rtc.h"
+#include "gps.h"
+#include "imu.h"
+#include "env.h"
+#include "battery.h"
 
 // Set to 1 to enable LVGL test rendering (label in corner during boot).
 // Set to 0 for normal operation where sprite pipeline handles all rendering.
@@ -132,15 +131,8 @@ const char* NTP_SERVER = "pool.ntp.org";
 #define BUTTON_B 6
 #define BUTTON_C 5
 
-// GPS Serial configuration
-#define GPS_BAUD 9600
-#define GPS_RX RX
-#define GPS_TX TX
 
 // Debug flags (set to 1 to enable)
-#define DEBUG_GPS   0  // GPS NMEA sentence logging
-#define GPS_STALE_MS  5000   // No bytes for 5s → clear receiving/valid (#115)
-#define DEBUG_BSEC  0  // BSEC2 readings logging
 #define DEBUG_SLEEP 0  // Display sleep/wake logging
 #define DEBUG_TFT   1  // TFT display state logging (P1 blank bug debug)
 
@@ -174,9 +166,6 @@ const char* NTP_SERVER = "pool.ntp.org";
 
 // BSEC sample rate: BSEC_SAMPLE_RATE_LP = 3 sec, BSEC_SAMPLE_RATE_ULP = 5 min
 
-// BSEC state persistence to SD card
-#define BSEC_STATE_FILE "/bsec_state.bin"
-#define BSEC_STATE_SAVE_INTERVAL 3600000  // 1 hour in ms
 
 // Web server configuration
 #define WEB_SERVER_PORT 80
@@ -241,12 +230,6 @@ static const char* settingsMenuItems[] = {
 // OLED Display
 Adafruit_SH1107 oled = Adafruit_SH1107(64, 128, &Wire);
 
-// Sensors
-Bsec2 envSensor;
-Adafruit_SHT4x sht4 = Adafruit_SHT4x();  // SHT41 temp/humidity (#48)
-Adafruit_LSM6DSOX lsm;
-Adafruit_LIS3MDL lis;
-Adafruit_MAX17048 battery;
 
 // Web Server
 WebServer webServer(WEB_SERVER_PORT);
@@ -277,22 +260,8 @@ static uint32_t tftUpdateCount = 0;          // Total TFT update cycles
 bool oledAvailable = false;
 
 // Sensor availability flags
-bool bmeAvailable = false;
-bool shtAvailable = false;          // SHT41 temp/humidity (#48)
-bool imuAvailable = false;
-bool magAvailable = false;
-bool batteryAvailable = false;
 bool touchAvailable = false;          // FT6336U capacitive touch
 
-// Magnetometer calibration (hard-iron offsets)
-float magOffsetX = 0, magOffsetY = 0, magOffsetZ = 0;
-bool magCalibrated = false;
-bool magCalibrating = false;
-unsigned long magCalStartTime = 0;
-float magCalMinX, magCalMinY, magCalMinZ;
-float magCalMaxX, magCalMaxY, magCalMaxZ;
-#define MAG_CAL_DURATION_MS 15000  // 15 seconds
-#define MAG_MIN_MAGNITUDE 5.0      // µT — lowered for steel breadboard environment
 
 
 // FRAM state (in RAM — synced from FRAM header on boot)
@@ -303,76 +272,23 @@ bool ntpSynced = false;
 bool webServerStarted = false;
 
 // RTC sync tracking - avoid repeated syncs
-bool rtcSyncedFromGPS = false;    // RTC was synced from GPS this session
 bool rtcSyncedFromNTP = false;    // RTC was synced from NTP this session
 
 // Periodic status logging
 static unsigned long lastStatusLog = 0;
 #define STATUS_LOG_INTERVAL 10000  // Log status every 10 seconds
 
-// BSEC state persistence
-static uint8_t bsecState[BSEC_MAX_STATE_BLOB_SIZE];
-static unsigned long lastBsecStateSave = 0;
 
 // Diagnostics state
-static bool bsecStateLoaded = false;
-static bool bsecStateSaved = false;
 static int weatherLogFileCount = 0;
 static int weatherLogEntryCount = 0;
 static unsigned long lastWeatherLogCheck = 0;
 
 // Battery logging to SD card
 static unsigned long lastBattLog = 0;
-#define BATT_LOG_INTERVAL 10000  // Log every 10 seconds
-#define BATT_LOG_FILE "/battlog.csv"
 
-// GPS data. Named (#260) so other translation units can `extern GpsData gpsData;`
-// -- an anonymous struct type cannot be named by extern at all.
-struct GpsData {
-  bool valid = false;
-  bool receiving = false;
-  float latitude = 0;
-  float longitude = 0;
-  float altitude = 0;
-  float hdop = 99.0;       // Horizontal dilution of precision (lower = better) (#70)
-  int satellites = 0;      // Number of satellites in fix (#70)
-  int hour = 0;
-  int minute = 0;
-  int second = 0;
-  int day = 0;             // Date from RMC sentence
-  int month = 0;
-  int year = 0;
-  bool timeValid = false;
-  bool dateValid = false;  // True when date has been parsed from RMC
-  float speedKnots = 0;   // Ground speed from RMC sentence
-} gpsData;
 
-char gpsBuffer[128];
-int gpsBufferIndex = 0;
 
-// GPS time-to-first-fix tracking (#68)
-static unsigned long gpsFirstReceiveTime = 0;  // When first NMEA data received
-static unsigned long gpsFirstFixTime = 0;       // When first valid fix acquired
-static unsigned long gpsSignalLostTime = 0;    // When signal was lost (for reacquire timing)
-static bool gpsHadFirstReceive = false;         // Tracks if we ever received data
-static bool gpsHadFirstFix = false;             // Tracks if we ever had a fix
-static unsigned long gpsLastByteTime = 0;    // Timestamp of last serial byte (#115)
-static bool gpsDebugEnabled = false;          // Runtime GPS debug logging (#115)
-// Multi-constellation RMC cycle tracking (#115)
-static bool gprmcFixThisCycle = false;
-static bool gnrmcFixThisCycle = false;
-static unsigned long lastRmcCycleTime = 0;
-
-// IMU data. Named (#260) for the same reason as GpsData.
-struct ImuData {
-  float heading = 0;
-  float roll = 0;
-  float pitch = 0;
-  float accelX = 0;
-  float accelY = 0;
-  float accelZ = 0;
-  float accelMag = 0;
-} imuData;
 
 // Geocache data (#70)
 #define MAX_CACHES 20
@@ -413,23 +329,7 @@ unsigned long buttonCPressStart = 0;
 bool buttonCLongPressHandled = false;
 #define LONG_PRESS_MS 800             // 800ms for long press
 
-// SHT41 data (#48) — primary source for temp/humidity. Named (#260).
-struct ShtData {
-  float temperature = 0;      // Temperature (C) — ±0.2°C accuracy
-  float humidity = 0;         // Relative humidity (%) — ±1.8% accuracy
-} shtData;
 
-// BME688 data (via BSEC2). Named (#260).
-struct EnvData {
-  float temperature = 0;      // Compensated temperature (C)
-  float humidity = 0;         // Compensated humidity (%)
-  float pressure = 0;         // Pressure (hPa)
-  float iaq = 0;              // Indoor Air Quality (0-500)
-  float co2Equivalent = 0;    // CO2 equivalent (ppm)
-  float bvocEquivalent = 0;   // Breath VOC equivalent (ppm)
-  float gasResistance = 0;    // Raw gas resistance (kOhm)
-  uint8_t iaqAccuracy = 0;    // 0=INIT, 1=LEARN, 2=CAL, 3=OK
-} envData;
 
 // Weather history for trend tracking
 struct WeatherReading {
@@ -469,26 +369,12 @@ struct WeatherTrend {
 // one. Prototypes emit no code: the nm symbol set, sizes and types are
 // identical before and after, which is this change's proof.
 const char* calculateForecast();
-const char* getIaqQualityText(float iaq);
 const char* getTrendArrow();
-bool isBatteryConnected();
-bool loadBsecFromFRAM();
-bool loadBsecState();
-void readBME688();
-void readIMU();
-void readSHT41();
 
 // ============== Serial Ring Buffer (moved before setup for use in init) ==============
 
 // Web serial streaming position tracker
 static uint16_t webSerialReadPos = 0;
-
-// Log to SD + Serial only (skips web serial mirror ring buffer)
-void magLogPrintln(const char* msg) {
-  serialLogAppend(msg);
-  serialLogAppend("\n");
-  Serial.println(msg);
-}
 
 // ============== LVGL Tick Callback ==============
 
@@ -4102,191 +3988,6 @@ void initOLED() {
   logPrintln("OK (128x64)");
 }
 
-void initGPS() {
-  logPrintf("Initializing GPS on RX=%d, TX=%d... ", GPS_RX, GPS_TX);
-  Serial1.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
-  delay(100);  // Let UART settle before sending command
-  Serial1.println("$PMTK101*32");  // Hot restart — ensures search is active (#115)
-  logPrintln("OK (9600 baud, PMTK101 sent)");
-}
-
-// BSEC2 callback - called when new sensor data is available
-void bsecDataCallback(const bme68xData data, const bsecOutputs outputs, Bsec2 bsec) {
-  if (!outputs.nOutputs) return;
-
-  for (uint8_t i = 0; i < outputs.nOutputs; i++) {
-    const bsecData output = outputs.output[i];
-    switch (output.sensor_id) {
-      case BSEC_OUTPUT_IAQ:
-        envData.iaq = output.signal;
-        envData.iaqAccuracy = output.accuracy;
-        break;
-      case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE:
-        envData.temperature = output.signal;
-        break;
-      case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY:
-        envData.humidity = output.signal;
-        break;
-      case BSEC_OUTPUT_RAW_PRESSURE:
-        #if DEBUG_BSEC
-        Serial.print("Raw pressure: ");
-        Serial.println(output.signal);
-        #endif
-        envData.pressure = output.signal;  // Already in hPa with BME680 IAQ config
-        break;
-      case BSEC_OUTPUT_CO2_EQUIVALENT:
-        envData.co2Equivalent = output.signal;
-        break;
-      case BSEC_OUTPUT_BREATH_VOC_EQUIVALENT:
-        envData.bvocEquivalent = output.signal;
-        break;
-      case BSEC_OUTPUT_RAW_GAS:
-        envData.gasResistance = output.signal / 1000.0;  // Ohm to kOhm
-        break;
-    }
-  }
-
-  // BSEC state persistence: save to FRAM on every accuracy change, SD on level 3
-  static uint8_t lastAccuracy = 0;
-  if (envData.iaqAccuracy != lastAccuracy) {
-    if (framAvailable) {
-      saveBsecToFRAM();  // Fast save to FRAM on every accuracy change
-    }
-    if (envData.iaqAccuracy == 3 && lastAccuracy < 3) {
-      saveBsecState();   // Also save to SD when reaching accuracy 3
-    }
-  }
-  lastAccuracy = envData.iaqAccuracy;
-
-  // Periodic BSEC state save (hourly)
-  if (millis() - lastBsecStateSave > BSEC_STATE_SAVE_INTERVAL) {
-    saveBsecState();
-  }
-}
-
-void initBME688() {
-  logPrint("Initializing BME688 (BSEC2)... ");
-
-  // BSEC2 sensor outputs to subscribe to
-  bsecSensor sensorList[] = {
-    BSEC_OUTPUT_IAQ,
-    BSEC_OUTPUT_RAW_PRESSURE,
-    BSEC_OUTPUT_RAW_GAS,
-    BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE,
-    BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY,
-    BSEC_OUTPUT_CO2_EQUIVALENT,
-    BSEC_OUTPUT_BREATH_VOC_EQUIVALENT
-  };
-
-  // Try primary address (0x77), then secondary (0x76)
-  if (!envSensor.begin(0x77, Wire)) {
-    if (!envSensor.begin(0x76, Wire)) {
-      logPrintln("NOT FOUND");
-      logPrintf("  BSEC status: %d\n", envSensor.status);
-      logPrintf("  Sensor status: %d\n", envSensor.sensor.status);
-      return;
-    }
-  }
-
-  // Load BSEC2 IAQ config
-  if (!envSensor.setConfig(bsec2_config)) {
-    logPrintln("CONFIG FAILED");
-    logPrintf("  BSEC status: %d\n", envSensor.status);
-    return;
-  }
-
-  // Set temperature offset for self-heating compensation
-  envSensor.setTemperatureOffset(3.0);  // Adjust based on testing
-
-  // Subscribe to desired outputs (LP = 3 second sample rate)
-  if (!envSensor.updateSubscription(sensorList, sizeof(sensorList) / sizeof(sensorList[0]), BSEC_SAMPLE_RATE_LP)) {
-    logPrintln("SUBSCRIPTION FAILED");
-    logPrintf("  BSEC status: %d\n", envSensor.status);
-    return;
-  }
-
-  // Attach callback for new data
-  envSensor.attachCallback(bsecDataCallback);
-
-  bmeAvailable = true;
-  logPrintln("OK");
-  logPrintf("  BSEC version: %d.%d.%d.%d\n",
-            envSensor.version.major, envSensor.version.minor,
-            envSensor.version.major_bugfix, envSensor.version.minor_bugfix);
-}
-
-void initSHT41() {
-  logPrint("Initializing SHT41... ");
-
-  if (!sht4.begin()) {
-    logPrintln("NOT FOUND");
-    return;
-  }
-
-  // Use high precision, no heater (best accuracy, ~8.2ms measurement)
-  sht4.setPrecision(SHT4X_HIGH_PRECISION);
-  sht4.setHeater(SHT4X_NO_HEATER);
-
-  shtAvailable = true;
-  logPrintln("OK (0x44)");
-
-  // Read initial values immediately
-  sensors_event_t humEv, tempEv;
-  if (sht4.getEvent(&humEv, &tempEv)) {
-    shtData.temperature = tempEv.temperature;
-    shtData.humidity = humEv.relative_humidity;
-    logPrintf("  Initial: %.1fC / %.1f%%\n", shtData.temperature, shtData.humidity);
-  }
-}
-
-void initIMU() {
-  logPrint("Initializing LSM6DSOX... ");
-
-  if (!lsm.begin_I2C(0x6A)) {
-    if (!lsm.begin_I2C(0x6B)) {
-      logPrintln("NOT FOUND");
-      return;
-    }
-  }
-
-  lsm.setAccelRange(LSM6DS_ACCEL_RANGE_4_G);
-  lsm.setGyroRange(LSM6DS_GYRO_RANGE_500_DPS);
-  lsm.setAccelDataRate(LSM6DS_RATE_104_HZ);
-  lsm.setGyroDataRate(LSM6DS_RATE_104_HZ);
-
-  imuAvailable = true;
-  logPrintln("OK");
-
-  logPrint("Initializing LIS3MDL... ");
-
-  if (!lis.begin_I2C(0x1C)) {
-    if (!lis.begin_I2C(0x1E)) {
-      logPrintln("NOT FOUND");
-      return;
-    }
-  }
-
-  lis.setPerformanceMode(LIS3MDL_MEDIUMMODE);
-  lis.setOperationMode(LIS3MDL_CONTINUOUSMODE);
-  lis.setDataRate(LIS3MDL_DATARATE_155_HZ);
-  lis.setRange(LIS3MDL_RANGE_4_GAUSS);
-
-  magAvailable = true;
-  logPrintln("OK");
-}
-
-void initBattery() {
-  logPrint("Initializing MAX17048... ");
-
-  if (!battery.begin()) {
-    logPrintln("NOT FOUND");
-    return;
-  }
-
-  batteryAvailable = true;
-  logPrintln("OK");
-}
-
 void initTouch() {
   logPrint("Initializing FT6336U touch... ");
 
@@ -4302,87 +4003,6 @@ void initTouch() {
   attachInterrupt(digitalPinToInterrupt(CTP_INT), touchISR, CHANGE);
 
   logPrintln("OK (interrupt on GPIO 14)");
-}
-
-// Log battery data to SD card for analysis
-void logBatteryToSD() {
-  if (!sdHealth.available || !batteryAvailable) return;
-
-  File f = sdOpenSafe(BATT_LOG_FILE, "a", true);  // silent fail OK
-  if (!f) return;
-
-  // Write header if new file
-  if (f.size() == 0) {
-    f.println("millis,voltage,percent,rate");
-  }
-
-  float v = battery.cellVoltage();
-  float p = battery.cellPercent();
-  float r = battery.chargeRate();
-
-  f.printf("%lu,%.3f,%.2f,%.2f\n", millis(), v, p, r);
-  f.close();
-  recordSDSuccess();
-}
-
-// Write battery entry to FRAM ring buffer instead of SD
-void logBatteryToFRAM() {
-  if (!framAvailable || !batteryAvailable) return;
-
-  float v = battery.cellVoltage();
-  float p = battery.cellPercent();
-  float r = battery.chargeRate();
-
-  FRAMBatteryEntry entry;
-  entry.timestamp = millis();
-  entry.voltage = v;
-  entry.percent = p;
-  entry.rate = r;
-  entry.flags = 0;
-  // Simple XOR checksum over first 18 bytes (before checksum field)
-  uint16_t ck = 0;
-  uint8_t* bytes = (uint8_t*)&entry;
-  for (int i = 0; i < 18; i += 2) {
-    ck ^= (bytes[i] | (bytes[i+1] << 8));
-  }
-  entry.checksum = ck;
-
-  // Write entry to FRAM at head position
-  uint32_t addr = FRAM_BATT_ADDR + (framHeader.battHead * FRAM_BATT_ENTRY);
-  uint8_t* data = (uint8_t*)&entry;
-  for (int i = 0; i < FRAM_BATT_ENTRY; i++) {
-    fram.write8(addr + i, data[i]);
-  }
-
-  // Advance head (circular)
-  framHeader.battHead = (framHeader.battHead + 1) % FRAM_BATT_COUNT;
-  if (framHeader.battCount < FRAM_BATT_COUNT) {
-    framHeader.battCount++;
-  } else {
-    // Ring full — tail advances too (oldest data lost)
-    framHeader.battTail = (framHeader.battTail + 1) % FRAM_BATT_COUNT;
-    logPrintln("[FRAM] WARN: Battery ring overflow");
-  }
-  framHeader.flags |= 0x01;  // Set dirty flag
-  framWriteHeader();
-}
-
-// Check if a real LiPo battery is connected (not just USB power)
-// NOTE: This is a simplified version for data collection.
-// Will be enhanced after analyzing battery log data.
-bool isBatteryConnected() {
-  if (!batteryAvailable) return false;
-
-  float pct = battery.cellPercent();
-
-  // Check for invalid reading
-  if (isnan(pct)) return false;
-
-  // >100% is impossible for real LiPo - indicates USB-only power
-  // MAX17048 reports 100-101% when connected to USB without battery
-  if (pct > 100.0) return false;
-
-  return true;
 }
 
 void initSD() {
@@ -4433,113 +4053,6 @@ void initSD() {
 // ============== SD Card Health Functions ==============
 
 // ============== BSEC State Persistence ==============
-
-bool loadBsecState() {
-  if (!sdHealth.available) return false;
-
-  if (!SD.exists(BSEC_STATE_FILE)) {
-    logPrintln("No BSEC state file found");
-    return false;
-  }
-
-  File file = sdOpenSafe(BSEC_STATE_FILE, "r");
-  if (!file) {
-    logPrintln("Failed to open BSEC state file");
-    return false;
-  }
-
-  size_t bytesRead = file.read(bsecState, BSEC_MAX_STATE_BLOB_SIZE);
-  file.close();
-
-  if (bytesRead != BSEC_MAX_STATE_BLOB_SIZE) {
-    logPrintln("Invalid BSEC state file size");
-    recordSDError(SD_ERR_READ_FAIL);
-    return false;
-  }
-
-  if (!envSensor.setState(bsecState)) {
-    logPrintf("Failed to restore BSEC state: %d\n", envSensor.status);
-    return false;
-  }
-
-  logPrintln("BSEC state restored from SD card");
-  bsecStateLoaded = true;
-  return true;
-}
-
-bool saveBsecState() {
-  if (!sdHealth.available) return false;
-
-  if (!envSensor.getState(bsecState)) {
-    logPrintf("Failed to get BSEC state: %d\n", envSensor.status);
-    return false;
-  }
-
-  File file = sdOpenSafe(BSEC_STATE_FILE, "w");
-  if (!file) {
-    logPrintln("Failed to create BSEC state file");
-    return false;
-  }
-
-  size_t bytesWritten = file.write(bsecState, BSEC_MAX_STATE_BLOB_SIZE);
-  file.close();
-
-  if (bytesWritten != BSEC_MAX_STATE_BLOB_SIZE) {
-    logPrintln("Failed to write BSEC state");
-    recordSDError(SD_ERR_WRITE_FAIL);
-    return false;
-  }
-
-  logPrintln("BSEC state saved to SD card");
-  lastBsecStateSave = millis();
-  bsecStateSaved = true;
-  return true;
-}
-
-// Save BSEC state to FRAM (fast, on every accuracy change)
-bool saveBsecToFRAM() {
-  if (!framAvailable || !bmeAvailable) return false;
-
-  if (!envSensor.getState(bsecState)) {
-    logPrintf("[FRAM] Failed to get BSEC state: %d\n", envSensor.status);
-    return false;
-  }
-
-  // Write BSEC blob to FRAM
-  for (int i = 0; i < BSEC_MAX_STATE_BLOB_SIZE && i < FRAM_BSEC_SIZE; i++) {
-    fram.write8(FRAM_BSEC_ADDR + i, bsecState[i]);
-  }
-
-  // Update header metadata
-  framHeader.bsecTimestamp = millis();
-  framHeader.bsecAccuracy = envData.iaqAccuracy;
-  framHeader.flags |= 0x02;  // Bit 1: BSEC valid
-  framWriteHeader();
-
-  logPrintf("[FRAM] BSEC state saved (acc:%d)\n", envData.iaqAccuracy);
-  return true;
-}
-
-// Load BSEC state from FRAM (fast boot recovery)
-bool loadBsecFromFRAM() {
-  if (!framAvailable || !bmeAvailable) return false;
-  if (!(framHeader.flags & 0x02)) return false;  // No valid BSEC in FRAM
-
-  // Read BSEC blob from FRAM
-  for (int i = 0; i < BSEC_MAX_STATE_BLOB_SIZE && i < FRAM_BSEC_SIZE; i++) {
-    bsecState[i] = fram.read8(FRAM_BSEC_ADDR + i);
-  }
-
-  if (!envSensor.setState(bsecState)) {
-    logPrintf("[FRAM] Failed to restore BSEC state: %d\n", envSensor.status);
-    return false;
-  }
-
-  logPrintf("[FRAM] BSEC state restored (acc:%d, age:%lus)\n",
-            framHeader.bsecAccuracy, framHeader.bsecTimestamp / 1000);
-  bsecStateLoaded = true;
-  return true;
-}
 
 // Flush all pending FRAM ring buffer entries to SD card
 void framFlushToSD() {
@@ -5026,60 +4539,6 @@ void logWeatherReading() {
       recordSDSuccess();
     }
   }
-}
-
-// Load magnetometer calibration from SD card
-void loadMagCal() {
-  if (!sdHealth.available) return;
-
-  File f = SD.open("/config/mag_cal.txt", FILE_READ);
-  if (!f) return;
-
-  char line[64];
-  int idx = 0;
-  while (f.available() && idx < 63) {
-    char c = f.read();
-    if (c == '\n' || c == '\r') break;
-    line[idx++] = c;
-  }
-  line[idx] = '\0';
-  f.close();
-
-  float x, y, z;
-  if (sscanf(line, "%f,%f,%f", &x, &y, &z) == 3) {
-    magOffsetX = x;
-    magOffsetY = y;
-    magOffsetZ = z;
-    magCalibrated = true;
-    char msg[64];
-    sprintf(msg, "[MAG] Calibration loaded: %.1f, %.1f, %.1f", x, y, z);
-    logPrintln(msg);
-  }
-}
-
-// Save magnetometer calibration to SD card
-void saveMagCal() {
-  if (!sdHealth.available) return;
-
-  // Ensure /config directory exists
-  if (!SD.exists("/config")) {
-    SD.mkdir("/config");
-  }
-
-  File f = SD.open("/config/mag_cal.txt", FILE_WRITE);
-  if (!f) {
-    logPrintln("[MAG] Failed to save calibration");
-    return;
-  }
-
-  char line[64];
-  sprintf(line, "%.2f,%.2f,%.2f", magOffsetX, magOffsetY, magOffsetZ);
-  f.println(line);
-  f.close();
-
-  char msg[80];
-  sprintf(msg, "[MAG] Calibration saved: %.2f, %.2f, %.2f", magOffsetX, magOffsetY, magOffsetZ);
-  logPrintln(msg);
 }
 
 // ─── Settings Persistence (#98) ─────────────────────────────────────────────
@@ -6850,345 +6309,6 @@ void handleButtonCLongPress() {
   }
 }
 
-// ============== GPS Reading ==============
-
-void readGPS() {
-  while (Serial1.available()) {
-    char c = Serial1.read();
-    gpsLastByteTime = millis();  // Track for staleness (#115)
-    gpsData.receiving = true;
-
-    // Track when GPS first starts receiving NMEA data (#68)
-    if (!gpsHadFirstReceive) {
-      gpsFirstReceiveTime = millis();
-      gpsHadFirstReceive = true;
-      logPrintf("[GPS] First NMEA data at %lus\n", gpsFirstReceiveTime / 1000);
-    }
-
-    if (c == '\n') {
-      gpsBuffer[gpsBufferIndex] = '\0';
-      #if DEBUG_GPS
-      Serial.println(gpsBuffer);
-      #endif
-      // Runtime NMEA logging: RMC+GGA only to avoid I2C starvation (#115)
-      if (gpsDebugEnabled && (strstr(gpsBuffer, "RMC,") || strstr(gpsBuffer, "GGA,"))) {
-        logPrintf("[GPS:RAW] %s\n", gpsBuffer);
-      }
-      parseNMEA(gpsBuffer);
-      gpsBufferIndex = 0;
-    } else if (c != '\r' && gpsBufferIndex < sizeof(gpsBuffer) - 1) {
-      gpsBuffer[gpsBufferIndex++] = c;
-    }
-  }
-
-  // Staleness check: no bytes for GPS_STALE_MS → clear state (#115)
-  if (gpsData.receiving && gpsLastByteTime > 0 &&
-      (millis() - gpsLastByteTime > GPS_STALE_MS)) {
-    if (gpsDebugEnabled) {
-      logPrintf("[GPS:DBG] Stale — no data for %lums\n", millis() - gpsLastByteTime);
-    }
-    gpsData.receiving = false;
-    gpsData.valid = false;
-  }
-}
-
-// Parse NMEA sentence into field array, preserving empty fields (#115)
-// Replaces strtok which skips consecutive commas (empty fields)
-// Modifies sentence in-place (replaces commas and * with nulls)
-// Returns number of fields found
-#define NMEA_MAX_FIELDS 20
-int nmeaParse(char* sentence, char* fields[], int maxFields) {
-  // Strip checksum (*XX) if present
-  char* star = strchr(sentence, '*');
-  if (star) *star = '\0';
-
-  int count = 0;
-  fields[count++] = sentence;  // Field 0 starts at beginning
-
-  while (*sentence && count < maxFields) {
-    if (*sentence == ',') {
-      *sentence = '\0';         // Terminate previous field
-      fields[count++] = sentence + 1;  // Next field starts after comma
-    }
-    sentence++;
-  }
-  return count;
-}
-
-void parseNMEA(char* sentence) {
-  char* fields[NMEA_MAX_FIELDS];
-  int nFields = nmeaParse(sentence, fields, NMEA_MAX_FIELDS);
-
-  // Identify sentence type from field 0 (e.g., "$GNRMC", "$GPGGA")
-  const char* talker = fields[0];  // e.g., "$GNRMC"
-  bool isRMC = (nFields >= 3 && strstr(talker, "RMC") != NULL);
-  bool isGGA = (nFields >= 10 && strstr(talker, "GGA") != NULL);
-
-  // ---- RMC: Time, position, speed, date ----
-  if (isRMC) {
-    // Field 1: Time HHMMSS.sss
-    if (strlen(fields[1]) >= 6) {
-      gpsData.hour   = (fields[1][0] - '0') * 10 + (fields[1][1] - '0');
-      gpsData.minute = (fields[1][2] - '0') * 10 + (fields[1][3] - '0');
-      gpsData.second = (fields[1][4] - '0') * 10 + (fields[1][5] - '0');
-      gpsData.timeValid = true;
-    }
-
-    // Field 2: Status A=valid, V=void
-    char status = (strlen(fields[2]) > 0) ? fields[2][0] : 'V';
-
-    // Determine talker: GP (GPS-only) or GN (multi-GNSS) (#115)
-    bool isGN = (talker[2] == 'N');  // $GN... vs $GP...
-
-    // Reset cycle tracking if >1.2s since last RMC
-    if (millis() - lastRmcCycleTime > 1200) {
-      gprmcFixThisCycle = false;
-      gnrmcFixThisCycle = false;
-    }
-    lastRmcCycleTime = millis();
-
-    if (status == 'A') {
-      // Parse position
-      float lat = (strlen(fields[3]) > 0) ? atof(fields[3]) : 0;
-      char latDir = (strlen(fields[4]) > 0) ? fields[4][0] : 'N';
-      float lon = (strlen(fields[5]) > 0) ? atof(fields[5]) : 0;
-      char lonDir = (strlen(fields[6]) > 0) ? fields[6][0] : 'W';
-
-      int latDeg = (int)(lat / 100);
-      float latMin = lat - (latDeg * 100);
-      gpsData.latitude = latDeg + (latMin / 60.0f);
-      if (latDir == 'S') gpsData.latitude = -gpsData.latitude;
-
-      int lonDeg = (int)(lon / 100);
-      float lonMin = lon - (lonDeg * 100);
-      gpsData.longitude = lonDeg + (lonMin / 60.0f);
-      if (lonDir == 'W') gpsData.longitude = -gpsData.longitude;
-
-      // Speed (field 7)
-      if (strlen(fields[7]) > 0) gpsData.speedKnots = atof(fields[7]);
-
-      // Date (field 9)
-      if (nFields > 9 && strlen(fields[9]) >= 6) {
-        gpsData.day   = (fields[9][0] - '0') * 10 + (fields[9][1] - '0');
-        gpsData.month = (fields[9][2] - '0') * 10 + (fields[9][3] - '0');
-        gpsData.year  = 2000 + (fields[9][4] - '0') * 10 + (fields[9][5] - '0');
-        gpsData.dateValid = true;
-      }
-
-      // Track talker fix state
-      if (isGN) gnrmcFixThisCycle = true;
-      else      gprmcFixThisCycle = true;
-
-      // Set valid — runtime debug log on transition
-      if (!gpsData.valid && gpsDebugEnabled) {
-        logPrintf("[GPS:DBG] Fix gained — Talker:%s Sat:%d HDOP:%.1f\n",
-                  isGN ? "GN" : "GP", gpsData.satellites, gpsData.hdop);
-      }
-      gpsData.valid = true;
-
-      // Track time to first fix (#68)
-      if (!gpsHadFirstFix) {
-        gpsFirstFixTime = millis();
-        gpsHadFirstFix = true;
-        logPrintf("[GPS] First fix acquired in %lus (TTFF)\n", gpsFirstFixTime / 1000);
-      }
-
-      // Sync RTC from GPS time (once per session)
-      if (gpsData.timeValid && gpsData.dateValid && !rtcSyncedFromGPS) {
-        struct tm gpsTime;
-        gpsTime.tm_year = gpsData.year - 1900;
-        gpsTime.tm_mon  = gpsData.month - 1;
-        gpsTime.tm_mday = gpsData.day;
-        gpsTime.tm_hour = gpsData.hour;
-        gpsTime.tm_min  = gpsData.minute;
-        gpsTime.tm_sec  = gpsData.second;
-
-        time_t t = mktimeUTC(&gpsTime);
-        struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
-        settimeofday(&tv, NULL);
-        syncRTCFromSystemTime("GPS");
-        rtcSyncedFromGPS = true;
-
-        logPrintf("[GPS] System time set: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
-                  gpsData.year, gpsData.month, gpsData.day,
-                  gpsData.hour, gpsData.minute, gpsData.second);
-      }
-
-    } else {
-      // Status V — but check multi-constellation override (#115)
-      if (isGN) {
-        gnrmcFixThisCycle = false;
-        // If GPRMC said 'A' this cycle, keep GPS-only fix
-        if (gprmcFixThisCycle) {
-          if (gpsDebugEnabled) {
-            logPrintf("[GPS:DBG] Talker conflict — GPRMC:A but GNRMC:V, keeping GP fix\n");
-          }
-          // Don't invalidate — GPRMC fix is still good
-          return;
-        }
-      } else {
-        gprmcFixThisCycle = false;
-      }
-
-      // Track when signal is lost (#68)
-      if (gpsData.valid && gpsHadFirstFix) {
-        gpsSignalLostTime = millis();
-        if (gpsDebugEnabled) {
-          unsigned long validFor = (gpsSignalLostTime - gpsFirstFixTime) / 1000;
-          logPrintf("[GPS:DBG] Fix lost — was valid for %lus\n", validFor);
-        } else {
-          logPrintf("[GPS] Signal lost at %lus\n", gpsSignalLostTime / 1000);
-        }
-      }
-      gpsData.valid = false;
-    }
-  }
-
-  // ---- GGA: Altitude, satellites, HDOP ----
-  if (isGGA) {
-    // Field 7: Number of satellites
-    if (strlen(fields[7]) > 0) {
-      int newSats = atoi(fields[7]);
-      if (gpsDebugEnabled && newSats != gpsData.satellites) {
-        logPrintf("[GPS:DBG] Sats: %d -> %d\n", gpsData.satellites, newSats);
-      }
-      gpsData.satellites = newSats;
-    }
-    // Field 8: HDOP
-    if (strlen(fields[8]) > 0) gpsData.hdop = atof(fields[8]);
-    // Field 9: Altitude (meters)
-    if (strlen(fields[9]) > 0) gpsData.altitude = atof(fields[9]);
-  }
-}
-
-// ============== Sensor Reading ==============
-
-void readSHT41() {
-  if (!shtAvailable) return;
-  sensors_event_t humEv, tempEv;
-  if (sht4.getEvent(&humEv, &tempEv)) {
-    shtData.temperature = tempEv.temperature;
-    shtData.humidity = humEv.relative_humidity;
-  }
-}
-
-void readBME688() {
-  // BSEC2 runs via callback, just need to call run() to process
-  if (!envSensor.run()) {
-    // Check for errors only if status is negative
-    if (envSensor.status < BSEC_OK) {
-      LOG_ERROR("BSEC error: %d", envSensor.status);
-    }
-  }
-}
-
-// Helper function to get IAQ accuracy as short text
-const char* getIaqAccuracyText(uint8_t accuracy) {
-  switch (accuracy) {
-    case 0: return "INIT";
-    case 1: return "LEARN";
-    case 2: return "CAL";
-    case 3: return "OK";
-    default: return "?";
-  }
-}
-
-// Helper function to get IAQ quality word from Bosch BSEC index ranges
-const char* getIaqQualityText(float iaq) {
-  if (iaq <= 50)  return "Excellent";
-  if (iaq <= 100) return "Good";
-  if (iaq <= 150) return "Fair";
-  if (iaq <= 200) return "Poor";
-  if (iaq <= 300) return "Bad";
-  return "Hazardous";
-}
-
-// Convert hPa to inHg (inches of mercury)
-float hPaToInHg(float hPa) {
-  return hPa * 0.02953;
-}
-
-void readIMU() {
-  sensors_event_t accel, gyro, temp, mag;
-
-  lsm.getEvent(&accel, &gyro, &temp);
-  lis.getEvent(&mag);
-
-  imuData.accelX = accel.acceleration.x;
-  imuData.accelY = accel.acceleration.y;
-  imuData.accelZ = accel.acceleration.z;
-
-  imuData.accelMag = sqrt(imuData.accelX * imuData.accelX +
-                          imuData.accelY * imuData.accelY +
-                          imuData.accelZ * imuData.accelZ) - 9.8;
-  if (imuData.accelMag < 0) imuData.accelMag = 0;
-
-  imuData.roll = atan2(imuData.accelY, imuData.accelZ) * 180.0 / PI;
-  imuData.pitch = atan2(-imuData.accelX,
-                        sqrt(imuData.accelY * imuData.accelY +
-                             imuData.accelZ * imuData.accelZ)) * 180.0 / PI;
-
-  float magX = mag.magnetic.x;
-  float magY = mag.magnetic.y;
-  float magZ = mag.magnetic.z;
-
-  // Dropout rejection: check field magnitude before using values
-  float magMagnitude = sqrt(magX * magX + magY * magY + magZ * magZ);
-  if (magMagnitude < MAG_MIN_MAGNITUDE) {
-    // I2C dropout — keep previous heading
-    static unsigned long lastDropoutLog = 0;
-    if (millis() - lastDropoutLog > 5000) {
-      lastDropoutLog = millis();
-      char dbg[64];
-      sprintf(dbg, "[MAG] Dropout (mag=%.1f uT), keeping heading", magMagnitude);
-      magLogPrintln(dbg);
-    }
-    return;
-  }
-
-  // Calibration min/max tracking
-  if (magCalibrating) {
-    if (magX < magCalMinX) magCalMinX = magX;
-    if (magX > magCalMaxX) magCalMaxX = magX;
-    if (magY < magCalMinY) magCalMinY = magY;
-    if (magY > magCalMaxY) magCalMaxY = magY;
-    if (magZ < magCalMinZ) magCalMinZ = magZ;
-    if (magZ > magCalMaxZ) magCalMaxZ = magZ;
-  }
-
-  // Apply hard-iron calibration offsets
-  float calX = magX - magOffsetX;
-  float calY = magY - magOffsetY;
-
-  float rawHeading = atan2(calY, calX) * 180.0 / PI;
-  if (rawHeading < 0) rawHeading += 360;
-
-  // Exponential moving average with circular wrap handling
-  // Alpha 0.05 = steady when still, settles in ~3-4s on rotation
-  static float smoothedHeading = -1;
-  if (smoothedHeading < 0) {
-    smoothedHeading = rawHeading;  // First reading — no history
-  } else {
-    float diff = rawHeading - smoothedHeading;
-    if (diff > 180) diff -= 360;
-    if (diff < -180) diff += 360;
-    smoothedHeading += 0.05 * diff;
-    if (smoothedHeading < 0) smoothedHeading += 360;
-    if (smoothedHeading >= 360) smoothedHeading -= 360;
-  }
-  imuData.heading = smoothedHeading;
-
-  // Debug: raw mag values + magnitude (every 1s for diagnostic visibility)
-  static unsigned long lastMagDebug = 0;
-  if (millis() - lastMagDebug > 1000) {
-    lastMagDebug = millis();
-    char dbg[96];
-    sprintf(dbg, "[MAG] X=%.1f Y=%.1f Z=%.1f  Mag=%.1fuT  Cal:%.1f,%.1f  Hdg=%.0f",
-            magX, magY, magZ, magMagnitude, calX, calY, imuData.heading);
-    magLogPrintln(dbg);
-  }
-}
-
 // ============== Display Functions ==============
 
 // Zone helper implementations removed — LVGL handles dirty tracking (#114)
@@ -7244,11 +6364,6 @@ void updateDisplay() {
 // ============== Utility Functions (preserved from legacy) ==============
 
 // ============== Geocache Helper Functions (#70) ==============
-
-// Get GPS accuracy estimate based on HDOP
-float getGpsAccuracyMeters() {
-  return 3.0 * gpsData.hdop;  // Typical GPS accuracy ≈ 3m × HDOP
-}
 
 // Legacy TFT_eSprite draw functions removed — all rendering via LVGL (#114)
 // Removed: drawHeader, drawNavBar, drawLabel, drawValue, drawScreenTelemetry,
