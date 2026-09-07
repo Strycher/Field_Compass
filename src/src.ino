@@ -8712,9 +8712,11 @@ void drawOLEDNavBar() {
 }
 
 // ---------------------------------------------------------------------------
-// C3 PROBE - DELIBERATE SYNTAX ERROR. THROWAWAY, MUST NEVER MERGE.
-// Proves branch protection BLOCKS a red compile-gate, not merely reports it.
+// C3 PROBE - syntax error removed. This commit compiles.
+// Its run is cancelled deliberately, to show the gate reports red on
+// cancellation and that a re-run clears it without a new commit.
 // ---------------------------------------------------------------------------
 void fcCiProbeBlockedCheck() {
-  int deliberatelyBroken = 1
+  int deliberatelyFixed = 1;
+  (void)deliberatelyFixed;
 }
