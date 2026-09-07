@@ -234,7 +234,54 @@ Flash     1,855,962 -> 1,855,946 (-16)   RAM unchanged
 src.ino   8,742 -> 8,404 lines           arduino-cli SUCCESS
 ```
 
-The attribution method — rebuild the pre-move commit, compare each changed function's reference set — is what every later band uses. A delta whose reference set changed would be a semantic change and would stop the band.
+The attribution method — rebuild the pre-move commit, compare each changed function's reference set — is what every later band uses. A delta whose reference set changed would be a semantic change and would stop the band. Band 2 turned it into a script (§9).
+
+## 9. Band 2 — logging, and the proof step scripted
+
+**What moved.** The bottom of the dependency stack, in one unit: the serial ring buffer, the `logPrint`/`logPrintln`/`logPrintf`/`logTimestamp` quartet and the `LOG_*` severity macros, the SD-backed serial log (`serialLogAppend`/`Flush`/`Rotate`, `initSerialLog`), and SD health (`SDHealth`, `recordSDSuccess`/`recordSDError`, `shouldAttemptReInit`/`trySDReInit`, `sdOpenSafe`). Sixteen functions, twelve variables, two types, twelve `#define`s. `extract_unit.py` grew `--move-vars` / `--publish-vars` / `--move-defines` / `--move-decls` / `--header-lines` to carry state and types with the code, per the no-`globals.h` ruling: a variable leaves `src.ino` **only** as part of the unit that owns it.
+
+**Two calls made under the owner's grant, for review:**
+
+1. **`initSerialLog()` became `initSerialLog(bool rtcOk)`.** It read `rtcAvailable`, which the RTC domain owns. Publishing that variable through `logging.h` would be an `extern` reaching back into `src.ino` — the transitional-header pattern the ruling forbids. Its single caller, `setup()`, now passes the value. Same read of the same variable at the same moment, by the caller instead of the callee; the compiler's view is in the measurement below.
+2. **`src/fc_config.h` exists**, holding `SD_CS` and the three SPI pin macros, because `trySDReInit` needs them and the plan's 1.2 anticipated exactly this header. It will absorb the other pin macros as their units leave.
+
+**Deliberately not moved:** `logLvglHeap` (static, called only by the Settings-screen navigation callbacks band 4 owns), and the *peripheral init* that sets `sdAvailable` in `setup()` — the unit owns the flag, `setup()` still sets it, as it sets every other peripheral flag until the E5 HAL.
+
+**Measured** — this time by `scripts/verify_extraction.py`, which encodes the §8 method and exits non-zero on any unexplained difference:
+
+```
+symbols   572 before -> 573 after, union of src.ino.cpp.o + logging.cpp.o + geo.cpp.o + ui_widgets.cpp.o
+          31 relocated to logging: 15 functions, 12 variables, logTimestamp()::tsBuf, and the three
+             fs::File / shared_count inlines that only the moved code instantiated
+           8 linkage changes b -> B, all declared with --publish-vars (the unit's public state)
+           1 re-signed: initSerialLog() -> initSerialLog(bool), declared
+           1 added: _GLOBAL__sub_I_serialRing (34+4 bytes) -- logging.cpp's static initialiser,
+             constructing the File object src.ino's initialiser no longer does: it shrank -34
+          removed: none
+deltas    23 symbols changed size, net -27 bytes:
+           10 call a moved function            (cross-TU call, inlining knowledge lost)
+            2 touch published state            (handleButtons, handleWebDiags: sdAvailable now extern)
+            1 caller of the re-signed function (setup +8: loads rtcAvailable, passes it)
+            7 identical references             (relaxation, -4..+3)
+            1 the moved serialRingAppend (+1)   2 TFT_eSPI destructor aliases (library, +4)
+          unexplained: none
+sections  .flash.text +48   our input sections +35 (initSerialLog re-emitted 285 -> 257+literals,
+                            the new initialiser 38, the -27 above); +13 alignment between inputs
+          .flash.rodata +32 string-literal sections now split across two objects: +51 of input,
+                            merged by the linker to +32
+Flash     1,855,946 -> 1,856,026 (+80)   RAM 103,232 unchanged
+src.ino   8,404 -> 7,989 lines           arduino-cli SUCCESS (1,787,722)
+```
+
+The section-level residue (the +13 and the string merge) came from a diff of the two link maps' input sections, by hand; the script reports the output-section deltas and leaves that last step to the reader when the numbers are not already accounted for by the function deltas.
+
+**Invocation**, for the next band — capture the before-side from a build of the pre-move tree, then:
+
+```
+python scripts/verify_extraction.py --before-nm nm-before.txt --before-graph graph-before.json \
+  --after-objs <every .o under .pio/build/feather_s3/src/> --before-elf <pre-move firmware.elf> \
+  --after-elf .pio/build/feather_s3/firmware.elf --moved <functions> --published <variables> [--resigned <functions>]
+```
 
 ---
 

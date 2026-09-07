@@ -340,6 +340,8 @@ def appendix(a: Analysis) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--raw", action="store_true",
+                    help="with --json: keep mangled names (the form verify_extraction.py consumes)")
     ap.add_argument("--appendix", action="store_true")
     ap.add_argument("--obj", default=str(OBJ))
     args = ap.parse_args()
@@ -348,7 +350,9 @@ def main() -> int:
         sys.exit(f"{obj} not found -- run `pio run -e feather_s3` first")
 
     a = Analysis(obj)
-    if args.json:
+    if args.json and args.raw:
+        print(json.dumps(a.graph, indent=2))
+    elif args.json:
         print(json.dumps({a.d(f): {k: [a.d(x) for x in v] for k, v in g.items()}
                           for f, g in a.graph.items()}, indent=2))
     elif args.appendix:
