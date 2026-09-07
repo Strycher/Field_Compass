@@ -398,6 +398,47 @@ Flash     1,856,406 -> 1,856,590 (+184)   RAM 103,248 unchanged
 src.ino   6,598 -> 5,808 lines             arduino-cli SUCCESS   58 tests pass
 ```
 
+## 13. Band 3d — oled, display, ui_state and touch; the navigation functions wait for the screens
+
+**What moved:**
+
+| unit | owns | functions |
+|---|---|---|
+| `oled` | `oled`, `oledAvailable`, `oledSleeping`; `DEBUG_SLEEP` | `initOLED`, `sleepOLED`, `wakeOLED` |
+| `display` | `tft`, `tftSleeping`, `lastActivityTime`, `lastTFTReinit`, `tftUpdateCount`, `lastTFTUpdate`; `TFT_REINIT_INTERVAL`, `DEBUG_TFT`, the sleep-timeout defaults, `TFT_BL_PWM`, the RGB565 `COLOR_*` palette | `initTFT`, `checkTFTHealth`, `sleepTFT`, `wakeTFT`, `wakeAllDisplays`, `checkDisplaySleep` |
+| `ui_state` | `currentScreen`, `previousScreen`, `settingsSubScreen`, `geocacheSubScreen`, `selectedCacheIndex`, `listScrollOffset`; `NUM_SCREENS`, `SCREEN_*` | none — see below |
+| `touch` | `ctp`, `touchAvailable` (`CTP_INT` to `fc_config.h`) | `initTouch`, `touchISR` |
+
+Seven cut-set variables left (`oled`, `oledAvailable`, `tftSleeping`, `lastActivityTime`, `currentScreen`, `settingsSubScreen`, `geocacheSubScreen`); `src.ino` 5,805 → 5,581 lines. **Every cut-set variable of #264 except `webServer` and `wifiConnected` is now defined in a unit**; those two leave with the web unit in #274.
+
+**Calls made under the grant, for review:**
+
+1. **`ui_state` holds state and no functions.** #273 left `settingsScr` to be decided when the code was read; reading it decided more. `navigateScreen` indexes `mainScreens[]`, a static table of the LVGL screen objects (`compassScr`, `geocacheScr`, `envScr`, `telemetryScr`) that the screen builders own, and `navigateToSettings` loads `settingsScr`. Moving the navigate functions now would mean declaring those objects in a header while they stay in `src.ino` — the reach-back the ruling forbids. So the state moves now, as the cut set requires, and the functions join the unit in band 4 with the screens. A unit of six integers and five defines is thin, and it is the seed of the navigation unit, not a `globals.h`: nothing in it belongs anywhere else.
+2. `selectedCacheIndex` and `listScrollOffset`, left by 3c as list-UI state, came here: the geocache web handlers read both, so #274 needs them published, and "which cache is selected, how far the list is scrolled" is navigation state.
+3. **A `touch` unit** #273 did not list: `handleWebDiags` reads `touchAvailable`, which had no unit, and #274 would have reached back for it. Two functions, two variables. `lvglTouchReadCb` — the LVGL input driver — stays for band 4.
+4. The RGB565 `COLOR_*` palette is `display.h`'s: `initTFT` and the boot screen in `setup()` are its only users (the LVGL palette left in band 1).
+
+**Harness, this band:** declarator lists and initialisers are parsed by one bracket- and string-aware walker. A constructor call with commas (`Adafruit_SH1107(64, 128, &Wire)`) broke the 3b splitter outright; a string initialiser with commas (`"EST5EDT,M3.2.0,M11.1.0"`) had broken its `extern` output latently — `posixTZ` moved in 3a, before that code existed, so nothing shipped wrong. The first declarator on a line is now named too.
+
+**Measured** — `scripts/verify_extraction.py`, PASS:
+
+```
+symbols   589 before -> 592 after, union of 18 objects
+          29 relocated: display 13, oled 6, ui_state 6, touch 4
+           3 linkage changes b -> B, declared: lastTFTReinit, lastTFTUpdate, tftUpdateCount
+           3 added initialisers: _GLOBAL__sub_I_oled 50, _tft 35, _ctp 14 (99);
+             src.ino's shrank 166 -> 86 (-80)
+          removed none
+deltas    12 symbols, net -88 (the -80 included): 5 touch published state, 7 identical references
+          unexplained: none
+moved     11 functions checked by reference set: every reference kept, 4 now cross-TU
+sections  .flash.text  +24: our input sections +16 (startup +20, .text -4), +8 alignment
+          .flash.rodata +20 (string literals split across four more objects)
+          .dram0.bss    +0   .iram0.text +0 (touchISR stays in IRAM, 5 bytes of input either way)
+Flash     1,856,590 -> 1,856,634 (+44)   RAM 103,248 unchanged
+src.ino   5,805 -> 5,581 lines            arduino-cli SUCCESS   58 tests pass
+```
+
 ---
 
 ## Appendix — the full tables

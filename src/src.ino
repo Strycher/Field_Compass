@@ -66,6 +66,10 @@
 #include "battery.h"
 #include "weather.h"
 #include "geocache.h"
+#include "oled.h"
+#include "display.h"
+#include "ui_state.h"
+#include "touch.h"
 
 // Set to 1 to enable LVGL test rendering (label in corner during boot).
 // Set to 0 for normal operation where sprite pipeline handles all rendering.
@@ -117,11 +121,6 @@ const char* NTP_SERVER = "pool.ntp.org";
 // TFT_eSPI to skip its own header selection entirely. Not User_Setup.h (#184).
 // FRAM_CS, SD_CS, SPI_* and TFT_BL live in fc_config.h (E4).
 
-// Touch controller (FT6336U capacitive touch, I2C 0x38)
-#define CTP_INT   14  // A4 -> Touch interrupt (active-low, CHANGE — fires on touch + release)
-
-// Backlight control (PWM dimming) -- TFT_BL pin is in fc_config.h
-#define TFT_BL_PWM 255 // Default brightness (0=off, 255=full)
 
 // FRAM Memory Map (256KB = 262,144 bytes, MB85RS2MTA)
 
@@ -134,19 +133,6 @@ const char* NTP_SERVER = "pool.ntp.org";
 #define BUTTON_C 5
 
 
-// Debug flags (set to 1 to enable)
-#define DEBUG_SLEEP 0  // Display sleep/wake logging
-#define DEBUG_TFT   1  // TFT display state logging (P1 blank bug debug)
-
-
-// Screen settings
-#define NUM_SCREENS 4
-#define SCREEN_COMPASS   0
-#define SCREEN_GEOCACHE  1  // Geocaching navigation (#70)
-#define SCREEN_ENV       2
-#define SCREEN_TELEMETRY 3  // Combined GPS + IMU (#97)
-#define SCREEN_SETTINGS  4  // Modal overlay — outside NUM_SCREENS, not in swipe/button cycling
-
 // Screen dimensions (landscape mode after rotation)
 
 // Debounce time in ms
@@ -154,10 +140,6 @@ const char* NTP_SERVER = "pool.ntp.org";
 
 // WiFi reconnect interval (ms)
 #define WIFI_RECONNECT_INTERVAL 30000
-
-// Display sleep timeouts (ms, 0 = disabled)
-#define TFT_SLEEP_TIMEOUT  0        // 0 = always on (LCD has no burn-in risk)
-#define OLED_SLEEP_TIMEOUT 180000   // 3 minutes for OLED (high burn-in risk)
 
 
 // Web server configuration
@@ -171,28 +153,14 @@ const char* NTP_SERVER = "pool.ntp.org";
 // Watchdog configuration (auto-reset on hang)
 #define WDT_TIMEOUT_SEC 30  // Reset if loop hangs for 30 seconds
 
-// Colors (RGB565)
-#define COLOR_BG        0x0000  // Black
-#define COLOR_TEXT      0xFFFF  // White
-#define COLOR_HEADER    0x07FF  // Cyan
-#define COLOR_VALUE     0x07E0  // Green
-#define COLOR_WARN      0xFD20  // Orange
-#define COLOR_ERROR     0xF800  // Red
-#define COLOR_DIM       0x7BEF  // Gray
-
-// LVGL color palette — RGB888 equivalents of RGB565 defines above (#107)
-
 // ============== Global Objects ==============
 
-// TFT Display (ST7796U via TFT_eSPI — pins configured in platformio.ini build_flags, #184)
-TFT_eSPI tft = TFT_eSPI();
 
 // TFT_eSprite removed — LVGL handles all TFT rendering (#114)
 
 // Zone-based partial push system removed — LVGL handles dirty tracking (#114)
 
 // Capacitive touch controller (FT6336U on I2C at 0x38)
-Adafruit_FT6206 ctp = Adafruit_FT6206();
 // touchDetected removed (#260): it was set by touchISR() and never read anywhere.
 // The one write-only variable in the file, per the relocation analysis in
 // docs/god-object-inventory.md. LVGL polls the controller; the ISR flag was vestigial.
@@ -200,8 +168,6 @@ Adafruit_FT6206 ctp = Adafruit_FT6206();
 // Legacy swipe/tap detection removed — LVGL gesture + click callbacks (#113)
 
 // Settings screen state
-int  settingsSubScreen = 0;    // 0=menu, 1=compass cal, 2=diagnostics, ...
-int  previousScreen    = 0;    // Screen to return to when exiting settings
 #define SETTINGS_MENU_COUNT 6  // Configuration, Display, Compass Cal, Diagnostics, About, Factory Reset (#104)
 static const char* settingsMenuItems[] = {
   "Configuration",
@@ -212,40 +178,18 @@ static const char* settingsMenuItems[] = {
   "Factory Reset"
 };
 
-// OLED Display
-Adafruit_SH1107 oled = Adafruit_SH1107(64, 128, &Wire);
-
 
 // Web Server
 WebServer webServer(WEB_SERVER_PORT);
 
 // ============== Global State ==============
 
-// Current screen (0-3)
-int currentScreen = SCREEN_COMPASS;
 
 // Button debounce
 unsigned long lastButtonPress = 0;
 
 // WiFi reconnect tracking
 unsigned long lastWiFiAttempt = 0;
-
-// Display sleep state
-bool tftSleeping = false;
-bool oledSleeping = false;
-unsigned long lastActivityTime = 0;
-
-// TFT health monitoring (P1 blank bug debug)
-static unsigned long lastTFTUpdate = 0;      // millis() of last successful TFT draw
-static unsigned long lastTFTReinit = 0;      // millis() of last preventive re-init
-static uint32_t tftUpdateCount = 0;          // Total TFT update cycles
-#define TFT_REINIT_INTERVAL 1800000          // Preventive re-init every 30 minutes
-
-// OLED availability
-bool oledAvailable = false;
-
-// Sensor availability flags
-bool touchAvailable = false;          // FT6336U capacitive touch
 
 
 bool wifiConnected = false;
@@ -262,11 +206,6 @@ static unsigned long lastStatusLog = 0;
 
 // Battery logging to SD card
 static unsigned long lastBattLog = 0;
-
-
-int selectedCacheIndex = 0;           // Currently selected for navigation
-int listScrollOffset = 0;             // For scrollable list display
-int geocacheSubScreen = 0;            // 0=nav, 1=list, 2=details
 
 
 // Button C long-press tracking
@@ -387,16 +326,6 @@ void lvglEncoderReadCb(lv_indev_t* indev, lv_indev_data_t* data) {
   prevA = curA;
   prevB = curB;
   prevC = curC;
-}
-
-// ============== Touch ISR ==============
-
-// Intentionally empty (#260). The flag it used to set was never read, so the
-// body went with it. The interrupt stays attached (see attachInterrupt in
-// initTouch): whether the CTP_INT interrupt is needed at all is a behaviour
-// question, out of scope for a declaration-only change, and belongs to whoever
-// owns the touch unit in E4-5.
-void IRAM_ATTR touchISR() {
 }
 
 // ============== Setup ==============
@@ -698,38 +627,6 @@ void scanI2C() {
     }
   }
   logPrintf("  Total devices: %d\n\n", deviceCount);
-}
-
-// ============== Initialization Functions ==============
-
-void initTFT() {
-  logPrint("Initializing ST7796U TFT... ");
-
-  tft.init();
-
-  // Turn on backlight via PWM
-  pinMode(TFT_BL, OUTPUT);
-  analogWrite(TFT_BL, TFT_BL_PWM);
-
-  // Landscape mode (480x320). Rotation 3, NOT 1 — the Hosyond MSP3526 panel is
-  // mounted 180 degrees from TFT_eSPI's assumption, so the orientation we want is
-  // the complement of the nominal landscape rotation. Rotation 3 writes MADCTL
-  // MX|MY|MV|COLOR_ORDER, which is what this panel needs.
-  //
-  // This previously required patching TFT_eSPI's TFT_Drivers/ST7796_Rotation.h to
-  // swap the complementary rotation pairs, so that setRotation(1) emitted case 3's
-  // MADCTL. That patch lived only in the local Arduino libraries folder, outside
-  // git, and any library upgrade silently reverted it. Stock case 3 is byte-identical
-  // to what the patch made case 1, so this one-line change replaces the fork. (#157)
-  tft.setRotation(3);
-  tft.fillScreen(TFT_RED);  // Flash red to confirm TFT is working
-  delay(100);
-  tft.fillScreen(COLOR_BG);
-
-  lastTFTReinit = millis();  // Track init time
-
-  // TFT_eSprite removed — PSRAM now used for LVGL draw buffers only (#114)
-  logPrintf("OK (480x320, PSRAM: %dKB free)\n", ESP.getFreePsram() / 1024);
 }
 
 // ============== Field Compass LVGL Theme (#107) ==============
@@ -3852,63 +3749,6 @@ void initLVGL() {
   #endif
 }
 
-// Preventive TFT re-initialization (P1 blank bug workaround)
-// LVGL continuously repaints, so blank-screen is self-healing.
-// Kept as a safety net — re-init every 30 minutes + invalidate LVGL.
-void checkTFTHealth() {
-  unsigned long now = millis();
-  if (tftSleeping) return;
-
-  if (now - lastTFTReinit > TFT_REINIT_INTERVAL) {
-    #if DEBUG_TFT
-    logPrintf("[TFT] Soft repaint at %lus (updates:%lu)\n",
-              now / 1000, tftUpdateCount);
-    #endif
-    // tft.init() + setRotation() removed — caused visible flash every 30 min.
-    // LVGL continuously repaints, so a full invalidation is sufficient as a
-    // safety net against stale display state without reinitializing hardware.
-    lv_obj_invalidate(lv_screen_active());
-    lastTFTReinit = now;
-  }
-}
-
-void initOLED() {
-  logPrint("Initializing OLED... ");
-
-  if (!oled.begin(0x3C, true)) {
-    if (!oled.begin(0x3D, true)) {
-      logPrintln("NOT FOUND");
-      return;
-    }
-  }
-
-  oled.setRotation(1);
-  oled.clearDisplay();
-  oled.setTextSize(1);
-  oled.setTextColor(SH110X_WHITE);
-  oled.display();
-
-  oledAvailable = true;
-  logPrintln("OK (128x64)");
-}
-
-void initTouch() {
-  logPrint("Initializing FT6336U touch... ");
-
-  if (!ctp.begin(40)) {  // 40 = sensitivity threshold
-    logPrintln("NOT FOUND at 0x38");
-    return;
-  }
-
-  touchAvailable = true;
-
-  // Configure interrupt pin (CTP_INT is active-low, open-drain)
-  pinMode(CTP_INT, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(CTP_INT), touchISR, CHANGE);
-
-  logPrintln("OK (interrupt on GPIO 14)");
-}
-
 void initSD() {
   logPrint("Initializing SD card... ");
 
@@ -3953,7 +3793,6 @@ void initSD() {
     SD.mkdir("/weather");
   }
 }
-
 
 
 // ============== GPX File Parser (#70) ==============
@@ -5113,72 +4952,6 @@ void initWebServer() {
   webServer.begin();
   webServerStarted = true;
   LOG_INFO("Web server OK — http://%s/", WiFi.localIP().toString().c_str());
-}
-
-// ============== Display Sleep Functions ==============
-
-void sleepTFT() {
-  if (tftSleeping) return;
-
-  tftSleeping = true;
-  analogWrite(TFT_BL, 0);            // Backlight off
-  tft.writecommand(0x10);  // MIPI DCS Sleep In
-  #if DEBUG_SLEEP
-  Serial.println("TFT sleeping");
-  #endif
-}
-
-void wakeTFT() {
-  if (!tftSleeping) return;
-
-  tftSleeping = false;
-  tft.writecommand(0x11);  // MIPI DCS Sleep Out
-  delay(120);  // ST7796U datasheet: 120ms delay after sleep out
-  analogWrite(TFT_BL, tftBrightness); // Backlight on (user brightness, #91)
-  lv_obj_invalidate(lv_screen_active());  // Force LVGL full repaint on wake (#113)
-  #if DEBUG_SLEEP
-  Serial.println("TFT woke up");
-  #endif
-}
-
-void sleepOLED() {
-  if (oledSleeping || !oledAvailable) return;
-
-  oledSleeping = true;
-  oled.oled_command(SH110X_DISPLAYOFF);
-  #if DEBUG_SLEEP
-  Serial.println("OLED sleeping");
-  #endif
-}
-
-void wakeOLED() {
-  if (!oledSleeping || !oledAvailable) return;
-
-  oledSleeping = false;
-  oled.oled_command(SH110X_DISPLAYON);
-  #if DEBUG_SLEEP
-  Serial.println("OLED woke up");
-  #endif
-}
-
-void wakeAllDisplays() {
-  lastActivityTime = millis();
-  wakeTFT();
-  wakeOLED();
-}
-
-void checkDisplaySleep() {
-  unsigned long elapsed = millis() - lastActivityTime;
-
-  // Check OLED sleep (0 = disabled) — uses runtime variable (#91)
-  if (oledSleepMs > 0 && !oledSleeping && oledAvailable && elapsed > oledSleepMs) {
-    sleepOLED();
-  }
-
-  // Check TFT sleep (0 = disabled, LCD has no burn-in risk) — uses runtime variable (#91)
-  if (tftSleepMs > 0 && !tftSleeping && elapsed > tftSleepMs) {
-    sleepTFT();
-  }
 }
 
 // ============== LVGL Screen Navigation (#113) ==============
