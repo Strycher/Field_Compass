@@ -183,11 +183,25 @@ CLAUDE-BASE mandates *one epic = one branch = one PR*. Field Compass overrides t
 | Branch naming | `fc/<issue>-short-desc` (e.g., `fc/120-sd-indicator`) |
 | Scope | One GitHub issue per branch |
 | Commits | Every successful compile on the branch = commit (per SAFELANE §6) |
-| CI gate | `.github/workflows/compile.yml` — `pio run` on every PR and on push to `main`. **`compile-gate` is a required status check**: a red build blocks the merge (#221, #223) |
+| CI gate | `.github/workflows/compile.yml` — `pio run` (envs **discovered** from `platformio.ini`, never listed) plus `pytest scripts/`, on every PR and on push to `main`. **`compile-gate` is the required status check**: a failing build *or* a failing test blocks the merge (#221, #223, #249) |
 | Verification gate | Human flashes locally + verifies on hardware |
 | Merge | After human verification: agent runs `gh pr merge <N> --auto --rebase` |
 | Worktrees | Optional — parallel-agent rule (below) means usually not needed |
 | Post-merge | Tag on `main` if the commit represents a shippable milestone |
+
+**Require `compile-gate`, never `build (feather_s3)`.** That job name is *generated*
+from the matrix, which is generated from the discovered envs. Requiring it by hand
+breaks discovery both ways: a new env ships unguarded under a name nobody added to
+the required list, and a renamed env leaves every PR stuck on a check at `expected`.
+`compile-gate` aggregates `discover`, `build` and `tests` under a fixed name, so
+branch protection is written once. Adding the test suite in #249 needed no
+protection change at all.
+
+The gate fails **closed**, cancellation included — a cancelled run verified nothing,
+and letting Cancel produce a green check would make it a one-click bypass. A red
+check from a cancel clears on re-run, with no new commit. Docs-only PRs skip the
+build job entirely but still report `compile-gate` green; the test suite is
+unconditional and never skipped.
 
 ### Single-File Source ⇒ Serialize Parallel Agents (MANDATORY)
 
