@@ -9,6 +9,10 @@
 #define OLED_SLEEP_TIMEOUT 180000   // 3 minutes for OLED (high burn-in risk)
 #define TFT_BL_PWM 255 // Default brightness (0=off, 255=full)
 
+// Two 480x50 partial-render buffers in PSRAM (~48KB each, 96KB total)
+#define LVGL_BUF_LINES 50
+#define LVGL_BUF_SIZE  (480 * LVGL_BUF_LINES * sizeof(uint16_t))
+
 // Colors (RGB565) -- the TFT boot screen in setup() and initTFT use these
 #define COLOR_BG        0x0000  // Black
 #define COLOR_TEXT      0xFFFF  // White

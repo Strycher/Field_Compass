@@ -268,7 +268,7 @@ FC follows CLAUDE-BASE's SemVer rules (`vMAJOR.MINOR.PATCH`) with one firmware-s
 
 - Every successful compile on a branch = commit
 - After PR merge to `main`, tag the commit that represents a shippable milestone
-- `FW_VERSION` constant in `src/src.ino` must match the tag
+- `FW_VERSION` constant in `src/fc_version.h` (moved out of `src.ino` by E4 band 3e, #274) must match the tag
 - **Do NOT use auto-commit version-bump workflows** — per SAFELANE §7 incident 2026-03-29 (auto-commits orphaned by rebase merges). Compute at build time or update `FW_VERSION` manually before tagging.
 
 ## Board & Label Conventions (FC overrides)
