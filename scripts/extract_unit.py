@@ -338,7 +338,14 @@ def main() -> int:
                 cpp.extend(lines[i + 1:var_ends[n] + 1])
         for c, d, b, e, n, st in moves:
             cpp.append(nl)
-            cpp.extend(lines[c:e + 1])
+            for i in range(c, e + 1):
+                l = lines[i]
+                if d <= i <= b and not st:
+                    # a default argument may appear once: the header's prototype
+                    # carries it, so the definition must not (parseGPXFromString)
+                    head, sep, tail = l.partition("{")
+                    l = re.sub(r"\s*=\s*[^,)]+(?=\s*[,)])", "", head) + sep + tail
+                cpp.append(l)
 
     # ---- manifest -------------------------------------------------------------
     print(f"unit {unit}: {'header only' if a.header_only else f'{len(moves)} functions'}")
@@ -402,6 +409,13 @@ def main() -> int:
                 remove.add(k)
                 k -= 1
     out = [l for i, l in enumerate(lines) if i not in remove]
+    # removals leave runs of blank lines; never more than two in a row
+    collapsed, blanks = [], 0
+    for l in out:
+        blanks = blanks + 1 if l.strip() == "" else 0
+        if blanks <= 2:
+            collapsed.append(l)
+    out = collapsed
     inc_idx2 = max(i for i, l in enumerate(out[:200]) if l.startswith("#include"))
     out.insert(inc_idx2 + 1, f'#include "{unit}.h"' + nl)
 

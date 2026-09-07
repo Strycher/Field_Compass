@@ -214,6 +214,21 @@ def main() -> int:
         return ({norm(c) for c in g["calls"]},
                 {norm(v) for v in g["vars_ext"] + g["vars_static"]})
 
+    after_tag = {dm(s): v[2] for s, v in after.items()}   # demangled name -> object it lives in now
+
+    def moved_residue(s: str, tag: str):
+        """For a function now in object `tag`: references it lost that are NOT
+        explained by the target living in another object now, plus any gained."""
+        bg, ag = bgraph.get(s), agraph.get(s)
+        if bg is None or ag is None:
+            return None
+        bc, bv = refset(bg)
+        ac, av = refset(ag)
+        lost = (bc - ac) | (bv - av)
+        gained = (ac - bc) | (av - bv)
+        cross = {r for r in lost if after_tag.get(r, tag) != tag}
+        return (lost - cross) | gained, len(cross)
+
     deltas = [(s, before[s], after[s]) for s in set(before) & set(after) if before[s][1] != after[s][1]]
     print(f"\n2. size deltas: {len(deltas)} symbols, net {sum(y[1] - x[1] for _, x, y in deltas):+d} bytes")
     attributed = collections.Counter()
@@ -221,8 +236,16 @@ def main() -> int:
         k = dm(s)
         d = y[1] - x[1]
         if base(k) in moved or y[2] != "src":
-            attributed["moved function itself"] += 1
-            print(f"   {d:+5d}  {k[:46]:<46} moved function; relaxation in the new TU")
+            r = moved_residue(s, y[2])
+            if r is None:
+                attributed["moved, not authored"] += 1
+                print(f"   {d:+5d}  {k[:46]:<46} moved with its unit; not an authored function")
+            elif r[0]:
+                print(f"   {d:+5d}  {k[:46]:<46} UNEXPLAINED in moved function: {sorted(r[0])}")
+                ok = False
+            else:
+                attributed["moved function itself"] += 1
+                print(f"   {d:+5d}  {k[:46]:<46} moved; same references, {r[1]} now cross-TU")
             continue
         bg, ag = bgraph.get(s), agraph.get(s)
         if bg is None or ag is None:
@@ -256,6 +279,22 @@ def main() -> int:
             why = "identical references; layout/relaxation"
         print(f"   {d:+5d}  {k[:46]:<46} {why}")
     print("   attribution:", dict(attributed))
+
+    # ---- 2b. every moved function keeps its reference set ------------------
+    checked, cross_total = 0, 0
+    for s, (cls, _, tag) in after.items():
+        if tag == "src" or cls not in "Tt":
+            continue
+        r = moved_residue(s, tag)
+        if r is None:
+            continue
+        checked += 1
+        cross_total += r[1]
+        if r[0]:
+            print(f"   UNEXPLAINED in moved {dm(s)[:50]}: {sorted(r[0])}")
+            ok = False
+    print(f"\n2b. moved functions checked by reference set: {checked}, "
+          f"{cross_total} references now cross-TU, every other reference kept")
 
     # ---- 3. output sections -------------------------------------------------
     if a.before_elf and a.after_elf:
