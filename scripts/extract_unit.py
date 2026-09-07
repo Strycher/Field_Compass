@@ -129,7 +129,9 @@ def is_static(lines: list[str], start: int) -> bool:
 # in `*`. The name follows, optionally an array suffix, then `=`, `;` or `,`.
 # Column 0 only: file-scope declarations are, and an indented
 # `else gprmcFixThisCycle = true;` reads as a declaration otherwise (band 3b).
-VAR_RE_TMPL = r"^(?:static\s+)?(?:volatile\s+)?(?:const\s+)?(?:[A-Za-z_][\w:<>]*\*?\s+)+\**{name}\s*(?:\[[^\]]*\])*\s*(?:=|;|,)"
+VAR_RE_TMPL = r"^(?:static\s+)?(?:volatile\s+)?(?:const\s+)?(?:[A-Za-z_][\w:<>]*\*?\s+)+\**{name}\s*(?:\[[^\]]*\])*\s*(?:=|;|,|\()"
+# the trailing `(` is a constructor-call declaration, `WebServer webServer(WEB_SERVER_PORT);`
+# (band 3e); a prototype never collides because variables are looked up by name
 
 
 # A name that is not the first declarator on its line: `float a = 0, b = 0, c;`
@@ -181,10 +183,17 @@ def split_top(body: str) -> list[str]:
 
 
 def strip_initialiser(seg: str) -> str:
-    out = ""
+    """`a = 0` -> `a`; `webServer(WEB_SERVER_PORT)` -> `webServer` (constructor call)."""
+    out, depth = "", 0
     for ch, top in _walk(seg):
         if ch == "=" and top:
             break
+        if ch == "(" and depth == 0 and not out.endswith("["):
+            break
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
         out += ch
     return out.rstrip()
 

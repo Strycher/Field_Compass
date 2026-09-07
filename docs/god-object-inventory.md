@@ -439,6 +439,38 @@ Flash     1,856,590 -> 1,856,634 (+44)   RAM 103,248 unchanged
 src.ino   5,805 -> 5,581 lines            arduino-cli SUCCESS   58 tests pass
 ```
 
+## 14. Band 3e — the web server; #264 is met
+
+**What moved.** The web server, whole, into `src/web.{h,cpp}`: `webServer` and `wifiConnected` published; the WiFi and NTP state (`webServerStarted`, `ntpSynced`, `lastWiFiAttempt`, `rtcSyncedFromNTP`), the credential placeholders and `NTP_SERVER` (#245 — the location #99 will replace with runtime storage), and the upload and serial-stream buffers private; `WEB_SERVER_PORT` and `WIFI_RECONNECT_INTERVAL`; `initWiFi`, `checkWiFi`, `initWebServer` and the 22 handlers. 1,181 lines, the largest unit, and it reaches back into `src.ino` for nothing: every domain it reads — GPS, IMU, environment, battery, FRAM, weather, geocaches, settings, RTC, logging, display state, touch — comes through a header that the four earlier children published. `src.ino` 5,581 → 4,387 lines.
+
+**#264's acceptance, measured on the object:**
+
+- `nm` on `src.ino.cpp.o` defines **none of the 35 cut-set variables**.
+- `python scripts/reference-graph.py` on what remains: 3 external-linkage variables (the button-debounce state, touched only by `handleButtons`), 78 authored functions, 77 of them touching no shared state of the file, **cut set 0, largest cluster 1**. The file is one connected component no longer. What is left is 163 TU-private statics — the LVGL screen objects and their labels — plus `setup`, `loop`, the buttons, the screen builders and their callbacks, and the LVGL glue: band 4's material, all of it.
+
+**Calls made under the grant, for review:** `src/fc_version.h` now holds `FW_VERSION`, because `src.ino` (boot banner, About screen) and `web.cpp` (every page) both show it, and one obvious file is where a bump belongs; the `CLAUDE.md` Versioning pointer follows. `LVGL_BUF_LINES`/`LVGL_BUF_SIZE` went to `display.h`: the diagnostics page reports the buffer size, and `initLVGL` joins the display side in band 4. The WiFi/NTP flags and the credentials are private, not published — nothing outside the unit reads them, and a header is no place for credentials even as placeholders.
+
+**Harness, this band:** a constructor-call declaration (`WebServer webServer(WEB_SERVER_PORT);`) is recognised as a variable. **A process fault, recorded:** the in-worktree baseline build was started before the extraction ran and PlatformIO compiles libraries first, so it picked up post-move source — and failed on it, which is how it was noticed. The before-side artefacts for this proof came from a scratch worktree at `main` (7bfefa7), whose Flash figure matches the 3d merge exactly. Rule for band 4: capture the baseline before touching the tree, or build it elsewhere.
+
+**Measured** — `scripts/verify_extraction.py`, PASS:
+
+```
+symbols   592 before -> 592 after, union of 19 objects
+          55 relocated to web (src.ino's static initialiser among them: its last dynamically
+             initialised object, the WebServer, left with it -- src.ino now has none)
+          linkage changes 0, removed none, added none
+deltas    12 symbols, net +16: 6 moved functions with identical references, 6 identical references
+          unexplained: none
+moved     27 functions checked by reference set: every reference kept
+sections  .flash.text  +28: our input sections +28 (.text +12, literal pools +16)
+          .flash.rodata +28: input +60 (string literals of 25 functions split out), merged
+          .dram0.bss    +0
+Flash     1,856,634 -> 1,856,690 (+56)   RAM 103,248 unchanged
+src.ino   5,581 -> 4,387 lines            arduino-cli SUCCESS   58 tests pass
+```
+
+**Band 3 in total** (#270–#274, five PRs): 99 functions and 122 variables left `src.ino` in 14 units (fram, settings, rtc, gps, imu, env, battery, weather, geocache, oled, display, ui_state, touch, web), plus `fc_version.h`; `src.ino` went from 7,986 lines before 3a to 4,387; Flash from 1,856,026 to 1,856,690 (+664, every byte traced: seven static initialisers, function relaxation and literal pools, string-literal splitting, alignment); RAM from 103,232 to 103,248 (+16, 3a's `.bss` packing). Every extraction was proven behaviour-neutral by symbol set and, from 3c on, by every moved function's reference set. Nothing was flashed: hardware verification of the whole sequence is Epic #212's integration test.
+
 ---
 
 ## Appendix — the full tables
