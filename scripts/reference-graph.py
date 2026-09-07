@@ -85,9 +85,11 @@ def defined_symbols(obj: pathlib.Path):
         cls, name = parts[-2], parts[-1]
         if cls in ("T", "t"):
             funcs.add(name)
-        elif cls in ("B", "b", "D", "d"):
-            if name.startswith("_ZZ"):
-                continue                      # function-local static, not file scope
+        elif cls in ("B", "b", "D", "d", "R", "r"):
+            # R/r is read-only data: const tables (tzPresets, the BSEC config blob)
+            # are variables too, and were invisible until band 3b missed one.
+            if name.startswith(("_ZZ", "_ZTV", "_ZTI", "_ZTS")):
+                continue                      # function-local static, vtable, typeinfo
             (var_static if name.startswith("_ZL") else var_ext).add(name)
     return funcs, var_ext, var_static
 

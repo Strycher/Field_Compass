@@ -321,6 +321,50 @@ Flash     1,856,026 -> 1,856,146 (+120)   RAM 103,232 -> 103,248 (+16)
 src.ino   7,986 -> 7,483 lines           arduino-cli SUCCESS   58 tests pass
 ```
 
+## 11. Band 3b — gps, imu, env and battery; the graph could not see read-only data
+
+**What moved** — the four sensor domains, one unit each:
+
+| unit | owns | functions |
+|---|---|---|
+| `gps` | `gpsData`, the NMEA buffer, the twelve timing/debug flags, `rtcSyncedFromGPS`; `GpsData`; the GPS serial and debug defines, `NMEA_MAX_FIELDS` | `initGPS`, `readGPS`, `nmeaParse`, `parseNMEA`, `getGpsAccuracyMeters` |
+| `imu` | `imuData`, `imuAvailable`, `magAvailable`, `lis`, `lsm`, the twelve magnetometer calibration variables; `ImuData`; `MAG_CAL_DURATION_MS`, `MAG_MIN_MAGNITUDE` | `initIMU`, `readIMU`, `loadMagCal`, `saveMagCal`, `magLogPrintln` |
+| `env` | `envData`, `envSensor`, `bmeAvailable`, `sht4`, `shtData`, `shtAvailable`, the four BSEC state variables, the BSEC config blob; `EnvData`, `ShtData`; the BSEC defines | `initBME688`, `initSHT41`, `bsecDataCallback`, `readBME688`, `readSHT41`, `getIaqAccuracyText`, `getIaqQualityText`, `hPaToInHg`, `loadBsecState`, `saveBsecState`, `saveBsecToFRAM`, `loadBsecFromFRAM` |
+| `battery` | `battery`, `batteryAvailable`; `BATT_LOG_INTERVAL`, `BATT_LOG_FILE` | `initBattery`, `logBatteryToSD`, `logBatteryToFRAM`, `isBatteryConnected` |
+
+Ten cut-set variables left `src.ino` (7,483 → 6,598 lines): `gpsData`, `imuData`, `imuAvailable`, `magAvailable`, `envData`, `bmeAvailable`, `shtData`, `shtAvailable`, `battery`, `batteryAvailable`. The E4-1 structs went to the unit headers, without their instances.
+
+**Found by the build, not by the graph** — four things, two of which correct the diagnosis:
+
+1. **The relocation graph never counted read-only data.** `reference-graph.py` took `nm` classes B/b/D/d as variables and skipped R/r, so every `const` table — `tzPresets`, the timeout tables, the 1,943-byte BSEC config blob `bsec2_config` — was invisible to the fan-in tables, the cut set and the reference sets the band-2 and 3a proofs compared. It surfaced when `initBME688` failed to compile without the blob. Fixed: R/r count, vtables and typeinfo do not. On the pre-3b object the fixed graph reports 79 external-linkage variables (read-only ones now included) and the same 22-variable cut set (34 after band 2, less 3a's 12), so no ordering decision changes. This band's proof was re-run against a rebuilt pre-move baseline with the fixed graph, so it covers const references.
+2. **`gnrmcFixThisCycle` is write-only.** Set in `parseNMEA` and cleared by `handleWebGpsReset`, read by nothing since #115. As a `static` the compiler eliminated it — absent from `nm`, so the graph listed no users and the first plan kept it private; the build found the write in the web handler. It is published now, at the cost of one byte and its stores (`parseNMEA` +20). **Dead state; deleting it is the owner's call**, and the verifier now names this case.
+3. `NMEA_MAX_FIELDS` sat between `nmeaParse`'s doc comment and its body, so the comment-scan stopped at it; carried into `gps.h`, the stranded comment and two empty section banners removed by hand.
+4. The MAX17048 library header is `Adafruit_MAX1704X.h`; the harness cannot know library header names, the build can.
+
+**Harness, this band:** comma declarator lists (`float a = 0, b = 0, c = 0;` moves whole, one `extern float a, b, c;`, and every name on the line must be asked for); an instance declared with its struct (`struct GpsData {…} gpsData;` — the struct goes to the header, `GpsData gpsData;` to the unit); declarations matched at column 0 only (an indented `else gprmcFixThisCycle = true;` had matched as a declaration); the orphan sweep walks bottom-up so chained comments are caught; the verifier tolerates, and names, a published variable that did not exist before.
+
+**Measured** — `scripts/verify_extraction.py`, PASS:
+
+```
+symbols   585 before -> 589 after, union of 12 objects
+          76 relocated: gps 18, imu 27, env 24, battery 7 (function-local statics and the library
+             destructor inlines go with their functions)
+          11 linkage changes b -> B, all declared (the GPS timing flags, gpsDebugEnabled, the BSEC flags)
+           3 added initialisers: _GLOBAL__sub_I_lsm 53, _envSensor 38, _battery 29 (120);
+             src.ino's shrank 272 -> 166 (-106)
+           1 added variable: gnrmcFixThisCycle (item 2 above)
+          removed: none
+deltas    25 symbols, net -88 (the -106 included): 7 touch published state, 3 call a moved function,
+          3 moved functions, 12 identical references
+          unexplained: none
+sections  .flash.text  +164: our input sections +147 (.text +54, literal pools +76, startup +17), +17 alignment
+          .flash.rodata +96: input +228 (bsec2_config 1,943 bytes relocated unchanged; string
+                             literals now split across four objects), merged by the linker to +96
+          RAM unchanged at 103,248 (.dram0.bss input +1, the flag, absorbed by alignment)
+Flash     1,856,146 -> 1,856,406 (+260)
+src.ino   7,483 -> 6,598 lines           arduino-cli SUCCESS   58 tests pass
+```
+
 ---
 
 ## Appendix — the full tables

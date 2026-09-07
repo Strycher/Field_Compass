@@ -192,6 +192,11 @@ def main() -> int:
     for k in added:
         if k.startswith("_GLOBAL__sub_I"):
             print(f"      tolerated: {k} (static initialiser of the new TU)")
+        elif base(k) in published:
+            # a static nobody read was eliminated by the compiler; published, it
+            # exists (band 3b: write-only gnrmcFixThisCycle). Report it: dead state.
+            print(f"      tolerated: {k} (declared published; absent before because the compiler "
+                  f"eliminated an unread static -- dead state, worth deleting)")
         else:
             print(f"      UNEXPECTED addition: {k}")
             ok = False
