@@ -49,13 +49,15 @@ Recreation writes only content we have inspected. No scan has to be trusted.
 
 Every one of these must hold before step 4.1.
 
-- [ ] **No open PRs.** [#244](https://github.com/Strycher/Field_Compass/pull/244) merged or closed.
-- [ ] **`docs/ci-diagnosis.md` is on `main`** — [#244](https://github.com/Strycher/Field_Compass/pull/244). *(Owner: land it. In flight.)*
-- [ ] **[#200](https://github.com/Strycher/Field_Compass/issues/200) settled** — `fc/200-legacy-match` merged, or the branch explicitly abandoned. *(Owner decision outstanding.)*
-- [ ] **Three superseded branches deleted** — evidence in §3.1.
-- [ ] **All worktrees removed**, `main` clean.
-- [ ] **No Citadel task in progress** except the migration's own.
-- [ ] **A verified backup exists** — see 4.1.
+- [x] **No open PRs** — verified before 4.1 ran.
+- [x] **`docs/ci-diagnosis.md` is on `main`** — [#244](https://github.com/Strycher/Field_Compass/pull/244), merged `e1890d0`.
+- [x] **[#200](https://github.com/Strycher/Field_Compass/issues/200) settled** — merged `9de4a9f`; `scripts/` green at 54 tests.
+- [x] **Three superseded branches deleted** — evidence in §3.1.
+- [x] **All worktrees removed**, `main` clean.
+- [x] **No Citadel task in progress** except the migration's own.
+- [x] **A verified backup exists** — 4.1, reconciled against the live API.
+
+Two things landed while preparing, neither required but both wanted before a one-way step: [#249](https://github.com/Strycher/Field_Compass/issues/249) put `scripts/` under CI so the new repository starts guarded, and [#208](https://github.com/Strycher/Field_Compass/issues/208) fixed the registry guard that 4.1 tripped over.
 
 ### 3.1 Branch dispositions, with evidence
 
@@ -71,17 +73,49 @@ Every one of these must hold before step 4.1.
 
 ## 4. The runbook
 
-### 4.1 Back up everything — do this first
+### 4.1 Back up everything — do this first ✅ DONE 2026-09-07
 
-A full mirror clone plus a JSON export of every issue, comment, label, milestone and project item, stored **outside** every git working tree at `C:\Dev\.field_compass\migration-backup\`, alongside the device registry that already lives there for the same reason.
+A full mirror clone plus a JSON export of every issue, comment, label and milestone, at **`C:\Dev\.backups\Field_Compass-migration\`**.
 
-Verify by counting: 243 issue records, 243 comments, and a mirror whose `git log --all` reaches every branch. **If the counts do not match, stop.**
+**Not** under `C:\Dev\.field_compass\`, which an earlier draft of this document specified. That directory is device state, and `block-registry-edit.py` guards everything beneath it — correctly, since #198 exists to stop the registry being hand-edited. A migration backup does not belong inside it, and putting it there refused every export command. The guard was right; the placement was wrong.
 
-### 4.2 Redact history
+The mirror must include **`refs/pull/*`**. Those refs are the only surviving copy of the pull requests, which cannot be recreated (§2). `git clone --mirror` from GitHub brings them.
 
-`git filter-repo --replace-text` over a **copy** of the mirror, mapping each of the six literals to a placeholder. Never run against the working clone.
+Verify by reconciling against the **live API**, not against numbers written here — they move every time a PR is opened:
 
-Verify: `git log -p --all | grep` finds zero occurrences of any of the four needles (`REDACTED_WIFI_PASSWORD`, `REDACTED_SSID_1`, `REDACTED_HOTSPOT_PASSWORD`, `REDACTED_SSID_3`) across all refs. Confirm the tree at `HEAD` still builds — `pio run -e feather_s3` — because redaction touches a live source file.
+```
+mirror         126 tags · 45 PR refs · refs/heads/main
+issues.json    253 entries = 208 issues + 45 PRs, no gaps in 1..253
+comments.json  252
+open count     matches repos/<repo> .open_issues_count
+```
+
+**If a count does not reconcile, stop.**
+
+### 4.2 Redact history ✅ DONE 2026-09-07
+
+Over a **copy** of the mirror — never the working clone, never the backup:
+
+```bash
+git filter-repo --replace-text <map> --replace-message <map> --force
+```
+
+**Both flags are required, and `--replace-message` was missing from the first draft.** `--replace-text` rewrites **blob contents only**. On the first pass every blob came out clean while `REDACTED_SSID_3` survived in a *commit message* — *"Mobile hotspot (REDACTED_SSID_3) added as third network"*. Following this document as originally written would have pushed a credential-bearing commit message into the new public repository.
+
+**Order the replacement map longest-literal-first.** `REDACTED_SSID_1` is a substring of `REDACTED_SSID_2`; with the short one first, SSID 2 rewrites to `REDACTED_SSID_1_5G`.
+
+Placeholders are self-explaining and non-functional — `REDACTED_SSID_1`, `REDACTED_WIFI_PASSWORD`, `REDACTED_HOTSPOT_PASSWORD` — so a reader knows the value was scrubbed, and a device flashed from redacted history fails to join WiFi loudly rather than silently.
+
+Verify on a **fresh clone of the result**, not on the rewritten repo: a rewritten repository retains unreachable objects, so a local grep can both miss real hits and invent phantom ones. Check patches *and* messages:
+
+```
+git log -p --all           | grep -c <needle>   ->  0
+git log --all --format=%B  | grep -c <needle>   ->  0
+```
+
+Measured: 16 / 17 / 11 / 11 before, 0 / 0 / 0 / 0 after, with 328 commits, 126 tags and 45 PR refs preserved.
+
+Then confirm the redacted tree still builds — `pio run -e feather_s3`, **from PowerShell**, since PlatformIO refuses to run under MSYS/Git Bash. Redaction edits a live source file, and a placeholder that broke a string literal would compile-fail. Measured: SUCCESS in 140.32 s.
 
 ### 4.3 ⛔ IRREVERSIBLE — rename the old repository
 
@@ -95,14 +129,26 @@ New public `Strycher/Field_Compass`. Push the redacted history — all branches,
 
 Verify: clone it fresh to a scratch directory, run the four-needle grep over `--all`, and build. **A clean clone is the only trustworthy check**; a local repo can hide objects the remote does not have, and vice versa.
 
-### 4.5 ⛔ IRREVERSIBLE — recreate 243 issue slots in order
+### 4.5 ⛔ IRREVERSIBLE — recreate every issue slot in order
 
-Strict ascending order, 1 → 243. Nothing else may create an issue **or a pull request** in the new repository during this run, because PRs consume the same number space and a single stray one shifts every subsequent number.
+Strict ascending order, 1 → N. Nothing else may create an issue **or a pull request** in the new repository during this run: PRs consume the same number space, and one stray creation shifts every subsequent number.
 
-For each original number:
+**The PR set is COMPUTED at run time, never written down.** An earlier draft listed 38 specific numbers. That list was stale within the hour — it was 44 by the time 4.1 ran and 45 by the time 4.2 finished, because every PR opened while preparing the migration consumed another slot. A hardcoded list guarantees numbering drift on the one step that cannot be repaired.
 
-- **was a PR** (38 of them: 128, 129, 130, 132, 136, 138, 140, 141, 143, 145, 148, 152, 165, 167, 170, 171, 174, 176, 178, 180, 182, 189, 190, 192, 193, 197, 199, 202, 204, 206, 207, 220, 235, 237, 238, 240, 241, 243) → create a closed placeholder naming the PR and linking to it in the archive
-- **was an issue** → create with sanitized body, original author and date stamped in, then labels, then comments, then close if it was closed
+Same lesson as #221's env matrix: **discovered, not listed.** Read the split from `pulls.json` in the backup, taken at the moment the run starts:
+
+```python
+prs   = {p["number"] for p in json.load(open("pulls.json"))}
+items = json.load(open("issues.json"))          # issues AND PRs, one entry each
+N     = max(i["number"] for i in items)
+```
+
+Then for each `n` in `1..N`:
+
+- **`n in prs`** → create a closed placeholder naming the PR and linking to it in the archive. PRs cannot be recreated (§2); the placeholder is the index entry that says where the real one lives.
+- **otherwise** → create with sanitized body, original author and date stamped in, then labels, then comments, then close if it was closed.
+
+Confirm before starting that `issues.json` has **no gaps** in `1..N`. It had none when 4.1 ran, and a gap would mean a deleted issue, which changes how slots must be padded.
 
 **Seven issues carry credentials** — [#7](https://github.com/Strycher/Field_Compass/issues/7), [#9](https://github.com/Strycher/Field_Compass/issues/9), [#34](https://github.com/Strycher/Field_Compass/issues/34), [#35](https://github.com/Strycher/Field_Compass/issues/35), [#39](https://github.com/Strycher/Field_Compass/issues/39), [#99](https://github.com/Strycher/Field_Compass/issues/99), [#166](https://github.com/Strycher/Field_Compass/issues/166). Their bodies and comments are sanitized before creation. [#34](https://github.com/Strycher/Field_Compass/issues/34) and [#99](https://github.com/Strycher/Field_Compass/issues/99) are **open** and must stay usable, so they are recreated in full minus the literals — not reduced to pointers.
 
@@ -184,4 +230,10 @@ The single genuinely dangerous step is **4.5**. Everything before it is reversib
 
    Merging is therefore what makes the suite green, and it adds coverage of the genuine Tier 2 path that was never tested. **Recommendation: merge before migrating**, so the new repository starts green rather than inheriting a known-false failure that the next reader has to re-litigate.
 
-2. **Epic parent** — [#245](https://github.com/Strycher/Field_Compass/issues/245) is currently parentless. Parents are the owner's grant.
+   **Settled 2026-09-07: merged** as `9de4a9f`. `scripts/` is green for the first time since the pio-flash port — 54 passed — and is now CI-gated by [#249](https://github.com/Strycher/Field_Compass/issues/249).
+
+2. **Epic parent** — **settled 2026-09-07: [#245](https://github.com/Strycher/Field_Compass/issues/245) is deliberately parentless, by owner ruling.** Not an oversight and not pending. Do not propose a parent for it.
+
+### Nothing is open
+
+Every decision this document raised has been made. The remaining gate is the owner's explicit go at **4.3**, which approving this runbook does not grant.
