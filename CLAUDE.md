@@ -48,7 +48,7 @@ physical press).
 | Component | Value |
 |-----------|-------|
 | MCU | Adafruit ESP32-S3 Feather 4MB Flash 2MB PSRAM (PID 5477) |
-| Display | Hosyond 3.5" ST7796U IPS TFT 480x320 (MSP3526), TFT_eSPI rotation 1 |
+| Display | Hosyond 3.5" ST7796U IPS TFT 480x320 (MSP3526), TFT_eSPI **rotation 3** — the panel is mounted 180° from TFT_eSPI's assumption, so landscape is the complement of the nominal rotation (#157). Configured via `build_flags`, not `User_Setup.h` (#184) |
 | Touch | FT6336U capacitive on I2C `0x38` (CTP_INT = GPIO14, FALLING edge) |
 | IMU | LSM6DSOX + LIS3MDL (STEMMA QT) — heading reference is X+ |
 | GPS | PA1616D (MT3339) — Serial1 @ 9600, CR1220 backup, PMTK101 hot restart |
@@ -183,7 +183,7 @@ CLAUDE-BASE mandates *one epic = one branch = one PR*. Field Compass overrides t
 | Branch naming | `fc/<issue>-short-desc` (e.g., `fc/120-sd-indicator`) |
 | Scope | One GitHub issue per branch |
 | Commits | Every successful compile on the branch = commit (per SAFELANE §6) |
-| CI gate | `pio run -e feather_s3` on push — **not yet implemented**, tracked as #150 |
+| CI gate | `.github/workflows/compile.yml` — `pio run` on every PR and on push to `main`. **`compile-gate` is a required status check**: a red build blocks the merge (#221, #223) |
 | Verification gate | Human flashes locally + verifies on hardware |
 | Merge | After human verification: agent runs `gh pr merge <N> --auto --rebase` |
 | Worktrees | Optional — parallel-agent rule (below) means usually not needed |
