@@ -8711,3 +8711,8 @@ void drawOLEDNavBar() {
   sprintf(buf, "[%d/%d]", currentScreen + 1, NUM_SCREENS);
   oled.print(buf);
 }
+
+// THROWAWAY probe: proves branch protection blocks in the new repo.
+void fcNewRepoProbe() {
+  int broken = 1
+}
