@@ -60,6 +60,8 @@ const uint8_t bsec2_config[] = {
 #include "fc_theme.h"
 #include "geo.h"
 #include "ui_widgets.h"
+#include "fc_config.h"
+#include "logging.h"
 
 // Set to 1 to enable LVGL test rendering (label in corner during boot).
 // Set to 0 for normal operation where sprite pipeline handles all rendering.
@@ -110,7 +112,6 @@ const char* NTP_SERVER = "pool.ntp.org";
 // defined in platformio.ini build_flags under USER_SETUP_LOADED=1, which tells
 // TFT_eSPI to skip its own header selection entirely. Not User_Setup.h (#184).
 #define FRAM_CS   15  // A3 -> FRAM CS
-#define SD_CS     10  // Adalogger FeatherWing SD slot
 
 // Touch controller (FT6336U capacitive touch, I2C 0x38)
 #define CTP_INT   14  // A4 -> Touch interrupt (active-low, CHANGE — fires on touch + release)
@@ -140,9 +141,6 @@ const char* NTP_SERVER = "pool.ntp.org";
 
 // SPI pins (explicit definition for PSRAM variant compatibility)
 // Adafruit ESP32-S3 Feather default SPI pins
-#define SPI_SCK   36  // Default Feather SPI clock
-#define SPI_MOSI  35  // Default Feather SPI MOSI
-#define SPI_MISO  37  // Default Feather SPI MISO (unused for TFT)
 
 // Button pins (directly wired, active LOW)
 #define BUTTON_A 9
@@ -162,13 +160,7 @@ const char* NTP_SERVER = "pool.ntp.org";
 #define DEBUG_TFT   1  // TFT display state logging (P1 blank bug debug)
 
 // Log level control — compile-time only (#39)
-#define LOG_LEVEL_NONE  0
-#define LOG_LEVEL_ERROR 1
-#define LOG_LEVEL_WARN  2
-#define LOG_LEVEL_INFO  3
-#define LOG_LEVEL_DEBUG 4
 
-#define LOG_LEVEL LOG_LEVEL_INFO  // Default: ERROR + WARN + INFO
 
 // Screen settings
 #define NUM_SCREENS 4
@@ -203,14 +195,9 @@ const char* NTP_SERVER = "pool.ntp.org";
 
 // Web server configuration
 #define WEB_SERVER_PORT 80
-#define SERIAL_RING_SIZE 4096  // 4KB ring buffer for serial capture
 
 // Serial log to SD (#59)
-#define LOG_DIR "/logs"
-#define LOG_RETENTION_HOURS   48       // Normal retention window
-#define LOG_GRACE_HOURS       24       // Grace period after extended off
 #define LOG_FLUSH_INTERVAL    5000     // Flush SD buffer every 5 seconds (ms)
-#define LOG_SD_BUF_SIZE       512      // RAM buffer before SD write
 #define LOG_ROTATION_INTERVAL 3600000  // Check rotation hourly (ms)
 
 // Geocache file configuration (#70)
@@ -284,18 +271,8 @@ RTC_PCF8523 rtc;
 WebServer webServer(WEB_SERVER_PORT);
 
 // Serial ring buffer for web streaming
-static char serialRing[SERIAL_RING_SIZE];
-static volatile uint16_t serialRingHead = 0;
-static volatile uint16_t serialRingTail = 0;
 
 // Serial log to SD (#59)
-static File serialLogFile;
-static bool serialLogActive = false;
-static char serialLogBuf[LOG_SD_BUF_SIZE];
-static uint16_t serialLogBufPos = 0;
-static unsigned long lastLogFlush = 0;
-static unsigned long lastLogRotation = 0;
-static char serialLogFilename[40];  // "/logs/serial_YYYYMMDD_HHMMSS.log"
 
 // ============== Global State ==============
 
@@ -395,7 +372,6 @@ static_assert(sizeof(FRAMSettings) <= FRAM_SETTINGS_SIZE, "FRAMSettings exceeds 
 FRAMHeader framHeader;
 unsigned long lastFramFlush = 0;
 
-bool sdAvailable = false;
 bool rtcAvailable = false;        // Adalogger RTC
 bool wifiConnected = false;
 bool ntpSynced = false;
@@ -593,48 +569,18 @@ struct WeatherTrend {
 // ============== SD Card Health Monitoring ==============
 // Tracks SD card errors and enables graceful degradation
 
-enum SDErrorType {
-  SD_ERR_NONE = 0,
-  SD_ERR_OPEN_FAIL,
-  SD_ERR_READ_FAIL,
-  SD_ERR_WRITE_FAIL,
-  SD_ERR_REINIT_FAIL
-};
 
-struct SDHealth {
-  bool available;              // Current availability status
-  unsigned long lastSuccess;   // millis() of last successful operation
-  unsigned long lastAttempt;   // millis() of last attempted operation
-  uint16_t errorCount;         // Total errors since boot
-  uint8_t consecutiveFailures; // Consecutive failures (resets on success)
-  uint8_t reInitCount;         // Re-initialization attempts
-  uint8_t lastError;           // Last error type (SDErrorType)
-  unsigned long lastReInit;    // millis() of last re-init attempt
-};
 
-static SDHealth sdHealth = {false, 0, 0, 0, 0, 0, SD_ERR_NONE, 0};
 static bool settingsLoadedFromSD = false;  // Deferred load flag (#118)
 
-#define SD_MAX_CONSECUTIVE_FAILURES 3
-#define SD_MAX_REINIT_ATTEMPTS 10
-#define SD_REINIT_COOLDOWN 15000  // Wait 15s between re-init attempts (#116)
 
 // Forward declarations for SD health functions (defined after initSD)
-void recordSDSuccess();
-void recordSDError(SDErrorType err);
-bool shouldAttemptReInit();
-bool trySDReInit();
-File sdOpenSafe(const char* path, const char* mode, bool silent = false);
 
 // Forward declarations for FRAM settings backup (#118)
 bool loadSettingsFromFRAM();
 void saveSettingsToFRAM();
 
 // Forward declarations for serial log to SD (#59)
-void initSerialLog();
-void serialLogAppend(const char* str);
-void serialLogFlush();
-void serialLogRotate();
 
 // Forward declarations the Arduino preprocessor used to generate (#261).
 // These 13 are called before they are defined and had no explicit prototype --
@@ -657,273 +603,14 @@ void readSHT41();
 
 // ============== Serial Ring Buffer (moved before setup for use in init) ==============
 
-void serialRingAppend(const char* str) {
-  while (*str) {
-    serialRing[serialRingHead] = *str++;
-    serialRingHead = (serialRingHead + 1) % SERIAL_RING_SIZE;
-    // If we catch up to tail, advance tail (lose oldest data)
-    if (serialRingHead == serialRingTail) {
-      serialRingTail = (serialRingTail + 1) % SERIAL_RING_SIZE;
-    }
-  }
-}
-
-// Read and clear the ring buffer
-String serialRingRead() {
-  String result;
-  result.reserve(SERIAL_RING_SIZE);
-  while (serialRingTail != serialRingHead) {
-    result += serialRing[serialRingTail];
-    serialRingTail = (serialRingTail + 1) % SERIAL_RING_SIZE;
-  }
-  return result;
-}
-
-// Peek at ring buffer without clearing
-String serialRingPeek() {
-  String result;
-  result.reserve(SERIAL_RING_SIZE);
-  uint16_t pos = serialRingTail;
-  while (pos != serialRingHead) {
-    result += serialRing[pos];
-    pos = (pos + 1) % SERIAL_RING_SIZE;
-  }
-  return result;
-}
-
 // Web serial streaming position tracker
 static uint16_t webSerialReadPos = 0;
-
-// Custom print that captures to ring buffer and SD log (#59)
-void logPrint(const char* msg) {
-  serialRingAppend(msg);
-  serialLogAppend(msg);
-  Serial.print(msg);
-}
-
-void logPrintln(const char* msg) {
-  serialRingAppend(msg);
-  serialRingAppend("\n");
-  serialLogAppend(msg);
-  serialLogAppend("\n");
-  Serial.println(msg);
-}
-
-void logPrintf(const char* fmt, ...) {
-  char buf[256];
-  va_list ap;
-  va_start(ap, fmt);
-  vsnprintf(buf, sizeof(buf), fmt, ap);
-  va_end(ap);
-  serialRingAppend(buf);
-  serialLogAppend(buf);
-  Serial.print(buf);
-}
 
 // Log to SD + Serial only (skips web serial mirror ring buffer)
 void magLogPrintln(const char* msg) {
   serialLogAppend(msg);
   serialLogAppend("\n");
   Serial.println(msg);
-}
-
-// Timestamp helper for LOG_* macros (#39)
-// Returns "[HH:MM:SS] " (wall clock) or "[UUU:MM:SS] " (uptime if no time source)
-const char* logTimestamp() {
-  static char tsBuf[16];
-  struct tm timeinfo;
-  if (getLocalTime(&timeinfo, 0)) {
-    snprintf(tsBuf, sizeof(tsBuf), "[%02d:%02d:%02d] ",
-             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-  } else {
-    unsigned long s = millis() / 1000;
-    snprintf(tsBuf, sizeof(tsBuf), "[%03lu:%02lu:%02lu] ",
-             s / 3600, (s % 3600) / 60, s % 60);
-  }
-  return tsBuf;
-}
-
-// Severity-level log macros — compile to nothing when below LOG_LEVEL (#39)
-// Usage: LOG_INFO("WiFi connected to %s", ssid);
-// Output: [12:34:56] INFO  WiFi connected to REDACTED_SSID_1
-
-#if LOG_LEVEL >= LOG_LEVEL_ERROR
-  #define LOG_ERROR(fmt, ...) logPrintf("%sERROR " fmt "\n", logTimestamp(), ##__VA_ARGS__)
-#else
-  #define LOG_ERROR(fmt, ...) ((void)0)
-#endif
-
-#if LOG_LEVEL >= LOG_LEVEL_WARN
-  #define LOG_WARN(fmt, ...)  logPrintf("%sWARN  " fmt "\n", logTimestamp(), ##__VA_ARGS__)
-#else
-  #define LOG_WARN(fmt, ...)  ((void)0)
-#endif
-
-#if LOG_LEVEL >= LOG_LEVEL_INFO
-  #define LOG_INFO(fmt, ...)  logPrintf("%sINFO  " fmt "\n", logTimestamp(), ##__VA_ARGS__)
-#else
-  #define LOG_INFO(fmt, ...)  ((void)0)
-#endif
-
-#if LOG_LEVEL >= LOG_LEVEL_DEBUG
-  #define LOG_DEBUG(fmt, ...) logPrintf("%sDEBUG " fmt "\n", logTimestamp(), ##__VA_ARGS__)
-#else
-  #define LOG_DEBUG(fmt, ...) ((void)0)
-#endif
-
-// ============== Serial Log to SD (#59) ==============
-
-void serialLogAppend(const char* str) {
-  if (!serialLogActive) return;
-  while (*str) {
-    serialLogBuf[serialLogBufPos++] = *str++;
-    if (serialLogBufPos >= LOG_SD_BUF_SIZE) {
-      serialLogFlush();
-    }
-  }
-}
-
-void serialLogFlush() {
-  if (!serialLogActive || serialLogBufPos == 0) return;
-  if (serialLogFile) {
-    size_t written = serialLogFile.write((uint8_t*)serialLogBuf, serialLogBufPos);
-    if (written != (size_t)serialLogBufPos) {
-      // Write failure — close and reopen, retry once
-      serialLogFile.close();
-      serialLogFile = SD.open(serialLogFilename, FILE_APPEND);
-      if (serialLogFile) {
-        serialLogFile.write((uint8_t*)serialLogBuf, serialLogBufPos);
-      } else {
-        serialLogActive = false;
-        LOG_ERROR("[LOG] SD write failed, logging disabled");
-      }
-    }
-    serialLogFile.flush();
-  }
-  serialLogBufPos = 0;
-  lastLogFlush = millis();
-}
-
-void serialLogRotate() {
-  if (!sdAvailable) return;
-
-  File dir = SD.open(LOG_DIR);
-  if (!dir || !dir.isDirectory()) return;
-
-  // First pass: find the most recent existing log timestamp
-  time_t now;
-  time(&now);
-  time_t newestLog = 0;
-
-  File entry = dir.openNextFile();
-  while (entry) {
-    if (!entry.isDirectory()) {
-      const char* name = entry.name();
-      int yr, mo, dy, hr, mn, sc;
-      if (sscanf(name, "serial_%4d%2d%2d_%2d%2d%2d.log", &yr, &mo, &dy, &hr, &mn, &sc) == 6) {
-        struct tm t = {};
-        t.tm_year = yr - 1900;
-        t.tm_mon = mo - 1;
-        t.tm_mday = dy;
-        t.tm_hour = hr;
-        t.tm_min = mn;
-        t.tm_sec = sc;
-        time_t logTime = mktime(&t);
-        if (logTime > newestLog) newestLog = logTime;
-      }
-    }
-    entry.close();
-    entry = dir.openNextFile();
-  }
-  dir.close();
-
-  // Decide retention: normal (48h) or grace (keep all)
-  double hoursSinceNewest = (newestLog > 0) ? difftime(now, newestLog) / 3600.0 : 0;
-  bool graceMode = (newestLog > 0 && hoursSinceNewest >= LOG_RETENTION_HOURS);
-
-  if (graceMode) {
-    logPrintf("[LOG] Grace mode: last log %.0fh old, keeping all files\n", hoursSinceNewest);
-    return;  // Keep everything — rotation resumes after LOG_GRACE_HOURS of uptime
-  }
-
-  // Normal mode: delete files older than LOG_RETENTION_HOURS
-  time_t cutoff = now - ((time_t)LOG_RETENTION_HOURS * 3600);
-  int deleted = 0;
-
-  dir = SD.open(LOG_DIR);
-  entry = dir.openNextFile();
-  while (entry) {
-    if (!entry.isDirectory()) {
-      const char* name = entry.name();
-      int yr, mo, dy, hr, mn, sc;
-      if (sscanf(name, "serial_%4d%2d%2d_%2d%2d%2d.log", &yr, &mo, &dy, &hr, &mn, &sc) == 6) {
-        struct tm t = {};
-        t.tm_year = yr - 1900;
-        t.tm_mon = mo - 1;
-        t.tm_mday = dy;
-        t.tm_hour = hr;
-        t.tm_min = mn;
-        t.tm_sec = sc;
-        time_t logTime = mktime(&t);
-        if (logTime < cutoff) {
-          char fullPath[60];
-          snprintf(fullPath, sizeof(fullPath), LOG_DIR "/%s", name);
-          entry.close();
-          SD.remove(fullPath);
-          deleted++;
-          entry = dir.openNextFile();
-          continue;
-        }
-      }
-    }
-    entry.close();
-    entry = dir.openNextFile();
-  }
-  dir.close();
-
-  if (deleted > 0) {
-    logPrintf("[LOG] Rotation: deleted %d files older than %dh\n", deleted, LOG_RETENTION_HOURS);
-  }
-}
-
-void initSerialLog() {
-  if (!sdAvailable || !rtcAvailable) {
-    logPrintln("[LOG] Serial log disabled (no SD or RTC)");
-    return;
-  }
-
-  // Create /logs/ directory if missing
-  if (!SD.exists(LOG_DIR)) {
-    SD.mkdir(LOG_DIR);
-  }
-
-  // Build filename from RTC time
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    logPrintln("[LOG] Serial log disabled (no time source)");
-    return;
-  }
-
-  snprintf(serialLogFilename, sizeof(serialLogFilename),
-           LOG_DIR "/serial_%04d%02d%02d_%02d%02d%02d.log",
-           timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-           timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-
-  // Run smart rotation before opening new file
-  serialLogRotate();
-
-  // Open log file for append
-  serialLogFile = SD.open(serialLogFilename, FILE_APPEND);
-  if (!serialLogFile) {
-    logPrintf("[LOG] Failed to open %s\n", serialLogFilename);
-    return;
-  }
-
-  serialLogActive = true;
-  serialLogBufPos = 0;
-  lastLogFlush = millis();
-  lastLogRotation = millis();
-  logPrintf("[LOG] Logging to %s\n", serialLogFilename);
 }
 
 // ============== LVGL Tick Callback ==============
@@ -1117,7 +804,7 @@ void setup() {
   initSD();
   initFRAM();   // SPI FRAM 256KB (shared bus with TFT/SD)
   initRTC();    // Adalogger RTC - sets system time if RTC has valid time
-  initSerialLog();  // Serial log to SD (#59) - needs SD + RTC
+  initSerialLog(rtcAvailable);  // Serial log to SD (#59) - needs SD + RTC; RTC state passed in (#263)
   initWiFi();   // Will sync NTP if connected, then sync RTC
 
   // Flush any FRAM data from previous session to SD
@@ -4994,111 +4681,6 @@ void syncRTCFromSystemTime(const char* source) {
 }
 
 // ============== SD Card Health Functions ==============
-
-// Record successful SD operation
-void recordSDSuccess() {
-  sdHealth.lastSuccess = millis();
-  sdHealth.consecutiveFailures = 0;
-}
-
-// Record SD error and potentially trigger re-init
-void recordSDError(SDErrorType err) {
-  sdHealth.lastError = err;
-  sdHealth.errorCount++;
-  sdHealth.consecutiveFailures++;
-  sdHealth.lastAttempt = millis();
-
-  logPrintf("[SD] Error %d (total:%d consec:%d)\n",
-            err, sdHealth.errorCount, sdHealth.consecutiveFailures);
-
-  // If too many consecutive failures, try re-init
-  if (sdHealth.consecutiveFailures >= SD_MAX_CONSECUTIVE_FAILURES) {
-    trySDReInit();
-  }
-}
-
-// Check if we should attempt SD re-initialization
-bool shouldAttemptReInit() {
-  // Don't exceed max attempts
-  if (sdHealth.reInitCount >= SD_MAX_REINIT_ATTEMPTS) return false;
-
-  // Enforce cooldown period
-  if (millis() - sdHealth.lastReInit < SD_REINIT_COOLDOWN) return false;
-
-  return true;
-}
-
-// Attempt SD re-initialization with backoff
-bool trySDReInit() {
-  if (!shouldAttemptReInit()) {
-    logPrintln("[SD] Re-init skipped (cooldown or max attempts)");
-    return false;
-  }
-
-  sdHealth.reInitCount++;
-  sdHealth.lastReInit = millis();
-
-  logPrintf("[SD] Attempting re-init #%d...\n", sdHealth.reInitCount);
-
-  // Full SPI bus reset: end SD, end SPI, re-init SPI, then re-mount SD (#116)
-  // This clears any stale bus state from TFT_eSPI's 80MHz DMA transfers
-  SD.end();
-  SPI.end();
-  delay(100);
-  SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
-  delay(100);  // Allow bus + card to settle
-
-  // Try to re-initialize with conservative 4MHz clock (#116)
-  if (SD.begin(SD_CS, SPI, 4000000)) {
-    sdAvailable = true;
-    sdHealth.available = true;
-    sdHealth.consecutiveFailures = 0;
-    sdHealth.lastSuccess = millis();
-    logPrintln("[SD] Re-init SUCCESS");
-    return true;
-  } else {
-    sdAvailable = false;
-    sdHealth.available = false;
-    sdHealth.lastError = SD_ERR_REINIT_FAIL;
-    logPrintln("[SD] Re-init FAILED");
-    return false;
-  }
-}
-
-// Safe file open with error tracking
-File sdOpenSafe(const char* path, const char* mode, bool silent) {
-  if (!sdHealth.available) {
-    return File();  // Return invalid file
-  }
-
-  sdHealth.lastAttempt = millis();
-
-  // Try open with one retry on failure (bus contention mitigation #116)
-  File f;
-  for (int attempt = 0; attempt < 2; attempt++) {
-    if (strcmp(mode, "r") == 0 || strcmp(mode, FILE_READ) == 0) {
-      f = SD.open(path, FILE_READ);
-    } else if (strcmp(mode, "w") == 0 || strcmp(mode, FILE_WRITE) == 0) {
-      f = SD.open(path, FILE_WRITE);
-    } else if (strcmp(mode, "a") == 0) {
-      f = SD.open(path, FILE_APPEND);
-    } else {
-      f = SD.open(path);  // Default mode
-    }
-    if (f) break;  // Success
-    if (attempt == 0) delay(50);  // Brief settle before retry
-  }
-
-  if (!f) {
-    if (!silent) {
-      recordSDError(SD_ERR_OPEN_FAIL);
-    }
-    return File();
-  }
-
-  recordSDSuccess();
-  return f;
-}
 
 // ============== BSEC State Persistence ==============
 
