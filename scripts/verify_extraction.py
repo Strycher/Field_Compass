@@ -51,6 +51,7 @@ import collections
 import importlib.util
 import json
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -144,9 +145,14 @@ def main() -> int:
     def dm(s: str) -> str:
         return names.get(s, s)
 
+    CLONE = re.compile(r"\$(?:constprop|isra|part)\$\d+$")
+
     def norm(s: str) -> str:
-        """Demangled name, collapsed to the base name for re-signed functions."""
-        d = dm(s)
+        """Demangled name, collapsed to the base name for re-signed functions,
+        and to the original function for a compiler clone: a smaller TU makes
+        GCC specialise a library inline for one caller (band 4), which is the
+        same reference with a different name."""
+        d = CLONE.sub("", dm(s))
         b = base(d)
         return b if b in resigned else d
 
@@ -186,12 +192,18 @@ def main() -> int:
         ok = ok and base(r) in resigned
     print(f"   removed: {removed or 'none'}")
     for k in removed:
+        if CLONE.search(k):
+            print(f"      tolerated: {k} (a compiler clone of a library inline, no longer worth making)")
+            continue
         print(f"      UNEXPECTED removal: {k}")
         ok = False
     print(f"   added:   {added or 'none'}")
     for k in added:
         if k.startswith("_GLOBAL__sub_I"):
             print(f"      tolerated: {k} (static initialiser of the new TU)")
+        elif CLONE.search(k):
+            print(f"      tolerated: {k} (a compiler clone of a library inline: the smaller TU "
+                  f"specialised it for one caller; reference sets compare it as the original)")
         elif base(k) in published:
             # a static nobody read was eliminated by the compiler; published, it
             # exists (band 3b: write-only gnrmcFixThisCycle). Report it: dead state.
