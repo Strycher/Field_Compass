@@ -656,6 +656,28 @@ void serialLogAppend(const char* str);
 void serialLogFlush();
 void serialLogRotate();
 
+// Forward declarations the Arduino preprocessor used to generate (#261).
+// These 13 are called before they are defined and had no explicit prototype --
+// the exact set that breaks the moment their code leaves the .ino, where
+// nothing generates prototypes. Measured from relocations plus debug-info
+// definition lines by scripts/reference-graph.py; the regex-era estimate of 70
+// counted "called before definition" and missed that 58 of those already had
+// one. Prototypes emit no code: the nm symbol set, sizes and types are
+// identical before and after, which is this change's proof.
+float calcBearing(float lat1, float lon1, float lat2, float lon2);
+float calcDistanceKm(float lat1, float lon1, float lat2, float lon2);
+const char* calculateForecast();
+const char* getCardinal(float heading);
+const char* getIaqQualityText(float iaq);
+const char* getTrendArrow();
+bool isBatteryConnected();
+bool loadBsecFromFRAM();
+bool loadBsecState();
+time_t mktimeUTC(struct tm* tm);
+void readBME688();
+void readIMU();
+void readSHT41();
+
 // ============== Serial Ring Buffer (moved before setup for use in init) ==============
 
 void serialRingAppend(const char* str) {
