@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reference graph of src.ino, from relocations (#215, Q3/Q4).
+"""Reference graph of src.ino, from relocations (#215, Q3/Q4/Q5).
 
 symbol-inventory.py says WHAT the god object defines. This says WHO USES WHAT:
 for every function, which of the file's own variables it touches and which of
@@ -8,16 +8,32 @@ depends on, and it cannot be read off the source reliably -- the same regex
 method that undercounted variables by 2.7x would be guessing here too.
 
 Method. The build uses -ffunction-sections and -fdata-sections, so each function
-owns `.text.<fn>` and `.literal.<fn>` sections and each variable owns a
-`.bss.<var>` / `.data.<var>` / `.rodata.<var>` section. `objdump -r` lists,
-per section, every symbol it references. Attribute the relocations of a
-function's sections to that function, keep only references to symbols this
-object itself defines, and the intra-file graph falls out.
+owns `.text.<fn>` and `.literal.<fn>` sections (ISRs own `.iram1.<n>`), and each
+variable owns a `.bss.<var>` / `.data.<var>` / `.rodata.<var>` section.
+`objdump -r` lists, per section, every symbol it references. Attribute the
+relocations of a function's sections to that function, keep only references to
+symbols this object itself defines, and the intra-file graph falls out.
+
+Two filters keep the numbers honest:
+
+  * AUTHORED functions only, for every function-centric table. The object also
+    carries library inlines emitted into this TU (an LVGL setter, a WebServer
+    template instantiation), the static initialiser, compiler clones ($isra$),
+    and lambda bodies. None of those is a function anyone will extract. Debug
+    info says where each symbol was defined; anything not from src.ino, or
+    matching a clone pattern, is excluded from function counts and lists.
+    Variable fan-in keeps every referrer, because a reference is a reference.
+
+  * DETERMINISTIC cut set. The greedy removal picks the highest-fan-in variable
+    each step; many variables tie (fan-in 11-15), and the first version broke
+    ties by dict order, giving 35 on one run and 37 on another. Ties now break
+    by name so the number is reproducible rather than merely plausible.
 
 Usage:
     pio run -e feather_s3
-    python scripts/reference-graph.py            # summary tables
-    python scripts/reference-graph.py --json     # full adjacency
+    python scripts/reference-graph.py             # summary
+    python scripts/reference-graph.py --appendix  # markdown tables for the doc
+    python scripts/reference-graph.py --json      # full adjacency
 """
 from __future__ import annotations
 
@@ -30,7 +46,15 @@ import subprocess
 import sys
 
 OBJ = pathlib.Path(".pio/build/feather_s3/src/src.ino.cpp.o")
+SRC = pathlib.Path("src/src.ino")
 TOOLS = pathlib.Path.home() / ".platformio/packages/toolchain-xtensa-esp32s3/bin"
+CUT_TARGET = 40   # stop owning variables once the largest cluster is below this
+
+SECTION_RE = re.compile(r"^RELOCATION RECORDS FOR \[(.+?)\]:")
+DATA_SEC_RE = re.compile(r"^\.(?:bss|data|rodata|sbss|sdata)\.(.+)$")
+FN_SEC_RE = re.compile(r"^\.(?:text|literal)\.(.+)$")
+IRAM_SEC_RE = re.compile(r"^\.iram1\.\d+(?:\.literal)?$")
+ARTIFACT_RE = re.compile(r"^_GLOBAL__sub_I|\$isra\$|\$part\$|\$constprop\$")
 
 
 def tool(name: str) -> str:
@@ -68,31 +92,39 @@ def defined_symbols(obj: pathlib.Path):
     return funcs, var_ext, var_static
 
 
-SECTION_RE = re.compile(r"^RELOCATION RECORDS FOR \[(.+?)\]:")
-# ".bss.gpsData" / ".data._ZL3foo" / ".rodata.bar" -> owning symbol
-DATA_SEC_RE = re.compile(r"^\.(?:bss|data|rodata|sbss|sdata)\.(.+)$")
-# .iram1.N holds ISRs (IRAM_ATTR). The first version of this script matched
-# only .text/.literal and so reported the touch ISR's flag as unreferenced --
-# it IS referenced, from a section this regex did not cover. Xtensa puts the
-# ISR body in .iram1.<n> and its literals in .iram1.<n>.literal; objdump names
-# the owning function only in the symbol table, so ISR sections are attributed
-# by looking up which function symbol lives in that section.
-FN_SEC_RE = re.compile(r"^\.(?:text|literal)\.(.+)$")
-IRAM_SEC_RE = re.compile(r"^\.iram1\.\d+(?:\.literal)?$")
+def definitions(obj: pathlib.Path) -> dict[str, tuple[str, int]]:
+    """symbol -> (source file, line) from debug info, for T/t symbols."""
+    out = {}
+    for line in run([tool("nm"), "-l", "--defined-only", str(obj)]).splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[1] in ("T", "t") and ":" in parts[-1]:
+            path, _, ln = parts[-1].rpartition(":")
+            try:
+                out[parts[2]] = (path, int(ln))
+            except ValueError:
+                pass
+    return out
+
+
+def authored(funcs: set[str], defs: dict, names: dict[str, str]) -> set[str]:
+    keep = set()
+    for f in funcs:
+        if ARTIFACT_RE.search(f):
+            continue
+        dm = names.get(f, f)
+        if "{lambda" in dm or "operator()" in dm:
+            continue
+        if f not in defs or not defs[f][0].replace("\\", "/").endswith("src.ino"):
+            continue
+        keep.add(f)
+    return keep
 
 
 def iram_owners(obj: pathlib.Path) -> dict[str, str]:
-    """section name -> function symbol, for .iram1.* sections only.
-
-    `objdump -t` rows look like:  00000000 g  F .iram1.1  0000003c _Z8touchISRv
-    """
+    """section name -> function symbol, for .iram1.* sections only."""
     owners = {}
     for line in run([tool("objdump"), "-t", str(obj)]).splitlines():
         parts = line.split()
-        # Column count varies with the flag field ("g F" vs "l d"), so find the
-        # section by content rather than by position. The first version used a
-        # fixed index, landed on the flag column, and matched nothing -- which
-        # made the touch ISR's flag look unreferenced.
         sec = next((p for p in parts if p.startswith(".iram1.")), None)
         if sec and "F" in parts[1:4]:
             owners[sec] = parts[-1]
@@ -121,85 +153,35 @@ def references(obj: pathlib.Path):
         parts = line.split()
         if len(parts) < 3:
             continue
-        target = parts[2]
-        target = re.sub(r"[+-]0x[0-9a-fA-F]+$", "", target)   # strip addends
+        target = re.sub(r"[+-]0x[0-9a-fA-F]+$", "", parts[2])
         dm = DATA_SEC_RE.match(target)
         refs[current].add(dm.group(1) if dm else target)
     return refs
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--json", action="store_true")
-    ap.add_argument("--obj", default=str(OBJ))
-    a = ap.parse_args()
-    obj = pathlib.Path(a.obj)
-    if not obj.exists():
-        sys.exit(f"{obj} not found -- run `pio run -e feather_s3` first")
-
-    funcs, var_ext, var_static = defined_symbols(obj)
-    all_vars = var_ext | var_static
-    raw = references(obj)
-
-    # keep only edges to symbols THIS object defines; drop self-references
-    graph = {}
-    for fn in funcs:
-        tgt = raw.get(fn, set())
-        graph[fn] = {
-            "vars_ext":    sorted(t for t in tgt if t in var_ext),
-            "vars_static": sorted(t for t in tgt if t in var_static),
-            "calls":       sorted(t for t in tgt if t in funcs and t != fn),
+class Analysis:
+    def __init__(self, obj: pathlib.Path):
+        self.funcs, self.var_ext, self.var_static = defined_symbols(obj)
+        self.defs = definitions(obj)
+        self.names = demangle(sorted(self.funcs | self.var_ext | self.var_static))
+        self.authored = authored(self.funcs, self.defs, self.names)
+        raw = references(obj)
+        self.graph = {
+            f: {
+                "vars_ext": sorted(t for t in raw.get(f, ()) if t in self.var_ext),
+                "vars_static": sorted(t for t in raw.get(f, ()) if t in self.var_static),
+                "calls": sorted(t for t in raw.get(f, ()) if t in self.funcs and t != f),
+            }
+            for f in self.funcs
         }
+        self.fanin = collections.Counter(v for g in self.graph.values() for v in g["vars_ext"])
+        self.call_in = collections.Counter(c for g in self.graph.values() for c in g["calls"])
 
-    names = demangle(sorted(funcs | all_vars))
-    d = lambda s: names.get(s, s)
+    def d(self, s: str) -> str:
+        return self.names.get(s, s)
 
-    if a.json:
-        print(json.dumps({d(f): {k: [d(x) for x in v] for k, v in g.items()}
-                          for f, g in graph.items()}, indent=2))
-        return 0
-
-    # ---- fan-in of external-linkage variables: the real hot core ----------
-    fanin = collections.Counter()
-    users = collections.defaultdict(list)
-    for fn, g in graph.items():
-        for v in g["vars_ext"]:
-            fanin[v] += 1
-            users[v].append(fn)
-    print(f"external-linkage variables by fan-in (functions referencing them)")
-    print(f"  {len(var_ext)} variables, {sum(1 for v in var_ext if fanin[v]==0)} referenced by no function here\n")
-    for v, n in fanin.most_common(20):
-        print(f"  {n:>3}  {d(v)}")
-
-    # ---- fan-in of functions: what must be extracted first ----------------
-    call_in = collections.Counter()
-    for fn, g in graph.items():
-        for c in g["calls"]:
-            call_in[c] += 1
-    print(f"\nfunctions by fan-in (callers within src.ino)")
-    for f, n in call_in.most_common(15):
-        print(f"  {n:>3}  {d(f)}")
-
-    # ---- coupling profile per function -------------------------------------
-    leaf = [f for f, g in graph.items() if not g["vars_ext"] and not g["calls"]]
-    pure_ext0 = [f for f, g in graph.items() if not g["vars_ext"]]
-    print(f"\ncoupling profile")
-    print(f"  functions touching NO external-linkage variable : {len(pure_ext0)} of {len(funcs)}")
-    print(f"  ...and calling no other src.ino function        : {len(leaf)}")
-    heavy = sorted(graph.items(), key=lambda kv: -len(kv[1]["vars_ext"]))[:12]
-    print(f"\nheaviest consumers of shared state (external-linkage vars touched)")
-    for f, g in heavy:
-        print(f"  {len(g['vars_ext']):>3} vars  {len(g['calls']):>3} calls  {d(f)}")
-
-    # ---- cut set: how much state must be OWNED before seams appear -------
-    # Functions sharing an external-linkage variable are joined. Remove the
-    # highest-fan-in variable, re-join, repeat, until the largest component
-    # falls below `target` functions. The variables removed are the ones that
-    # must become deliberate ownership interfaces before the rest of the file
-    # separates into domains on its own. On first measurement this was 37 of
-    # 97 -- the file is ONE connected component, and seams have to be created,
-    # not discovered.
-    def largest_component(excluded: set[str]) -> list[int]:
+    # -- cut set ------------------------------------------------------------
+    def clusters(self, excluded: set[str]) -> list[int]:
         parent: dict[str, str] = {}
 
         def find(x):
@@ -209,54 +191,152 @@ def main() -> int:
                 x = parent[x]
             return x
 
-        for fn, g in graph.items():
+        for fn, g in self.graph.items():
             for v in g["vars_ext"]:
                 if v not in excluded:
                     parent[find("f:" + fn)] = find("v:" + v)
         sizes = collections.Counter(find(k) for k in parent if k.startswith("f:"))
-        return sorted(sizes.values(), reverse=True)
+        return sorted(sizes.values(), reverse=True) or [0]
 
-    target = 40
-    removed: list[str] = []
-    while True:
-        sizes = largest_component(set(removed))
-        if not sizes or sizes[0] < target or len(removed) >= len(fanin):
-            break
-        removed.append(max((v for v in fanin if v not in removed), key=lambda v: fanin[v]))
-    print(f"\ncut set: {len(removed)} of {len(var_ext)} external-linkage variables must be"
-          f" owned before the largest cluster is under {target} functions")
-    print(f"  resulting clusters: {sizes[:6]}")
-    print(f"  in removal order: {', '.join(d(v) for v in removed)}")
+    def cut_set(self) -> list[tuple[str, int]]:
+        """[(variable, largest cluster after removing it), ...] in removal order."""
+        removed: list[str] = []
+        trace: list[tuple[str, int]] = []
+        while self.clusters(set(removed))[0] >= CUT_TARGET and len(removed) < len(self.fanin):
+            pick = sorted((v for v in self.fanin if v not in removed),
+                          key=lambda v: (-self.fanin[v], self.d(v)))[0]
+            removed.append(pick)
+            trace.append((pick, self.clusters(set(removed))[0]))
+        return trace
 
-    # ---- Q5: reliance on Arduino-generated prototypes ---------------------
-    # A callee defined AFTER its caller needs a prototype. In a .ino the Arduino
-    # preprocessor supplies one; in a .cpp nothing does. Count callees that are
-    # called before definition AND have no explicit forward declaration in the
-    # source -- those are what breaks the moment code leaves the .ino.
-    defline: dict[str, int] = {}
-    for line in run([tool("nm"), "-l", "--defined-only", str(obj)]).splitlines():
-        parts = line.split()
-        if len(parts) >= 4 and parts[1] in ("T", "t") and ":" in parts[-1]:
-            try:
-                defline[parts[2]] = int(parts[-1].rsplit(":", 1)[1])
-            except ValueError:
-                pass
-    early = {c for f, g in graph.items() for c in g["calls"]
-             if f in defline and c in defline and defline[f] < defline[c]}
-    src = pathlib.Path("src/src.ino")
-    text = src.read_text(encoding="utf-8", errors="replace") if src.exists() else ""
+    # -- Q5 -------------------------------------------------------------------
+    def prototype_reliant(self) -> tuple[set[str], list[str]]:
+        line = {f: ln for f, (_, ln) in self.defs.items()}
+        early = {c for f, g in self.graph.items() for c in g["calls"]
+                 if f in line and c in line and line[f] < line[c] and c in self.authored}
+        text = SRC.read_text(encoding="utf-8", errors="replace") if SRC.exists() else ""
 
-    def has_forward_decl(sym: str) -> bool:
-        name = d(sym).split("(")[0].split("::")[-1].strip()
-        pat = r"^[^\S\n]*[\w:\*&<> ,]+\b" + re.escape(name) + r"\s*\([^;{]*\)\s*;"
-        return re.search(pat, text, re.M) is not None
+        def has_forward_decl(sym: str) -> bool:
+            name = self.d(sym).split("(")[0].split("::")[-1].strip()
+            pat = r"^[^\S\n]*[\w:\*&<> ,]+\b" + re.escape(name) + r"\s*\([^;{]*\)\s*;"
+            return re.search(pat, text, re.M) is not None
 
-    implicit = sorted(d(s) for s in early if not has_forward_decl(s))
+        return early, sorted(self.d(s) for s in early if not has_forward_decl(s))
+
+    def leaves(self) -> list[str]:
+        return sorted(self.d(f) for f in self.authored
+                      if not self.graph[f]["vars_ext"] and not self.graph[f]["calls"])
+
+
+def summary(a: Analysis) -> None:
+    d = a.d
+    n_auth = len(a.authored)
+    print(f"functions: {len(a.funcs)} T/t symbols, {n_auth} authored in src.ino "
+          f"({len(a.funcs) - n_auth} library inlines / initialiser / clones / lambdas excluded)")
+    print(f"  authored static: {sum(1 for f in a.authored if f.startswith('_ZL'))}")
+
+    print(f"\nexternal-linkage variables by fan-in (functions referencing them)")
+    print(f"  {len(a.var_ext)} variables, "
+          f"{sum(1 for v in a.var_ext if a.fanin[v] == 0)} referenced by no function here\n")
+    for v, n in a.fanin.most_common(20):
+        print(f"  {n:>3}  {d(v)}")
+
+    print(f"\nauthored functions by fan-in (callers within src.ino)")
+    for f, n in sorted(a.call_in.items(), key=lambda kv: (-kv[1], d(kv[0]))):
+        if f in a.authored and n >= 5:
+            print(f"  {n:>3}  {d(f)}")
+
+    leaves = a.leaves()
+    no_ext = [f for f in a.authored if not a.graph[f]["vars_ext"]]
+    print(f"\ncoupling profile (authored functions)")
+    print(f"  touching NO external-linkage variable : {len(no_ext)} of {n_auth}")
+    print(f"  ...and calling no other src.ino function : {len(leaves)}")
+
+    heavy = sorted((f for f in a.authored), key=lambda f: -len(a.graph[f]["vars_ext"]))[:12]
+    print(f"\nheaviest consumers of shared state (external-linkage vars touched)")
+    for f in heavy:
+        g = a.graph[f]
+        print(f"  {len(g['vars_ext']):>3} vars  {len(g['calls']):>3} calls  {d(f)}")
+
+    trace = a.cut_set()
+    print(f"\ncut set: {len(trace)} of {len(a.var_ext)} external-linkage variables must be"
+          f" owned before the largest cluster is under {CUT_TARGET} functions")
+    print(f"  resulting clusters: {a.clusters({v for v, _ in trace})[:8]}")
+    print(f"  in removal order: {', '.join(d(v) for v, _ in trace)}")
+
+    early, implicit = a.prototype_reliant()
     print(f"\ngenerated-prototype reliance (Q5)")
-    print(f"  callees invoked before their definition : {len(early)} of {len(funcs)}")
-    print(f"  of which have NO forward declaration    : {len(implicit)}  <-- break on leaving the .ino")
+    print(f"  authored callees invoked before their definition : {len(early)} of {n_auth}")
+    print(f"  of which have NO forward declaration             : {len(implicit)}  <-- break on leaving the .ino")
     for name in implicit:
         print(f"    {name}")
+
+
+def appendix(a: Analysis) -> None:
+    d = a.d
+    rows = sorted(a.var_ext, key=lambda v: (-a.fanin[v], d(v)))
+    print(f"### A. All {len(a.var_ext)} external-linkage variables by fan-in\n")
+    print("| fan-in | variable | fan-in | variable | fan-in | variable |")
+    print("|---:|---|---:|---|---:|---|")
+    cells = [f"{a.fanin[v]} | `{d(v)}`" for v in rows]
+    while len(cells) % 3:
+        cells.append(" | ")
+    for i in range(0, len(cells), 3):
+        print("| " + " | ".join(cells[i:i + 3]) + " |")
+
+    trace = a.cut_set()
+    print(f"\n### B. The cut set — {len(trace)} variables, in removal order\n")
+    print("| # | variable | fan-in | largest cluster after removal |")
+    print("|---:|---|---:|---:|")
+    for i, (v, big) in enumerate(trace, 1):
+        print(f"| {i} | `{d(v)}` | {a.fanin[v]} | {big} |")
+    print(f"\nClusters remaining afterwards: {a.clusters({v for v, _ in trace})[:10]}")
+
+    leaves = a.leaves()
+    print(f"\n### C. The {len(leaves)} leaf functions — no shared state, no intra-file calls\n")
+    print("| | | |\n|---|---|---|")
+    for i in range(0, len(leaves), 3):
+        row = [f"`{x}`" for x in leaves[i:i + 3]] + [""] * (3 - len(leaves[i:i + 3]))
+        print("| " + " | ".join(row) + " |")
+
+    multi = [(f, n) for f, n in a.call_in.items() if n >= 2 and f in a.authored]
+    print(f"\n### D. Authored functions with two or more callers inside src.ino ({len(multi)})\n")
+    print("| callers | function |\n|---:|---|")
+    for f, n in sorted(multi, key=lambda kv: (-kv[1], d(kv[0]))):
+        print(f"| {n} | `{d(f)}` |")
+
+    heavy = sorted(a.authored, key=lambda f: (-len(a.graph[f]["vars_ext"]), d(f)))
+    heavy = [f for f in heavy if len(a.graph[f]["vars_ext"]) >= 8]
+    print(f"\n### E. Authored functions touching eight or more external-linkage variables ({len(heavy)})\n")
+    print("| vars | calls | function |\n|---:|---:|---|")
+    for f in heavy:
+        g = a.graph[f]
+        print(f"| {len(g['vars_ext'])} | {len(g['calls'])} | `{d(f)}` |")
+
+    _, implicit = a.prototype_reliant()
+    print(f"\n### F. The {len(implicit)} functions that rely on Arduino-generated prototypes\n")
+    for name in implicit:
+        print(f"- `{name}`")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--appendix", action="store_true")
+    ap.add_argument("--obj", default=str(OBJ))
+    args = ap.parse_args()
+    obj = pathlib.Path(args.obj)
+    if not obj.exists():
+        sys.exit(f"{obj} not found -- run `pio run -e feather_s3` first")
+
+    a = Analysis(obj)
+    if args.json:
+        print(json.dumps({a.d(f): {k: [a.d(x) for x in v] for k, v in g.items()}
+                          for f, g in a.graph.items()}, indent=2))
+    elif args.appendix:
+        appendix(a)
+    else:
+        summary(a)
     return 0
 
 
