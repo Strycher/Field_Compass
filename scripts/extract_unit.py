@@ -129,7 +129,7 @@ def is_static(lines: list[str], start: int) -> bool:
 # in `*`. The name follows, optionally an array suffix, then `=`, `;` or `,`.
 # Column 0 only: file-scope declarations are, and an indented
 # `else gprmcFixThisCycle = true;` reads as a declaration otherwise (band 3b).
-VAR_RE_TMPL = r"^(?:static\s+)?(?:volatile\s+)?(?:const\s+)?(?:[A-Za-z_][\w:<>]*\*?\s+)+\**{name}\s*(?:\[[^\]]*\])*\s*(?:=|;|,|\()"
+VAR_RE_TMPL = r"^(?:static\s+)?(?:volatile\s+)?(?:const\s+)?(?:[A-Za-z_][\w:<>]*\**\s+)+\**{name}\s*(?:\[[^\]]*\])*\s*(?:=|;|,|\()"
 # the trailing `(` is a constructor-call declaration, `WebServer webServer(WEB_SERVER_PORT);`
 # (band 3e); a prototype never collides because variables are looked up by name
 
@@ -322,7 +322,11 @@ def main() -> int:
     for c, d, b, e, n, st in moves:
         if st:
             continue
-        pat = re.compile(r"^\s*(?:static\s+)?[A-Za-z_][\w\s\*&:<>,]*\s\**" + re.escape(n) + r"\s*\([^;{]*\)\s*;")
+        # a prototype: type words at column 0, the name, a parameter list, `;` and
+        # nothing else. The first version accepted any prefix and matched
+        # `case SCREEN_COMPASS: updateCompassData(); ...; break;` (band 4)
+        pat = re.compile(r"^(?:static\s+)?(?:[A-Za-z_][\w:<>]*[\s*&]+)+" + re.escape(n)
+                         + r"\s*\([^;{]*\)\s*;\s*(?://.*)?$")
         for i, l in enumerate(lines):
             if i != d and pat.match(l):
                 protos[i] = (n, re.sub(r"\s*//.*$", "", l.rstrip("\r\n")).strip())
