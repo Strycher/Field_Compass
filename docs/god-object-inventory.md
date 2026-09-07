@@ -365,6 +365,39 @@ Flash     1,856,146 -> 1,856,406 (+260)
 src.ino   7,483 -> 6,598 lines           arduino-cli SUCCESS   58 tests pass
 ```
 
+## 12. Band 3c — weather and geocache; the proof now checks the moved code itself
+
+**What moved** — the two data domains that consume the sensors:
+
+| unit | owns | functions |
+|---|---|---|
+| `weather` | `weatherHistory`, `weatherHistoryCount`, `weatherHistoryHead`, `lastWeatherLog`, `weatherTrend`, `weatherLogFileCount`, `weatherLogEntryCount`, `lastFramFlush`; private `lastWeatherLogCheck`; `WeatherReading`, `WeatherTrend`; the three `WEATHER_*` defines | `getCurrentTimestamp`, `getWeatherFilename`, `addToWeatherHistory`, `getWeatherReading`, `logWeatherToFRAM`, `logWeatherReading`, `loadWeatherHistory`, `calculateWeatherTrend`, `getTrendArrow`, `calculateForecast`, `updateWeatherLogStats`, **`framFlushToSD`** |
+| `geocache` | `cacheList`, `cacheListCount`, the seven `gcFilter*`/`gcSortMode` settings, `gcCachedDist`, `gcFilteredIndices`, `gcFilteredCount`, `gcLastSortTime`, `listHighlightIndex`; `GeocacheEntry`; `MAX_CACHES` and the four file/size defines | `saveCacheFoundStatus`, `loadCacheFoundStatus`, `decodeROT13`, `extractXMLField`, `extractXMLFloat`, `parseGPXFromString`, `gcUpdateDistances`, `gcApplyFilters`, `loadGeocachesFromSD` |
+
+Four cut-set variables left (`cacheList`, `cacheListCount`, `listHighlightIndex`, `weatherTrend`); `src.ino` 6,598 → 5,808 lines. `framFlushToSD`, held back by 3a, went to `weather` as #272 proposed: it flushes the battery ring and the weather ring, and after 3b both are expressible through `battery.h` and `fram.h`, so `weather` — the higher of the two domains — is the one place it reaches nothing it should not. `lastFramFlush` went with it, published for `loop`. `selectedCacheIndex` and `listScrollOffset` stayed: list-UI state touched only by screen callbacks and buttons, band 4's.
+
+**The proof got stronger.** Until this band the verifier attributed a moved function's size change with the single word "moved" — the bulk of every band's code was the least-checked part of it. It now compares every moved function's reference set before and after: a reference may disappear from the intra-object graph only because its target now lives in a different object, and nothing may appear. All 21 functions of this band pass with every reference kept; three that grew (`loadGeocachesFromSD` +30, `loadCacheFoundStatus` +16, `decodeROT13` +2) are the compiler's inlining and relaxation choices in a smaller unit, with identical references.
+
+**Harness, this band:** default arguments are stripped from a moved definition, since the header's prototype carries them (`parseGPXFromString(…, bool append = false)`); runs of more than two blank lines, which removals leave behind, are collapsed. Eight empty section banners and orphaned comments left by bands 1–3b were removed by hand.
+
+**Measured** — `scripts/verify_extraction.py`, PASS:
+
+```
+symbols   589 before -> 589 after, union of 14 objects (no new initialiser: both units hold PODs only)
+          46 relocated: weather 22, geocache 24
+           2 linkage changes b -> B, declared: weatherLogFileCount, weatherLogEntryCount
+          removed none, added none
+deltas    18 symbols, net +43: 4 call a moved function, 3 touch published state, 3 moved
+          functions (references identical), 8 identical references
+          unexplained: none
+moved     21 functions checked by reference set: every reference kept
+sections  .flash.text  +116: our input sections +115 (.text +59, literal pools +56), +1 alignment
+          .flash.rodata +68: input +188 (string literals now split across two more objects), merged
+          .dram0.bss    +0
+Flash     1,856,406 -> 1,856,590 (+184)   RAM 103,248 unchanged
+src.ino   6,598 -> 5,808 lines             arduino-cli SUCCESS   58 tests pass
+```
+
 ---
 
 ## Appendix — the full tables

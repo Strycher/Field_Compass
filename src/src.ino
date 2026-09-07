@@ -64,6 +64,8 @@
 #include "imu.h"
 #include "env.h"
 #include "battery.h"
+#include "weather.h"
+#include "geocache.h"
 
 // Set to 1 to enable LVGL test rendering (label in corner during boot).
 // Set to 0 for normal operation where sprite pipeline handles all rendering.
@@ -136,8 +138,6 @@ const char* NTP_SERVER = "pool.ntp.org";
 #define DEBUG_SLEEP 0  // Display sleep/wake logging
 #define DEBUG_TFT   1  // TFT display state logging (P1 blank bug debug)
 
-// Log level control — compile-time only (#39)
-
 
 // Screen settings
 #define NUM_SCREENS 4
@@ -159,13 +159,6 @@ const char* NTP_SERVER = "pool.ntp.org";
 #define TFT_SLEEP_TIMEOUT  0        // 0 = always on (LCD has no burn-in risk)
 #define OLED_SLEEP_TIMEOUT 180000   // 3 minutes for OLED (high burn-in risk)
 
-// Weather logging configuration
-#define WEATHER_LOG_INTERVAL  300000   // 5 minutes in ms
-#define WEATHER_HISTORY_HOURS 24
-#define WEATHER_SAMPLES_MAX   288      // 24hrs * 12 samples/hr
-
-// BSEC sample rate: BSEC_SAMPLE_RATE_LP = 3 sec, BSEC_SAMPLE_RATE_ULP = 5 min
-
 
 // Web server configuration
 #define WEB_SERVER_PORT 80
@@ -174,10 +167,6 @@ const char* NTP_SERVER = "pool.ntp.org";
 #define LOG_FLUSH_INTERVAL    5000     // Flush SD buffer every 5 seconds (ms)
 #define LOG_ROTATION_INTERVAL 3600000  // Check rotation hourly (ms)
 
-// Geocache file configuration (#70)
-#define GEOCACHE_GPX_FILE "/geocaches/caches.gpx"
-#define GEOCACHE_DIR "/geocaches"
-#define GPX_MAX_FILE_SIZE (64 * 1024)  // 64KB max upload
 
 // Watchdog configuration (auto-reset on hang)
 #define WDT_TIMEOUT_SEC 30  // Reset if loop hangs for 30 seconds
@@ -192,10 +181,6 @@ const char* NTP_SERVER = "pool.ntp.org";
 #define COLOR_DIM       0x7BEF  // Gray
 
 // LVGL color palette — RGB888 equivalents of RGB565 defines above (#107)
-
-// LVGL font aliases — semantic sizes for Field Compass UI (#107)
-
-// Widget-specific background colors — RGB888 from RGB565 (#108)
 
 // ============== Global Objects ==============
 
@@ -263,10 +248,6 @@ bool oledAvailable = false;
 bool touchAvailable = false;          // FT6336U capacitive touch
 
 
-
-// FRAM state (in RAM — synced from FRAM header on boot)
-unsigned long lastFramFlush = 0;
-
 bool wifiConnected = false;
 bool ntpSynced = false;
 bool webServerStarted = false;
@@ -279,97 +260,20 @@ static unsigned long lastStatusLog = 0;
 #define STATUS_LOG_INTERVAL 10000  // Log status every 10 seconds
 
 
-// Diagnostics state
-static int weatherLogFileCount = 0;
-static int weatherLogEntryCount = 0;
-static unsigned long lastWeatherLogCheck = 0;
-
 // Battery logging to SD card
 static unsigned long lastBattLog = 0;
 
 
-
-
-// Geocache data (#70)
-#define MAX_CACHES 20
-
-struct GeocacheEntry {
-  bool valid;
-  float latitude;
-  float longitude;
-  float difficulty;
-  float terrain;
-  char name[40];
-  char hint[80];
-  char gcCode[12];      // GC code (e.g., "GC12345")
-  bool found;           // Found status
-  uint32_t foundTime;   // When found (unix timestamp)
-};
-
-GeocacheEntry cacheList[MAX_CACHES];  // ~4KB RAM for 20 caches
-int cacheListCount = 0;               // Number of loaded caches
 int selectedCacheIndex = 0;           // Currently selected for navigation
 int listScrollOffset = 0;             // For scrollable list display
 int geocacheSubScreen = 0;            // 0=nav, 1=list, 2=details
-int listHighlightIndex = 0;           // Currently highlighted item in list
 
-// Geocache filter state (#122)
-int gcFilterFoundMode = 0;            // 0=all, 1=unfound only, 2=found only
-float gcFilterDMin = 1.0f, gcFilterDMax = 5.0f;   // Difficulty range
-float gcFilterTMin = 1.0f, gcFilterTMax = 5.0f;   // Terrain range
-float gcFilterMaxDistKm = 0;          // 0 = disabled (show all)
-int gcSortMode = 0;                   // 0=distance, 1=name
-float gcCachedDist[MAX_CACHES];       // Cached distances for sort/filter
-int gcFilteredIndices[MAX_CACHES];    // Indices into cacheList that pass filter
-int gcFilteredCount = 0;              // Number of caches passing filter
-unsigned long gcLastSortTime = 0;     // Throttle re-sorts
 
 // Button C long-press tracking
 unsigned long buttonCPressStart = 0;
 bool buttonCLongPressHandled = false;
 #define LONG_PRESS_MS 800             // 800ms for long press
 
-
-
-// Weather history for trend tracking
-struct WeatherReading {
-  uint32_t timestamp;
-  float lat, lon;
-  float pressure, temp, humidity;
-};
-
-WeatherReading weatherHistory[WEATHER_SAMPLES_MAX];
-int weatherHistoryCount = 0;
-int weatherHistoryHead = 0;
-unsigned long lastWeatherLog = 0;
-
-// Weather trend data. Named (#260).
-struct WeatherTrend {
-  float pressureChange3hr = 0;    // hPa change over 3 hours
-  float tempChange3hr = 0;        // °C change over 3 hours
-  float humidityChange3hr = 0;    // % change over 3 hours
-  bool locationChanged = false;   // Moved >1km since last reading
-  uint8_t trend = 0;              // 0=stable, 1=rising slow, 2=rising fast, 3=falling slow, 4=falling fast
-  const char* forecast = "Init";  // "Clear", "Rain Likely", etc.
-} weatherTrend;
-
-// ============== SD Card Health Monitoring ==============
-// Tracks SD card errors and enables graceful degradation
-
-
-
-
-
-// Forward declarations the Arduino preprocessor used to generate (#261).
-// These 13 are called before they are defined and had no explicit prototype --
-// the exact set that breaks the moment their code leaves the .ino, where
-// nothing generates prototypes. Measured from relocations plus debug-info
-// definition lines by scripts/reference-graph.py; the regex-era estimate of 70
-// counted "called before definition" and missed that 58 of those already had
-// one. Prototypes emit no code: the nm symbol set, sizes and types are
-// identical before and after, which is this change's proof.
-const char* calculateForecast();
-const char* getTrendArrow();
 
 // ============== Serial Ring Buffer (moved before setup for use in init) ==============
 
@@ -4050,154 +3954,7 @@ void initSD() {
   }
 }
 
-// ============== SD Card Health Functions ==============
 
-// ============== BSEC State Persistence ==============
-
-// Flush all pending FRAM ring buffer entries to SD card
-void framFlushToSD() {
-  if (!framAvailable || !sdAvailable) return;
-  if (framHeader.battCount == 0 && framHeader.wxCount == 0) return;  // Nothing to flush
-
-  unsigned long startMs = millis();
-  int battFlushed = 0, wxFlushed = 0;
-
-  // --- Flush battery entries ---
-  if (framHeader.battCount > 0) {
-    File f = sdOpenSafe(BATT_LOG_FILE, "a", true);
-    if (f) {
-      if (f.size() == 0) {
-        f.println("millis,voltage,percent,rate");
-      }
-      uint16_t idx = framHeader.battTail;
-      for (int i = 0; i < framHeader.battCount; i++) {
-        FRAMBatteryEntry entry;
-        uint32_t addr = FRAM_BATT_ADDR + (idx * FRAM_BATT_ENTRY);
-        uint8_t* data = (uint8_t*)&entry;
-        for (int j = 0; j < FRAM_BATT_ENTRY; j++) {
-          data[j] = fram.read8(addr + j);
-        }
-        f.printf("%lu,%.3f,%.2f,%.2f\n", entry.timestamp, entry.voltage, entry.percent, entry.rate);
-        idx = (idx + 1) % FRAM_BATT_COUNT;
-        battFlushed++;
-      }
-      f.close();
-      recordSDSuccess();
-      framHeader.battTail = framHeader.battHead;
-      framHeader.battCount = 0;
-    }
-  }
-
-  // --- Flush weather entries ---
-  if (framHeader.wxCount > 0) {
-    char filename[32];
-    getWeatherFilename(filename, 0);  // Today's file
-    File file = sdOpenSafe(filename, "a", true);
-    if (file) {
-      uint16_t idx = framHeader.wxTail;
-      for (int i = 0; i < framHeader.wxCount; i++) {
-        WeatherReading reading;
-        uint32_t addr = FRAM_WX_ADDR + (idx * FRAM_WX_ENTRY);
-        uint8_t* data = (uint8_t*)&reading;
-        for (int j = 0; j < FRAM_WX_ENTRY; j++) {
-          data[j] = fram.read8(addr + j);
-        }
-        file.printf("%lu,%.4f,%.4f,%.2f,%.2f,%.2f\n",
-                    reading.timestamp, reading.lat, reading.lon,
-                    reading.pressure, reading.temp, reading.humidity);
-        idx = (idx + 1) % FRAM_WX_COUNT;
-        wxFlushed++;
-      }
-      file.close();
-      recordSDSuccess();
-      framHeader.wxTail = framHeader.wxHead;
-      framHeader.wxCount = 0;
-    }
-  }
-
-  // Update header: clear dirty flag
-  framHeader.flags &= ~0x01;
-  framWriteHeader();
-
-  unsigned long elapsed = millis() - startMs;
-  logPrintf("[FRAM] Flushed: batt=%d wx=%d (%lums)\n", battFlushed, wxFlushed, elapsed);
-  lastFramFlush = millis();
-}
-
-// ============== FRAM Settings Backup (#118) ==============
-
-// ============== Geocache Found Status Persistence (#70) ==============
-
-#define GEOCACHE_FOUND_FILE "/geocache_found.csv"
-
-// Save found status for all caches to SD card
-void saveCacheFoundStatus() {
-  if (!sdAvailable) return;
-
-  File file = sdOpenSafe(GEOCACHE_FOUND_FILE, "w", true);  // silent — don't red-flag SD
-  if (!file) {
-    logPrintln("[GEOCACHE] Failed to save found status");
-    return;
-  }
-
-  // Write header
-  file.println("gcCode,found,timestamp");
-
-  // Write each cache's found status
-  for (int i = 0; i < cacheListCount; i++) {
-    if (cacheList[i].valid && cacheList[i].found) {
-      file.printf("%s,1,%lu\n", cacheList[i].gcCode, cacheList[i].foundTime);
-    }
-  }
-
-  file.close();
-  recordSDSuccess();
-  logPrintf("[GEOCACHE] Saved found status for %d caches\n", cacheListCount);
-}
-
-// Load found status from SD card and apply to loaded caches
-void loadCacheFoundStatus() {
-  if (!sdAvailable) return;
-
-  File file = sdOpenSafe(GEOCACHE_FOUND_FILE, "r", true);  // silent fail
-  if (!file) {
-    logPrintln("[GEOCACHE] No saved found status file");
-    return;
-  }
-
-  // Skip header line
-  file.readStringUntil('\n');
-
-  int loadedCount = 0;
-  while (file.available()) {
-    String line = file.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) continue;
-
-    // Parse CSV: gcCode,found,timestamp
-    int comma1 = line.indexOf(',');
-    int comma2 = line.indexOf(',', comma1 + 1);
-    if (comma1 < 0 || comma2 < 0) continue;
-
-    String gcCode = line.substring(0, comma1);
-    String foundStr = line.substring(comma1 + 1, comma2);
-    String timestampStr = line.substring(comma2 + 1);
-
-    // Find matching cache and apply found status
-    for (int i = 0; i < cacheListCount; i++) {
-      if (strcmp(cacheList[i].gcCode, gcCode.c_str()) == 0) {
-        cacheList[i].found = (foundStr == "1");
-        cacheList[i].foundTime = timestampStr.toInt();
-        loadedCount++;
-        break;
-      }
-    }
-  }
-
-  file.close();
-  recordSDSuccess();
-  logPrintf("[GEOCACHE] Loaded found status: %d entries\n", loadedCount);
-}
 
 // ============== GPX File Parser (#70) ==============
 
@@ -4206,511 +3963,9 @@ static String gpxUploadBuffer;
 static bool gpxUploadSuccess = false;
 static String gpxUploadError;
 
-// Decode ROT13 hint in place (geocaching.com encodes hints this way)
-void decodeROT13(char* str) {
-  for (int i = 0; str[i]; i++) {
-    char c = str[i];
-    if ((c >= 'A' && c <= 'M') || (c >= 'a' && c <= 'm')) {
-      str[i] = c + 13;
-    } else if ((c >= 'N' && c <= 'Z') || (c >= 'n' && c <= 'z')) {
-      str[i] = c - 13;
-    }
-  }
-}
-
-// Extract text between XML tags into destination buffer
-bool extractXMLField(const String& xml, const char* startTag, const char* endTag,
-                     char* dest, size_t destSize) {
-  int start = xml.indexOf(startTag);
-  if (start < 0) return false;
-  start += strlen(startTag);
-
-  int end = xml.indexOf(endTag, start);
-  if (end < 0) return false;
-
-  String value = xml.substring(start, end);
-  value.trim();
-
-  // Decode common HTML entities
-  value.replace("&amp;", "&");
-  value.replace("&lt;", "<");
-  value.replace("&gt;", ">");
-  value.replace("&quot;", "\"");
-  value.replace("&#39;", "'");
-  value.replace("&apos;", "'");
-
-  strncpy(dest, value.c_str(), destSize - 1);
-  dest[destSize - 1] = '\0';
-  return true;
-}
-
-// Extract float value from XML tags with default
-float extractXMLFloat(const String& xml, const char* startTag, const char* endTag, float defaultVal) {
-  char buf[16];
-  if (extractXMLField(xml, startTag, endTag, buf, sizeof(buf))) {
-    return atof(buf);
-  }
-  return defaultVal;
-}
-
-// Parse GPX data and populate cacheList[]
-// Returns: number of caches successfully parsed
-int parseGPXFromString(const String& gpxData, bool append = false) {
-  if (!append) {
-    cacheListCount = 0;
-    gcFilteredCount = 0;  // Reset filtered list (#122)
-  }
-
-  int searchPos = 0;
-  int added = 0;
-  while (cacheListCount < MAX_CACHES) {
-    // Find next <wpt> element
-    int wptStart = gpxData.indexOf("<wpt", searchPos);
-    if (wptStart < 0) break;
-
-    int wptEnd = gpxData.indexOf("</wpt>", wptStart);
-    if (wptEnd < 0) break;
-
-    String wptBlock = gpxData.substring(wptStart, wptEnd + 6);
-    searchPos = wptEnd + 6;
-
-    GeocacheEntry entry;
-    memset(&entry, 0, sizeof(entry));
-
-    // Extract lat/lon from <wpt lat="..." lon="...">
-    int latPos = wptBlock.indexOf("lat=\"");
-    int lonPos = wptBlock.indexOf("lon=\"");
-    if (latPos < 0 || lonPos < 0) continue;
-
-    entry.latitude = wptBlock.substring(latPos + 5, wptBlock.indexOf("\"", latPos + 5)).toFloat();
-    entry.longitude = wptBlock.substring(lonPos + 5, wptBlock.indexOf("\"", lonPos + 5)).toFloat();
-
-    // Validate coordinates
-    if (entry.latitude < -90 || entry.latitude > 90 ||
-        entry.longitude < -180 || entry.longitude > 180) continue;
-
-    // Extract <name> (GC code)
-    extractXMLField(wptBlock, "<name>", "</name>", entry.gcCode, sizeof(entry.gcCode));
-
-    // Extract display name - try groundspeak:name first, then desc
-    if (!extractXMLField(wptBlock, "<groundspeak:name>", "</groundspeak:name>",
-                         entry.name, sizeof(entry.name))) {
-      extractXMLField(wptBlock, "<desc>", "</desc>", entry.name, sizeof(entry.name));
-    }
-
-    // If still no name, use GC code
-    if (strlen(entry.name) == 0) {
-      strncpy(entry.name, entry.gcCode, sizeof(entry.name) - 1);
-    }
-
-    // Extract difficulty/terrain (default 2.5 if not found)
-    entry.difficulty = extractXMLFloat(wptBlock, "<groundspeak:difficulty>", "</groundspeak:difficulty>", 2.5);
-    entry.terrain = extractXMLFloat(wptBlock, "<groundspeak:terrain>", "</groundspeak:terrain>", 2.5);
-
-    // Extract hint (decode ROT13 if present)
-    extractXMLField(wptBlock, "<groundspeak:encoded_hints>", "</groundspeak:encoded_hints>",
-                    entry.hint, sizeof(entry.hint));
-    decodeROT13(entry.hint);  // Geocaching.com encodes hints in ROT13
-
-    entry.valid = true;
-    entry.found = false;
-    entry.foundTime = 0;
-
-    // Skip duplicate GC codes (same cache uploaded twice)
-    bool dup = false;
-    for (int d = 0; d < cacheListCount; d++) {
-      if (strcmp(cacheList[d].gcCode, entry.gcCode) == 0) { dup = true; break; }
-    }
-    if (dup) continue;
-
-    cacheList[cacheListCount++] = entry;
-    added++;
-  }
-
-  logPrintf("[GEOCACHE] Parsed %d new waypoints (total %d)\n", added, cacheListCount);
-  return added;
-}
-
-// Update cached distances for all caches (#122)
-void gcUpdateDistances() {
-  if (!gpsData.valid) return;
-  for (int i = 0; i < cacheListCount; i++) {
-    gcCachedDist[i] = calcDistanceKm(gpsData.latitude, gpsData.longitude,
-                                       cacheList[i].latitude, cacheList[i].longitude);
-  }
-}
-
-// Build filtered + sorted index list (#122)
-// No physical reorder of cacheList — sort the filtered indices instead
-void gcApplyFilters() {
-  gcUpdateDistances();
-
-  // Step 1: filter into gcFilteredIndices
-  gcFilteredCount = 0;
-  for (int i = 0; i < cacheListCount; i++) {
-    GeocacheEntry& c = cacheList[i];
-    if (gcFilterFoundMode == 1 && c.found) continue;
-    if (gcFilterFoundMode == 2 && !c.found) continue;
-    if (c.difficulty < gcFilterDMin || c.difficulty > gcFilterDMax) continue;
-    if (c.terrain < gcFilterTMin || c.terrain > gcFilterTMax) continue;
-    if (gcFilterMaxDistKm > 0 && gpsData.valid && gcCachedDist[i] > gcFilterMaxDistKm) continue;
-    gcFilteredIndices[gcFilteredCount++] = i;
-  }
-
-  // Step 2: sort filtered indices (insertion sort, max 20)
-  for (int i = 1; i < gcFilteredCount; i++) {
-    int key = gcFilteredIndices[i];
-    int j = i - 1;
-    if (gcSortMode == 0 && gpsData.valid) {
-      float kd = gcCachedDist[key];
-      while (j >= 0 && gcCachedDist[gcFilteredIndices[j]] > kd) {
-        gcFilteredIndices[j + 1] = gcFilteredIndices[j]; j--;
-      }
-    } else if (gcSortMode == 1) {
-      while (j >= 0 && strcasecmp(cacheList[gcFilteredIndices[j]].name, cacheList[key].name) > 0) {
-        gcFilteredIndices[j + 1] = gcFilteredIndices[j]; j--;
-      }
-    }
-    gcFilteredIndices[j + 1] = key;
-  }
-  gcLastSortTime = millis();
-  listHighlightIndex = 0;
-}
-
-// Load geocaches from all GPX files in /geocaches/ directory
-void loadGeocachesFromSD() {
-  if (!sdAvailable) {
-    logPrintln("[GEOCACHE] SD not available, skipping GPX load");
-    return;
-  }
-
-  // Support legacy single-file format
-  if (SD.exists(GEOCACHE_GPX_FILE)) {
-    File f = sdOpenSafe(GEOCACHE_GPX_FILE, "r", true);
-    if (f) {
-      size_t fileSize = f.size();
-      if (fileSize <= GPX_MAX_FILE_SIZE) {
-        String gpxData;
-        gpxData.reserve(fileSize);
-        while (f.available()) gpxData += (char)f.read();
-        f.close();
-        recordSDSuccess();
-        parseGPXFromString(gpxData, false);  // Replace mode for legacy file
-      } else {
-        f.close();
-      }
-    }
-  }
-
-  // Scan directory for individual GPX files (multi-file upload support)
-  if (!SD.exists(GEOCACHE_DIR)) return;
-  File dir = SD.open(GEOCACHE_DIR);
-  if (!dir || !dir.isDirectory()) return;
-
-  File entry = dir.openNextFile();
-  while (entry && cacheListCount < MAX_CACHES) {
-    String name = entry.name();
-    if (!entry.isDirectory() && name.endsWith(".gpx") && name != "caches.gpx") {
-      size_t sz = entry.size();
-      if (sz > 0 && sz <= GPX_MAX_FILE_SIZE) {
-        String gpxData;
-        gpxData.reserve(sz);
-        while (entry.available()) gpxData += (char)entry.read();
-        parseGPXFromString(gpxData, true);  // Append mode
-      }
-    }
-    entry.close();
-    entry = dir.openNextFile();
-  }
-  dir.close();
-
-  if (cacheListCount > 0) {
-    loadCacheFoundStatus();
-    gcApplyFilters();
-    logPrintf("[GEOCACHE] Loaded %d caches from SD\n", cacheListCount);
-  } else {
-    logPrintln("[GEOCACHE] No valid waypoints found on SD");
-  }
-}
-
 // ============== Weather Logging Functions ==============
 
-// Get current timestamp from NTP or GPS
-uint32_t getCurrentTimestamp() {
-  struct tm timeinfo;
-  if (getLocalTime(&timeinfo)) {
-    time_t now;
-    time(&now);
-    return (uint32_t)now;
-  }
-  return 0;
-}
-
-// Get today's weather log filename
-void getWeatherFilename(char* buf, int daysAgo) {
-  struct tm timeinfo;
-  if (getLocalTime(&timeinfo)) {
-    time_t now;
-    time(&now);
-    now -= daysAgo * 86400;  // Subtract days
-    struct tm* t = localtime(&now);
-    sprintf(buf, "/weather/%04d-%02d-%02d.csv",
-            t->tm_year + 1900, t->tm_mon + 1, t->tm_mday);
-  } else {
-    sprintf(buf, "/weather/unknown.csv");
-  }
-}
-
-// Add reading to circular buffer
-void addToWeatherHistory(WeatherReading reading) {
-  weatherHistory[weatherHistoryHead] = reading;
-  weatherHistoryHead = (weatherHistoryHead + 1) % WEATHER_SAMPLES_MAX;
-  if (weatherHistoryCount < WEATHER_SAMPLES_MAX) {
-    weatherHistoryCount++;
-  }
-}
-
-// Get reading from N samples ago (0 = most recent)
-WeatherReading* getWeatherReading(int samplesAgo) {
-  if (samplesAgo >= weatherHistoryCount) return NULL;
-  int index = (weatherHistoryHead - 1 - samplesAgo + WEATHER_SAMPLES_MAX) % WEATHER_SAMPLES_MAX;
-  return &weatherHistory[index];
-}
-
-// Log current weather reading to SD card
-// Write weather entry to FRAM ring buffer
-void logWeatherToFRAM(WeatherReading& reading) {
-  if (!framAvailable) return;
-
-  // WeatherReading is 24 bytes, matches our FRAM entry layout
-  uint32_t addr = FRAM_WX_ADDR + (framHeader.wxHead * FRAM_WX_ENTRY);
-  uint8_t* data = (uint8_t*)&reading;
-  for (int i = 0; i < FRAM_WX_ENTRY; i++) {
-    fram.write8(addr + i, data[i]);
-  }
-
-  framHeader.wxHead = (framHeader.wxHead + 1) % FRAM_WX_COUNT;
-  if (framHeader.wxCount < FRAM_WX_COUNT) {
-    framHeader.wxCount++;
-  } else {
-    framHeader.wxTail = (framHeader.wxTail + 1) % FRAM_WX_COUNT;
-    logPrintln("[FRAM] WARN: Weather ring overflow");
-  }
-  framHeader.flags |= 0x01;  // dirty
-  framWriteHeader();
-}
-
-void logWeatherReading() {
-  if ((!sdHealth.available && !framAvailable) || (!bmeAvailable && !shtAvailable)) return;
-
-  uint32_t timestamp = getCurrentTimestamp();
-  if (timestamp == 0) return;  // No valid time
-
-  // Get current GPS position (use 0,0 if no fix)
-  float lat = gpsData.valid ? gpsData.latitude : 0;
-  float lon = gpsData.valid ? gpsData.longitude : 0;
-
-  // Create reading
-  WeatherReading reading;
-  reading.timestamp = timestamp;
-  reading.lat = lat;
-  reading.lon = lon;
-  reading.pressure = envData.pressure;
-  // SHT41 temp/humidity preferred for weather log accuracy (#48)
-  reading.temp = shtAvailable ? shtData.temperature : envData.temperature;
-  reading.humidity = shtAvailable ? shtData.humidity : envData.humidity;
-
-  // Add to in-memory buffer
-  addToWeatherHistory(reading);
-
-  // Buffer to FRAM (SD flush happens on 5-min timer)
-  if (framAvailable) {
-    logWeatherToFRAM(reading);
-  } else if (sdAvailable) {
-    // Fallback: direct SD write
-    char filename[32];
-    getWeatherFilename(filename, 0);
-    File file = sdOpenSafe(filename, "a", true);
-    if (file) {
-      file.printf("%lu,%.4f,%.4f,%.2f,%.2f,%.2f\n",
-                  timestamp, lat, lon,
-                  reading.pressure, reading.temp, reading.humidity);
-      file.close();
-      recordSDSuccess();
-    }
-  }
-}
-
 // ─── Settings Persistence (#98) ─────────────────────────────────────────────
-
-// Load weather history from SD card on boot
-void loadWeatherHistory() {
-  if (!sdHealth.available) return;
-
-  logPrint("Loading weather history... ");
-
-  int loaded = 0;
-  uint32_t now = getCurrentTimestamp();
-  uint32_t cutoff = now - (WEATHER_HISTORY_HOURS * 3600);
-
-  // Load today's and yesterday's files
-  for (int daysAgo = 1; daysAgo >= 0; daysAgo--) {
-    char filename[32];
-    getWeatherFilename(filename, daysAgo);
-
-    if (!SD.exists(filename)) continue;
-
-    File file = sdOpenSafe(filename, "r", true);  // silent fail
-    if (!file) continue;
-
-    char line[80];
-    while (file.available()) {
-      int len = file.readBytesUntil('\n', line, sizeof(line) - 1);
-      line[len] = '\0';
-
-      WeatherReading reading;
-      if (sscanf(line, "%lu,%f,%f,%f,%f,%f",
-                 &reading.timestamp, &reading.lat, &reading.lon,
-                 &reading.pressure, &reading.temp, &reading.humidity) == 6) {
-        // Only load readings within history window
-        if (reading.timestamp >= cutoff) {
-          addToWeatherHistory(reading);
-          loaded++;
-        }
-      }
-    }
-    file.close();
-    recordSDSuccess();
-  }
-
-  logPrintf("%d readings\n", loaded);
-}
-
-// Calculate weather trend from history
-void calculateWeatherTrend() {
-  // Need at least some history
-  if (weatherHistoryCount < 2) {
-    weatherTrend.forecast = "Init";
-    return;
-  }
-
-  WeatherReading* current = getWeatherReading(0);
-  if (!current) return;
-
-  // Check for location change
-  WeatherReading* prev = getWeatherReading(1);
-  if (prev && (prev->lat != 0 || prev->lon != 0) && (current->lat != 0 || current->lon != 0)) {
-    weatherTrend.locationChanged = !sameLocation(current->lat, current->lon, prev->lat, prev->lon);
-  } else {
-    weatherTrend.locationChanged = false;
-  }
-
-  // Find reading from ~3 hours ago (36 samples at 5-min intervals)
-  int samples3hr = 36;
-  if (samples3hr > weatherHistoryCount - 1) {
-    samples3hr = weatherHistoryCount - 1;
-  }
-
-  WeatherReading* reading3hr = getWeatherReading(samples3hr);
-  if (!reading3hr) {
-    weatherTrend.forecast = "Learning";
-    return;
-  }
-
-  // Calculate changes
-  weatherTrend.pressureChange3hr = current->pressure - reading3hr->pressure;
-  weatherTrend.tempChange3hr = current->temp - reading3hr->temp;
-  weatherTrend.humidityChange3hr = current->humidity - reading3hr->humidity;
-
-  // Determine trend direction
-  float pChange = weatherTrend.pressureChange3hr;
-  if (pChange > 3.0) {
-    weatherTrend.trend = 2;  // Rising fast
-  } else if (pChange > 1.0) {
-    weatherTrend.trend = 1;  // Rising slow
-  } else if (pChange < -3.0) {
-    weatherTrend.trend = 4;  // Falling fast
-  } else if (pChange < -1.0) {
-    weatherTrend.trend = 3;  // Falling slow
-  } else {
-    weatherTrend.trend = 0;  // Stable
-  }
-
-  // Calculate forecast
-  weatherTrend.forecast = calculateForecast();
-}
-
-// Get trend arrow character
-const char* getTrendArrow() {
-  switch (weatherTrend.trend) {
-    case 1: return "^";    // Rising slow
-    case 2: return "^^";   // Rising fast
-    case 3: return "v";    // Falling slow
-    case 4: return "vv";   // Falling fast
-    default: return "-";   // Stable
-  }
-}
-
-// Calculate weather forecast based on conditions
-const char* calculateForecast() {
-  float p = envData.pressure;
-  // SHT41 preferred for forecast accuracy (#48)
-  float t = shtAvailable ? shtData.temperature : envData.temperature;
-  float h = shtAvailable ? shtData.humidity : envData.humidity;
-  float pChange = weatherTrend.pressureChange3hr;
-
-  // Location changed - can't predict
-  if (weatherTrend.locationChanged) {
-    return "Traveled";
-  }
-
-  // Not enough history (need 3 hours)
-  if (weatherHistoryCount < 36) {
-    return "Learning";
-  }
-
-  bool lowPressure = (p < 1000);
-  bool highPressure = (p > 1015);
-  bool highHumidity = (h > 70);
-  bool fallingFast = (pChange < -3.0);
-  bool fallingSlow = (pChange < -1.0 && pChange >= -3.0);
-  bool risingFast = (pChange > 3.0);
-  bool risingSlow = (pChange > 1.0 && pChange <= 3.0);
-  bool cold = (t < 5.0);  // Below 5°C
-
-  // Storm conditions
-  if (lowPressure && fallingFast && highHumidity) {
-    return "Storm Likely";
-  }
-
-  // Precipitation
-  if (lowPressure && (fallingFast || fallingSlow) && highHumidity) {
-    if (cold) return "Snow Likely";
-    return "Rain Likely";
-  }
-
-  // Clearing
-  if (highPressure && (risingFast || risingSlow)) {
-    return "Clearing";
-  }
-
-  // Fair weather
-  if (highPressure && fabs(pChange) < 1.0) {
-    return "Fair";
-  }
-
-  // Unsettled
-  if (lowPressure && fabs(pChange) < 1.0 && highHumidity) {
-    return "Unsettled";
-  }
-
-  // Possible change
-  if (fallingSlow && h > 60) {
-    return "Precip Poss";
-  }
-
-  return "Stable";
-}
 
 void initWiFi() {
   logPrint("Connecting to WiFi");
@@ -5860,44 +5115,6 @@ void initWebServer() {
   LOG_INFO("Web server OK — http://%s/", WiFi.localIP().toString().c_str());
 }
 
-// ============== Weather Log Statistics ==============
-
-void updateWeatherLogStats() {
-  if (!sdHealth.available) return;
-  if (millis() - lastWeatherLogCheck < 60000) return;  // Check every minute
-  lastWeatherLogCheck = millis();
-
-  weatherLogFileCount = 0;
-  weatherLogEntryCount = 0;
-
-  File dir = SD.open("/weather");
-  if (!dir) return;
-
-  // Limit iterations to prevent hang on corrupted filesystem
-  int maxFiles = 100;
-  int filesChecked = 0;
-
-  while (File entry = dir.openNextFile()) {
-    if (filesChecked++ >= maxFiles) {
-      entry.close();
-      break;  // Safety limit
-    }
-    if (!entry.isDirectory()) {
-      weatherLogFileCount++;
-      // Count lines with safety limit
-      int maxLines = 10000;
-      int linesRead = 0;
-      while (entry.available() && linesRead < maxLines) {
-        if (entry.read() == '\n') weatherLogEntryCount++;
-        linesRead++;
-      }
-    }
-    entry.close();
-  }
-  dir.close();
-  recordSDSuccess();
-}
-
 // ============== Display Sleep Functions ==============
 
 void sleepTFT() {
@@ -6242,9 +5459,6 @@ void handleGeocacheButtons(bool buttonA, bool buttonB) {
   }
 }
 
-// Timeout presets for Display settings (#91)
-
-
 // handleTap removed — gear icon now uses LVGL gearIconClickCb (#113)
 
 // Button C short press handler
@@ -6360,10 +5574,6 @@ void updateDisplay() {
     updateOLED();
   }
 }
-
-// ============== Utility Functions (preserved from legacy) ==============
-
-// ============== Geocache Helper Functions (#70) ==============
 
 // Legacy TFT_eSprite draw functions removed — all rendering via LVGL (#114)
 // Removed: drawHeader, drawNavBar, drawLabel, drawValue, drawScreenTelemetry,
