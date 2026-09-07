@@ -7,3 +7,4 @@
 #define SPI_MISO  37  // Default Feather SPI MISO (unused for TFT)
 #define FRAM_CS   15  // A3 -> FRAM CS
 #define TFT_BL     8  // A5 -> LED pin on display module (PWM-dimmable backlight)
+#define CTP_INT   14  // A4 -> Touch interrupt (active-low, CHANGE: fires on touch + release)

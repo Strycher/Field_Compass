@@ -140,13 +140,63 @@ INST_RE_TMPL = r"^\}}\s*{name}\s*;"
 STRUCT_START_RE = re.compile(r"^(?:typedef\s+)?struct\s+(\w+)\s*\{")
 
 
+def _walk(body: str):
+    """Yield (char, at_top): at_top is False inside brackets and string literals,
+    so `oled = Adafruit_SH1107(64, 128, &Wire)` and `"EST5EDT,M3.2.0,M11.1.0"`
+    each read as one thing."""
+    depth, quote, esc = 0, None, False
+    for ch in body:
+        if quote:
+            yield ch, False
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == quote:
+                quote = None
+            continue
+        if ch in "\"'":
+            quote = ch
+            yield ch, False
+        elif ch in "([{":
+            depth += 1
+            yield ch, False
+        elif ch in ")]}":
+            depth -= 1
+            yield ch, False
+        else:
+            yield ch, depth == 0
+
+
+def split_top(body: str) -> list[str]:
+    parts, cur = [], ""
+    for ch, top in _walk(body):
+        if ch == "," and top:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    return parts
+
+
+def strip_initialiser(seg: str) -> str:
+    out = ""
+    for ch, top in _walk(seg):
+        if ch == "=" and top:
+            break
+        out += ch
+    return out.rstrip()
+
+
 def declarators(line: str) -> list[str]:
     """Names declared on one line: `static float a = 0, b = 0, c;` -> [a, b, c]."""
     body = re.sub(r"//.*$", "", line.rstrip("\r\n")).strip().rstrip(";")
-    body = re.sub(r"^(?:static\s+)?(?:volatile\s+)?(?:const\s+)?(?:[A-Za-z_][\w:<>]*\*?\s+)+", "", body, count=1)
     out = []
-    for part in body.split(","):
-        m = re.match(r"\s*\**(\w+)", part)
+    for part in split_top(body):
+        # the name is the last identifier of the declarator once its initialiser
+        # is gone: `static float magOffsetX` -> magOffsetX, ` b` -> b, `char x[48]` -> x
+        m = re.search(r"(\w+)\s*(?:\[[^\]]*\])*\s*$", strip_initialiser(part).strip())
         if m:
             out.append(m.group(1))
     return out
@@ -182,7 +232,8 @@ def extern_decl(line: str) -> str:
     if "{" in body:
         body = body.split("=", 1)[0]
     else:
-        body = re.sub(r"\s*=\s*[^,;]+", "", body)   # each declarator's initialiser
+        # drop each declarator's initialiser (top level only, string-aware)
+        body = ",".join(strip_initialiser(seg) for seg in split_top(body))
     body = body.rstrip().rstrip(";").rstrip()
     return "extern " + body + ";"
 
