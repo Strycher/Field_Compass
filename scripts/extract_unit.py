@@ -132,7 +132,8 @@ VAR_RE_TMPL = r"^\s*(?:static\s+)?(?:volatile\s+)?(?:const\s+)?(?:[A-Za-z_][\w:<
 
 def find_var(lines: list[str], name: str) -> int:
     pat = re.compile(VAR_RE_TMPL.format(name=re.escape(name)))
-    return one([i for i, l in enumerate(lines) if pat.match(l)], f"variable {name}")
+    return one([i for i, l in enumerate(lines)
+                if pat.match(l) and not l.lstrip().startswith("extern ")], f"variable {name}")
 
 
 def extern_decl(line: str) -> str:
@@ -185,6 +186,10 @@ def main() -> int:
             sys.exit(f"refusing: {x[4]} and {y[4]} overlap")
 
     var_lines = {n: find_var(lines, n) for n in mvars + pvars}
+    # a table initialiser (`static const TZPreset tzPresets[] = {` ... `};`) spans
+    # lines: carry the whole block, not just its first line (band 3a)
+    var_ends = {n: (block_end(lines, i) if "{" in lines[i] and "}" not in lines[i] else i)
+                for n, i in var_lines.items()}
     def_lines = {n: one([i for i, l in enumerate(lines)
                         if re.match(r"^\s*#define\s+" + re.escape(n) + r"\b", l)], f"#define {n}")
                  for n in defines}
@@ -211,10 +216,25 @@ def main() -> int:
             if i != d and pat.match(l):
                 protos[i] = (n, re.sub(r"\s*//.*$", "", l.rstrip("\r\n")).strip())
 
+    # forward `extern` declarations of published variables are redundant once
+    # the header declares them (band 3a: the timeout tables had six)
+    fwd = {}   # line index -> text
+    for n in pvars:
+        fpat = re.compile(r"^\s*extern\s+[^;=]*\b" + re.escape(n) + r"\s*(?:\[[^\]]*\])*\s*;")
+        for i, l in enumerate(lines):
+            if fpat.match(l):
+                fwd[i] = l.strip()
+
     # ---- build outputs ------------------------------------------------------
+    def inc_line(inc: str) -> str:
+        """A bare name becomes "name" if it is one of our files in src/, else <name>."""
+        if inc[0] in "<\"":
+            return f"#include {inc}" + nl
+        return (f'#include "{inc}"' if (SRC.parent / inc).exists() else f"#include <{inc}>") + nl
+
     h = ["#pragma once" + nl, f"// {unit}.h -- extracted from src.ino by scripts/extract_unit.py (E4)." + nl]
     for inc in split(a.header_includes):
-        h.append(f"#include {inc}" + nl)
+        h.append(inc_line(inc))
     if defines:
         h.append(nl)
         h.extend(lines[def_lines[n]] for n in defines)
@@ -223,6 +243,11 @@ def main() -> int:
             s, e = decl_ranges[n]
             h.append(nl)
             h.extend(lines[s:e + 1])
+    if hdr_range:
+        # verbatim block goes BEFORE the externs and prototypes: it is types and
+        # macros, and an extern of a struct type needs the struct first (band 3a)
+        h.append(nl)
+        h.extend(lines[hdr_range[0]:hdr_range[1] + 1])
     if pvars:
         h.append(nl)
         h.extend(extern_decl(lines[var_lines[n]]) + nl for n in pvars)
@@ -232,21 +257,19 @@ def main() -> int:
         for c, d, b, e, n, st in moves:
             if not st:
                 h.append(existing.get(n, prototype(lines, d, b)) + nl)
-    if hdr_range:
-        h.append(nl)
-        h.extend(lines[hdr_range[0]:hdr_range[1] + 1])
 
     cpp = []
     if not a.header_only:
         cpp.append(f"// {unit}.cpp -- extracted from src.ino by scripts/extract_unit.py (E4)." + nl)
         cpp.append(f'#include "{unit}.h"' + nl)
         for inc in split(a.cpp_includes):
-            cpp.append(f"#include {inc}" + nl)
+            cpp.append(inc_line(inc))
         if mvars or pvars:
             cpp.append(nl)
             for n in sorted(mvars + pvars, key=lambda x: var_lines[x]):
                 l = lines[var_lines[n]]
                 cpp.append(re.sub(r"^(\s*)static\s+", r"\1", l) if n in pvars else l)
+                cpp.extend(lines[var_lines[n] + 1:var_ends[n] + 1])
         for c, d, b, e, n, st in moves:
             cpp.append(nl)
             cpp.extend(lines[c:e + 1])
@@ -268,6 +291,8 @@ def main() -> int:
         print(f"  lines {hdr_range[0] + 1}-{hdr_range[1] + 1} -> header verbatim")
     for i in sorted(protos):
         print(f"  reuse and drop prototype of {protos[i][0]} at line {i + 1}: {protos[i][1]}")
+    for i in sorted(fwd):
+        print(f"  drop forward extern at line {i + 1}: {fwd[i]}")
     inc_idx = max(i for i, l in enumerate(lines[:200]) if l.startswith("#include"))
     print(f"  insert #include \"{unit}.h\" after line {inc_idx + 1}")
     if a.dry_run:
@@ -280,13 +305,35 @@ def main() -> int:
         remove.update(range(c, e + 1))
         if e + 1 < len(lines) and lines[e + 1].strip() == "":
             remove.add(e + 1)
-    remove.update(var_lines.values())
+    for n, i in var_lines.items():
+        remove.update(range(i, var_ends[n] + 1))
     remove.update(def_lines.values())
     for s, e in decl_ranges.values():
         remove.update(range(s, e + 1))
     if hdr_range:
         remove.update(range(hdr_range[0], hdr_range[1] + 1))
     remove.update(protos.keys())
+    remove.update(fwd.keys())
+
+    # a `// ...` line that introduced a removed declaration is orphaned when the
+    # next kept line is blank (or the file ends): `// User settings (#70)` over
+    # six variables that all left. Sweep it, and any comment lines stacked
+    # above it. Scoped to removal sites; free-standing comments are untouched.
+    def is_comment(i: int) -> bool:
+        t = lines[i].rstrip("\r\n")
+        return t.lstrip().startswith("//") and not BANNER_RE.match(t)
+
+    for i in sorted(remove):
+        if i == 0 or (i - 1) in remove or not is_comment(i - 1):
+            continue
+        j = i
+        while j < len(lines) and j in remove:
+            j += 1
+        if j >= len(lines) or lines[j].strip() == "":
+            k = i - 1
+            while k >= 0 and k not in remove and is_comment(k):
+                remove.add(k)
+                k -= 1
     out = [l for i, l in enumerate(lines) if i not in remove]
     inc_idx2 = max(i for i, l in enumerate(out[:200]) if l.startswith("#include"))
     out.insert(inc_idx2 + 1, f'#include "{unit}.h"' + nl)

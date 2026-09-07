@@ -5,3 +5,5 @@
 #define SPI_SCK   36  // Default Feather SPI clock
 #define SPI_MOSI  35  // Default Feather SPI MOSI
 #define SPI_MISO  37  // Default Feather SPI MISO (unused for TFT)
+#define FRAM_CS   15  // A3 -> FRAM CS
+#define TFT_BL     8  // A5 -> LED pin on display module (PWM-dimmable backlight)
