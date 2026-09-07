@@ -201,8 +201,17 @@ jobs:
         with:
           python-version: '3.14'
 
-      - name: Install pytest
-        run: pip install pytest==9.0.2
+      # pyyaml and pyserial are pio-flash's runtime dependencies -- the registry
+      # is YAML and port enumeration uses pyserial. Both were missing from the
+      # first version of this job, which failed on the first run with
+      # `ModuleNotFoundError: No module named 'yaml'`.
+      #
+      # The local suite passed throughout, because PlatformIO installs both into
+      # the dev box's global environment. Nothing local could have caught this:
+      # only a clean environment exposes an undeclared dependency, which is an
+      # argument for this job rather than against it.
+      - name: Install test dependencies
+        run: pip install pytest==9.0.2 pyyaml==6.0.3 pyserial==3.5
 
       - name: Record versions
         run: |
