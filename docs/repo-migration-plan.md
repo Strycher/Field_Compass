@@ -161,8 +161,27 @@ The single genuinely dangerous step is **4.5**. Everything before it is reversib
 
 ---
 
-## 6. Open decisions
+## 6. Decisions
+
+### Settled
+
+**All 243 comments are recreated** (owner, 2026-09-07). Not only those on open issues. This preserves the CI verification records on [#221](https://github.com/Strycher/Field_Compass/issues/221) and [#223](https://github.com/Strycher/Field_Compass/issues/223) — the `UNSTABLE` → `BLOCKED` measurement, the rejected cancellation fix and its reasoning, and the docs-only skip proof — which exist nowhere else. Each recreated comment is stamped with its original author and date.
+
+**The three superseded branches are deleted** (owner, 2026-09-07): `archive/fc-131-stale-remote`, `chore/142-untrack-canonical`, `feat/135-hook-sync`. Evidence in §3.1. Done.
+
+### Still open
 
 1. **[#200](https://github.com/Strycher/Field_Compass/issues/200)** — merge `fc/200-legacy-match` before migrating, or abandon it?
+
+   Measured, since "there is a failing test" argues the opposite way to how it first reads:
+
+   ```
+   main    1 failed, 52 passed, 1 SyntaxWarning
+   branch  54 passed, no warnings
+   ```
+
+   The failing test is **self-contradictory**: `test_legacy_hash_still_matches_when_no_serial_recorded` passes `"E8F60ACA4E54"` as the port serial, so it never exercised the no-serial path its name describes. `pio-flash.py:420` documents the contract it violates — *"#503 OWNER RULING: serial-first, GLOBAL, no VID:PID precondition"* — because VID:PID is a device class, not an identity. The test arrived red with the #172 port and is still red upstream at meshcore-firmware#1051.
+
+   Merging is therefore what makes the suite green, and it adds coverage of the genuine Tier 2 path that was never tested. **Recommendation: merge before migrating**, so the new repository starts green rather than inheriting a known-false failure that the next reader has to re-litigate.
+
 2. **Epic parent** — [#245](https://github.com/Strycher/Field_Compass/issues/245) is currently parentless. Parents are the owner's grant.
-3. **Comment recreation depth** — all 243 comments, or only those on open issues? Full recreation is the larger job and preserves the verification records on [#221](https://github.com/Strycher/Field_Compass/issues/221) and [#223](https://github.com/Strycher/Field_Compass/issues/223).
