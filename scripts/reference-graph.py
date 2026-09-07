@@ -154,8 +154,26 @@ def references(obj: pathlib.Path):
         if len(parts) < 3:
             continue
         target = re.sub(r"[+-]0x[0-9a-fA-F]+$", "", parts[2])
+        # objdump names a relocation against a LOCAL symbol by its SECTION, not
+        # the symbol: a call to static fcToggleClickCb appears as
+        # `.text._ZL15fcToggleClickCbP11_lv_event_t`, and its address in a
+        # literal pool as `.literal._ZL...`. The first version of this script
+        # mapped only data sections back to names, so every call to a static
+        # function was silently dropped -- twelve "leaves" in the band-1
+        # mapping showed zero callers, including LVGL callbacks that are
+        # plainly registered. Map function sections the same way.
         dm = DATA_SEC_RE.match(target)
-        refs[current].add(dm.group(1) if dm else target)
+        fm = FN_SEC_RE.match(target)
+        if dm:
+            refs[current].add(dm.group(1))
+        elif fm:
+            refs[current].add(fm.group(1))
+        elif IRAM_SEC_RE.match(target):
+            owner = iram.get(target.removesuffix(".literal"))
+            if owner:
+                refs[current].add(owner)
+        else:
+            refs[current].add(target)
     return refs
 
 
