@@ -86,13 +86,7 @@
 // TFT Display pins (ST7796U 3.5" IPS, SPI) — TFT_CS=18, TFT_DC=17, TFT_RST=16 are
 // defined in platformio.ini build_flags under USER_SETUP_LOADED=1, which tells
 // TFT_eSPI to skip its own header selection entirely. Not User_Setup.h (#184).
-// FRAM_CS, SD_CS, SPI_* and TFT_BL live in fc_config.h (E4).
-
-
-// FRAM Memory Map (256KB = 262,144 bytes, MB85RS2MTA)
-
-
-// Screen dimensions (landscape mode after rotation)
+// FRAM_CS, SD_CS, SPI_*, TFT_BL, CTP_INT and the button pins live in fc_config.h (E4).
 
 // Debounce time in ms
 #define DEBOUNCE_MS 200
@@ -106,22 +100,9 @@
 // Watchdog configuration (auto-reset on hang)
 #define WDT_TIMEOUT_SEC 30  // Reset if loop hangs for 30 seconds
 
-// ============== Global Objects ==============
-
-
-// TFT_eSprite removed — LVGL handles all TFT rendering (#114)
-
-// Zone-based partial push system removed — LVGL handles dirty tracking (#114)
-
-// Capacitive touch controller (FT6336U on I2C at 0x38)
-// touchDetected removed (#260): it was set by touchISR() and never read anywhere.
-// The one write-only variable in the file, per the relocation analysis in
-// docs/god-object-inventory.md. LVGL polls the controller; the ISR flag was vestigial.
-
-// Legacy swipe/tap detection removed — LVGL gesture + click callbacks (#113)
-
-
 // ============== Global State ==============
+// Every peripheral object and every screen lives in its own unit now (E4, #212);
+// what is left here belongs to setup, loop and the buttons.
 
 
 // Button debounce
@@ -142,20 +123,6 @@ unsigned long buttonCPressStart = 0;
 bool buttonCLongPressHandled = false;
 #define LONG_PRESS_MS 800             // 800ms for long press
 
-
-// ============== LVGL Tick Callback ==============
-
-// ============== LVGL Flush Callback ==============
-
-// ============== LVGL Log Callback ==============
-
-#if LV_USE_LOG != 0
-#endif
-
-// ============== LVGL Touch Read Callback (#106) ==============
-
-
-// ============== LVGL Encoder Read Callback (#106) ==============
 
 // ============== Setup ==============
 
@@ -636,9 +603,6 @@ void initSD() {
 }
 
 
-// ============== LVGL Screen Navigation (#113) ==============
-
-
 // ============== Button Handling ==============
 
 void handleButtons() {
@@ -783,22 +747,4 @@ void handleButtonCLongPress() {
     }
   }
 }
-
-// ============== Display Functions ==============
-
-// Zone helper implementations removed — LVGL handles dirty tracking (#114)
-
-// Legacy TFT_eSprite draw functions removed — all rendering via LVGL (#114)
-// Removed: drawHeader, drawNavBar, drawLabel, drawValue, drawScreenTelemetry,
-//   drawScreenEnv, drawScreenCompass, drawCompassRose (legacy sprite version),
-//   drawNavTriangle, drawSearchZoneCircle, drawScreenGeocache,
-//   drawCacheNavScreen, drawCacheListScreen, drawCacheDetailsScreen (~1,300 lines)
-
-// ============== OLED Display Functions ==============
-
-// drawOLEDScreenOps() removed — content now in Settings > About (#102)
-
-// ============== OLED Geocache Screen (#70) ==============
-
-// drawOLEDScreenDiags() removed — diagnostics now in Settings (#90)
 

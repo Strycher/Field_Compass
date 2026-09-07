@@ -471,6 +471,44 @@ src.ino   5,581 -> 4,387 lines            arduino-cli SUCCESS   58 tests pass
 
 **Band 3 in total** (#270–#274, five PRs): 99 functions and 122 variables left `src.ino` in 14 units (fram, settings, rtc, gps, imu, env, battery, weather, geocache, oled, display, ui_state, touch, web), plus `fc_version.h`; `src.ino` went from 7,986 lines before 3a to 4,387; Flash from 1,856,026 to 1,856,690 (+664, every byte traced: seven static initialisers, function relaxation and literal pools, string-literal splitting, alignment); RAM from 103,232 to 103,248 (+16, 3a's `.bss` packing). Every extraction was proven behaviour-neutral by symbol set and, from 3c on, by every moved function's reference set. Nothing was flashed: hardware verification of the whole sequence is Epic #212's integration test.
 
+## 15. Band 4 — the screens; the god object is a residue
+
+**One branch, three proven commits, one PR left open.** #265's acceptance says *full hardware verification, every screen and every peripheral, before merge*, and nothing in E4 has been flashed. So band 4 is one branch on #265, `fc/212-e4-screens`, with a proven commit per unit and one PR that waits for the owner's hardware verification. It is not merged under the grant.
+
+**Composition, from the graph.** Clustering the 78 remaining functions by the static state they share gave one 34-function component of 163 statics — the LVGL widgets — with the shared statics few and explicable: each screen's screen object and header (navigation's `mainScreens` table and `updateSDIndicators` need them), the touch statistics, the settings scroll areas. Three commits:
+
+| commit | unit(s) | functions | what it owns |
+|---|---|---|---|
+| 1 | `lvgl_port` | the five LVGL callbacks, `initFCTheme` | the display, input-device and group objects, the draw-buffer pointers, the touch statistics (published), the seven named styles (private: only the theme touches them) |
+| 2 | `oled_screens` | `updateOLED`, five `drawOLED*` | nothing of its own; renders published state |
+| 3 | `screen_compass`, `screen_env`, `screen_telemetry`, `screen_geocache`, `screen_settings`, `navigation` | 58 | every widget of every screen (152 statics), each screen's object and header published; `mainScreens`, the list picker |
+
+Commit 3 is six units in one step because the screens and the navigation reference each other through their headers — a screen registers `screenGestureCb` and builds its header with `fcHeaderCreate`, navigation loads the screens — so any one of them alone would have reached back into `src.ino`. `initLVGL` stays: it builds every screen and wires the port, which is `setup()`'s kind of work, the composition root.
+
+**What is left** — `src/src.ino`, 750 lines, measured: 8 functions (`setup`, `loop`, `initLVGL`, `initSD`, `scanI2C`, `handleButtons` and its two helpers), 6 file-scope variables (three button-debounce values, three timers), **cut set 0, largest cluster 1**; the graph reports 7 of 8 functions touching no shared state of the file and the eighth (`handleButtons`) touching only its own three. #265 estimated "roughly 567 lines"; 750 is the number. 28 headers and 25 translation units hold the rest.
+
+**Found by the build, seven things, all recorded in the commits:** twelve static callbacks referenced before their definitions (a builder registers a callback defined after it — `src.ino` declared them at file scope; the harness now forward-declares every static function at the top of its unit and drops the file-scope prototypes); `screenGestureCb` published (every screen registers it); six statics the graph could not see (two write-only headers, two const-folded counts, an inlined colour helper, the settings menu buttons array) moved by hand and marked; `web.h` restoring the `fs::FS` alias `WebServer.h` relies on — TFT_eSPI defines `FS_NO_GLOBALS`, and `src.ino`'s include order used to hide it; the `LV_USE_LOG` guard around `lvglLogCb`, which the harness does not carry, restored by hand; `lvglTickCb` losing `static` because `initLVGL` registers it (`--publish-functions`); the button pins into `fc_config.h`.
+
+**Two harness faults caught before they wrote anything.** The existing-prototype matcher accepted any prefix and matched `case SCREEN_COMPASS: updateCompassData(); …; break;` inside `updateDisplay` — it would have deleted the switch case as a redundant prototype. The dry run showed it; it now requires type words at column 0 and nothing after the semicolon. And the baseline for band 3e (§14) had raced the extraction; band 4 captured every baseline before touching the tree.
+
+**Measured**, per commit — `scripts/verify_extraction.py`, PASS each time:
+
+```
+unit 1  lvgl_port      592 -> 592 symbols, 27 relocated, 13 linkage changes declared (12 published
+                       variables, the tick callback), 5 deltas net +2 all layout, 5 moved checked
+                       Flash 1,856,690 -> 1,856,670 (-20)         src.ino 4,387 -> 4,209
+unit 2  oled_screens   592 -> 592, 6 relocated, 1 delta (-1), 6 moved checked
+                       .flash.text +60 (six calls now cross-TU)   Flash -> 1,856,722 (+52)   src.ino -> 3,993
+unit 3  screens + nav  592 -> 593 (a constprop clone of an LVGL inline, tolerated by pattern),
+                       213 relocated, 12 linkage changes declared, 6 deltas net +104 all attributed,
+                       61 moved functions checked by reference set (27 references now cross-TU)
+                       .flash.text +184 (inputs +182), .flash.rodata -96
+                       Flash -> 1,856,810 (+88)                   src.ino -> 804, then 750 after comments
+RAM     103,248 throughout                                arduino-cli SUCCESS   58 tests pass
+```
+
+**E4 in total.** `src/src.ino` went from 8,742 lines (band 1's start) to 750 — 70 functions and about 170 statics left in band 4, 99 functions and 122 variables in band 3, 33 functions in bands 1 and 2 — into 25 translation units and 28 headers. Flash from 1,855,962 to 1,856,810 (+848 bytes, 0.05%, every byte traced to static initialisers, cross-TU calls, literal pools, string splitting and alignment); RAM from 103,232 to 103,248 (+16). Every move was proven behaviour-neutral by symbol set and, from band 3c on, by every moved function's reference set. Nothing was flashed: hardware verification is #265's gate and Epic #212's integration test.
+
 ---
 
 ## Appendix — the full tables
