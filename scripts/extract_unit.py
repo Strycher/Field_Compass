@@ -320,8 +320,8 @@ def main() -> int:
     # existing standalone prototypes of moved functions: reuse text, drop line
     protos = {}   # line index -> (name, text)
     for c, d, b, e, n, st in moves:
-        if st:
-            continue
+        # static functions included: their file-scope prototypes leave src.ino
+        # too, and the unit declares them up front (see the cpp emission)
         # a prototype: type words at column 0, the name, a parameter list, `;` and
         # nothing else. The first version accepted any prefix and matched
         # `case SCREEN_COMPASS: updateCompassData(); ...; break;` (band 4)
@@ -407,6 +407,12 @@ def main() -> int:
                 l = lines[i]
                 cpp.append(re.sub(r"^(\s*)static\s+", r"\1", l) if n in pvars else l)
                 cpp.extend(lines[i + 1:var_ends[n] + 1])
+        statics = [prototype(lines, d, b) for c, d, b, e, n, st in moves if st]
+        if statics:
+            # a builder registers callbacks defined after it (band 4): declare
+            # every static function of the unit up front, as src.ino did at file scope
+            cpp.append(nl)
+            cpp.extend(p + nl for p in statics)
         for c, d, b, e, n, st in moves:
             cpp.append(nl)
             for i in range(c, e + 1):
