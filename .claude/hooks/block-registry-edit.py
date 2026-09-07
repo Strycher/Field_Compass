@@ -124,18 +124,41 @@ def _names_guarded(text: str) -> bool:
     return any(b in low for b in GUARDED_BASENAMES) or _norm(STATE_DIR) in low
 
 
+# Command separators. A guarded path in one statement says nothing about a
+# mutation verb in another: `echo hi > /dev/null; echo "see <registry>"` is two
+# unrelated statements and neither writes anything (#208).
+_SEGMENT_SPLIT = re.compile(r"(?:\|\||&&|[;|\n])")
+
+# The token immediately after a redirect operator is its target. Anything
+# further along the line belongs to the rest of the command, not the redirect.
+_REDIRECT_TARGET = re.compile(r">>?\s*([^\s;|&<>]+)")
+
+
 def _shell_touches_guarded(cmd: str) -> bool:
     if not _names_guarded(cmd):
         return False
 
     # Redirection is directional, and treating it coarsely costs a false
-    # positive that matters: `cat <registry> > /tmp/x` is a READ. Only a
-    # guarded name on the RIGHT of a redirect operator is a write to it.
-    for tail in re.split(r">>?", cmd)[1:]:
-        if _names_guarded(tail.split("|")[0].split(";")[0]):
+    # positive that matters: `cat <registry> > /tmp/x` is a READ. Only the
+    # redirect TARGET is a write.
+    #
+    # Scoped to the target token, not the remainder of the line. Matching the
+    # whole tail meant any later mention of a guarded path -- prose, a JSON
+    # payload, a heredoc body -- turned an unrelated `> /dev/null` into a
+    # refusal. That is #208, and it blocked the migration backup (#245).
+    for target in _REDIRECT_TARGET.findall(cmd):
+        if _is_guarded(target):
             return True
 
-    return bool(_SHELL_MUTATION.search(cmd))
+    # Mutation verbs are a backstop, and only meaningful when the verb and the
+    # guarded path appear in the SAME statement. Scanning the whole command
+    # meant a `cp` in one statement plus a registry mention in another was
+    # refused, which is the same defect from the other direction.
+    for segment in _SEGMENT_SPLIT.split(cmd):
+        if _SHELL_MUTATION.search(segment) and _names_guarded(segment):
+            return True
+
+    return False
 
 
 def _refuse(what: str, detail: str) -> int:

@@ -127,6 +127,40 @@ ALLOWED = [
     ),
     # Tools this hook does not police at all.
     pytest.param({"tool_name": "Read", "tool_input": {"file_path": REGISTRY}}, id="read-tool"),
+    # ---------------------------------------------------------------------
+    # #208 regressions. Each of these was refused, and none writes anything
+    # guarded. The defect was scope: a redirect matched the whole remainder of
+    # the line, and mutation verbs were scanned across the entire command, so
+    # a later mention of the registry contaminated an unrelated statement.
+    # ---------------------------------------------------------------------
+    # NOT a regression: verified to pass on the pre-fix hook too. #208's
+    # written reproduction does not actually reproduce in this form, because
+    # `echo` is not a mutation verb and /dev/null is not a guarded target.
+    # Kept as coverage, and recorded here so the issue's repro is not taken
+    # at face value by the next reader.
+    pytest.param(
+        sh('echo hi > /dev/null; echo "see ' + REGISTRY + ' for details"'),
+        id="208-devnull-then-prose-passed-before-too",
+    ),
+    # The exact shape that blocked the #245 migration backup: a checkpoint call
+    # redirecting to /dev/null, then a script mentioning the state dir.
+    pytest.param(
+        sh(
+            "python .claude/hooks/checkpoint_write.py --task X --action Y >/dev/null 2>&1\n"
+            'python -c "print(1)"  # writes C:/Dev/.field_compass/migration-backup/x.json'
+        ),
+        id="208-checkpoint-then-statedir-mention",
+    ),
+    # A mutation verb in one statement, a registry mention in another.
+    pytest.param(
+        sh("cp a.txt b.txt && grep usb_serial " + REGISTRY),
+        id="208-cp-then-unrelated-read",
+    ),
+    # Reading the registry and piping onward is still a read.
+    pytest.param(
+        sh("cat " + REGISTRY + " | tee /tmp/copy.yaml"),
+        id="208-read-piped-to-tee-elsewhere",
+    ),
 ]
 
 
