@@ -266,7 +266,9 @@ TFT_eSPI tft = TFT_eSPI();
 
 // Capacitive touch controller (FT6336U on I2C at 0x38)
 Adafruit_FT6206 ctp = Adafruit_FT6206();
-volatile bool touchDetected = false;
+// touchDetected removed (#260): it was set by touchISR() and never read anywhere.
+// The one write-only variable in the file, per the relocation analysis in
+// docs/god-object-inventory.md. LVGL polls the controller; the ISR flag was vestigial.
 
 // Legacy swipe/tap detection removed — LVGL gesture + click callbacks (#113)
 
@@ -442,8 +444,9 @@ static unsigned long lastBattLog = 0;
 #define BATT_LOG_INTERVAL 10000  // Log every 10 seconds
 #define BATT_LOG_FILE "/battlog.csv"
 
-// GPS data
-struct {
+// GPS data. Named (#260) so other translation units can `extern GpsData gpsData;`
+// -- an anonymous struct type cannot be named by extern at all.
+struct GpsData {
   bool valid = false;
   bool receiving = false;
   float latitude = 0;
@@ -478,8 +481,8 @@ static bool gprmcFixThisCycle = false;
 static bool gnrmcFixThisCycle = false;
 static unsigned long lastRmcCycleTime = 0;
 
-// IMU data
-struct {
+// IMU data. Named (#260) for the same reason as GpsData.
+struct ImuData {
   float heading = 0;
   float roll = 0;
   float pitch = 0;
@@ -566,14 +569,14 @@ static const TZPreset tzPresets[] = {
 };
 #define TZ_PRESET_COUNT 14
 
-// SHT41 data (#48) — primary source for temp/humidity
-struct {
+// SHT41 data (#48) — primary source for temp/humidity. Named (#260).
+struct ShtData {
   float temperature = 0;      // Temperature (C) — ±0.2°C accuracy
   float humidity = 0;         // Relative humidity (%) — ±1.8% accuracy
 } shtData;
 
-// BME688 data (via BSEC2)
-struct {
+// BME688 data (via BSEC2). Named (#260).
+struct EnvData {
   float temperature = 0;      // Compensated temperature (C)
   float humidity = 0;         // Compensated humidity (%)
   float pressure = 0;         // Pressure (hPa)
@@ -596,8 +599,8 @@ int weatherHistoryCount = 0;
 int weatherHistoryHead = 0;
 unsigned long lastWeatherLog = 0;
 
-// Weather trend data
-struct {
+// Weather trend data. Named (#260).
+struct WeatherTrend {
   float pressureChange3hr = 0;    // hPa change over 3 hours
   float tempChange3hr = 0;        // °C change over 3 hours
   float humidityChange3hr = 0;    // % change over 3 hours
@@ -1035,8 +1038,12 @@ void lvglEncoderReadCb(lv_indev_t* indev, lv_indev_data_t* data) {
 
 // ============== Touch ISR ==============
 
+// Intentionally empty (#260). The flag it used to set was never read, so the
+// body went with it. The interrupt stays attached (see attachInterrupt in
+// initTouch): whether the CTP_INT interrupt is needed at all is a behaviour
+// question, out of scope for a declaration-only change, and belongs to whoever
+// owns the touch unit in E4-5.
 void IRAM_ATTR touchISR() {
-  touchDetected = true;  // Flag only — NO I2C in ISR
 }
 
 // ============== Setup ==============

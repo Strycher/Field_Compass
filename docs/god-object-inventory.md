@@ -183,6 +183,8 @@ src/src.ino:607  } weatherTrend;
 
 `extern` cannot name a variable of anonymous struct type; a header copy gives each unit a distinct type plus duplicate definitions; `extern decltype(gpsData) gpsData;` is circular. **Naming them is a prerequisite**, and it is declaration-only. Four of the five are in the cut set (`gpsData` #2, `envData` #13, `shtData` #15, `imuData` #18), so this blocks band 3 almost immediately.
 
+**Measured in [#260](https://github.com/Strycher/Field_Compass/issues/260), and a correction to this document's own classification.** The linker had all five as *local* symbols (`b`/`d` in `nm`) before naming and *global* (`B`/`D`) after, sizes unchanged. That is the mechanism, not just the symptom: in C++ a variable of unnamed type has **internal linkage**, because its type has no linkage name. So before #260 these five were TU-private in the linker's eyes despite their plain names — the inventory script classifies by name mangling and counted them among the 97 external-linkage variables, which was right about what they *are* (shared state used by 12–19 functions each) and wrong about their *linkage* until they were named. Naming them is what makes them `extern`-able, and the `nm` letter flipping is the proof it worked.
+
 The file already names six other structs (`FRAMHeader`, `FRAMBatteryEntry`, `FRAMSettings`, `GeocacheEntry`, `TZPreset`, `WeatherReading`); the five state blobs are the exception, which makes the fix uncontroversial.
 
 ---
