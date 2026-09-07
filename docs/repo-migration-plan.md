@@ -117,19 +117,19 @@ Measured: 16 / 17 / 11 / 11 before, 0 / 0 / 0 / 0 after, with 328 commits, 126 t
 
 Then confirm the redacted tree still builds — `pio run -e feather_s3`, **from PowerShell**, since PlatformIO refuses to run under MSYS/Git Bash. Redaction edits a live source file, and a placeholder that broke a string literal would compile-fail. Measured: SUCCESS in 140.32 s.
 
-### 4.3 ⛔ IRREVERSIBLE — rename the old repository
+### 4.3 ⛔ IRREVERSIBLE — rename the old repository ✅ DONE 2026-09-07
 
 `Strycher/Field_Compass` → `Strycher/Field_Compass-archive`.
 
 Renaming leaves a redirect; creating a new repo at the old name overrides it, which is the intent. Verify the archive responds at its new name before continuing.
 
-### 4.4 Create the new repository and push
+### 4.4 Create the new repository and push ✅ DONE 2026-09-07
 
 New public `Strycher/Field_Compass`. Push the redacted history — all branches, all tags.
 
 Verify: clone it fresh to a scratch directory, run the four-needle grep over `--all`, and build. **A clean clone is the only trustworthy check**; a local repo can hide objects the remote does not have, and vice versa.
 
-### 4.5 ⛔ IRREVERSIBLE — recreate every issue slot in order
+### 4.5 ⛔ IRREVERSIBLE — recreate every issue slot in order ✅ DONE 2026-09-07
 
 Strict ascending order, 1 → N. Nothing else may create an issue **or a pull request** in the new repository during this run: PRs consume the same number space, and one stray creation shifts every subsequent number.
 
@@ -154,7 +154,7 @@ Confirm before starting that `issues.json` has **no gaps** in `1..N`. It had non
 
 Verify after every 25: the highest issue number equals the count created. Drift means stop immediately; it cannot be corrected afterwards without deleting issues.
 
-### 4.6 Re-link
+### 4.6 Re-link ✅ DONE 2026-09-07
 
 Native sub-issue parent/child links, then `<!-- depends-on: #N -->` bodies, then the project board items with Status and Priority set on both the field and the label.
 
@@ -162,13 +162,13 @@ Citadel needs no change — `external_issue_number` stays valid because the numb
 
 Stale commit SHAs quoted in issue bodies are left as they are; a note in the Epic records that pre-migration SHAs refer to the archive.
 
-### 4.7 Rebuild repository settings
+### 4.7 Rebuild repository settings ✅ DONE 2026-09-07
 
 Branch protection (`compile-gate` required, `strict: false`, `enforce_admins: true`, no force pushes, no deletions), the `PROJECT_PAT` secret, and all 31 labels.
 
 Verify branch protection by **repeating the #223 break test**: push a deliberate syntax error, confirm `mergeStateStatus=BLOCKED`, close unmerged, delete the branch. A protection setting that has not been observed blocking is not known to block.
 
-### 4.8 Repoint the local working directory
+### 4.8 Repoint the local working directory ✅ DONE 2026-09-07
 
 `C:\Dev\Field_Compass` stays where it is:
 
@@ -182,11 +182,11 @@ Untracked and ignored files survive this — local settings, un-committed hooks,
 
 Verify: `git log` shows redacted history, `pio run -e feather_s3` succeeds, `python scripts/pio-flash.py list` still resolves the device registry at `C:\Dev\.field_compass\`.
 
-### 4.9 ⛔ IRREVERSIBLE — private, then archive
+### 4.9 ⛔ IRREVERSIBLE — private, then archive ✅ DONE 2026-09-07
 
 Make `Field_Compass-archive` private, then archive it. Archiving makes it read-only, so it is last. Verify the 38 PRs are still readable by the owner afterwards.
 
-### 4.10 Close out
+### 4.10 Close out ✅ DONE 2026-09-07
 
 Update `CLAUDE.md`'s repository row. Record in the Epic which numbers are placeholders. Delete the migration backup only once the new repository has been used for a full task cycle — **not on the day of the migration**.
 

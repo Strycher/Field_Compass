@@ -28,8 +28,31 @@ physical press).
 | Project Name | Field Compass |
 | Organization | Strycher (personal) |
 | Repository | https://github.com/Strycher/Field_Compass |
+| Archive | https://github.com/Strycher/Field_Compass-archive — private, read-only (#245) |
 | Project Type | Embedded firmware (single-file Arduino `.ino`) |
 | GitHub Project | Field Compass Backlog (#3) |
+
+### This repository was rebuilt clean on 2026-09-07 (#245)
+
+The original carried WiFi credentials in plaintext, publicly, from 2026-02. History
+cannot be scrubbed in place: GitHub pins every PR's head commit at `refs/pull/N/head`
+permanently and a PR cannot be deleted, so 46 refs would have kept the credentials
+fetchable regardless of what happened to `main`.
+
+So the history was redacted into a **new** repository, which has no such refs. Two
+consequences that matter day to day:
+
+- **Issue numbers were preserved slot for slot**, so every `#NNN` in the source, here,
+  and in Citadel's `external_issue_number` still resolves. Numbers that were pull
+  requests exist as **closed placeholders** pointing at the archive — the PRs themselves
+  could not be recreated. See #245 for the list.
+- **`src/src.ino` holds placeholder credentials** (`REDACTED_SSID_1` and friends). A
+  build from `main` compiles and **cannot join WiFi**, which also means no
+  `fieldcompass.local` diagnostics. Until #99 moves credentials to runtime storage,
+  flashing needs a local uncommitted edit — and nothing in `.gitignore` protects such
+  an edit from being committed by accident.
+
+Pre-migration commit SHAs quoted in old issues refer to the archive, not here.
 
 ## Project Parameters
 
