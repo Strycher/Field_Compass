@@ -8710,3 +8710,11 @@ void drawOLEDNavBar() {
   sprintf(buf, "[%d/%d]", currentScreen + 1, NUM_SCREENS);
   oled.print(buf);
 }
+
+// ---------------------------------------------------------------------------
+// C3 PROBE - DELIBERATE SYNTAX ERROR. THROWAWAY, MUST NEVER MERGE.
+// Proves branch protection BLOCKS a red compile-gate, not merely reports it.
+// ---------------------------------------------------------------------------
+void fcCiProbeBlockedCheck() {
+  int deliberatelyBroken = 1
+}
