@@ -283,6 +283,44 @@ python scripts/verify_extraction.py --before-nm nm-before.txt --before-graph gra
   --after-elf .pio/build/feather_s3/firmware.elf --moved <functions> --published <variables> [--resigned <functions>]
 ```
 
+## 10. Band 3a — fram, settings and rtc; five things the harness learned
+
+**Band 3 was split first.** #264 said it would be, once band 2 had landed and the harness was proven. The relocation graph after band 2 gave the composition: five children, [#270](https://github.com/Strycher/Field_Compass/issues/270)–[#274](https://github.com/Strycher/Field_Compass/issues/274), grouped by dependency layer — storage/settings/time, the four sensors, the two data domains that consume them, display and navigation state, and the web server last. **Not `webServer` first, as #264's text says**: the graph shows `webServer` referenced only by the 23 handlers, `initWebServer` and `loop`, and `initWiFi` calling `initWebServer`. A web unit before the domains its handlers read would need those handlers declared in a header while they stay in `src.ino` — the reach-back the ruling forbids. The cut set says which variables must be owned; the graph says the order they can be. #264's acceptance is met when its last child lands.
+
+**What moved** — three units, in this order because each includes the previous:
+
+| unit | owns | functions |
+|---|---|---|
+| `fram` | `fram`, `framHeader`, `framAvailable`; `FRAMHeader`, `FRAMBatteryEntry`, `FRAMSettings`; the 17 `FRAM_*` layout defines | `framReadHeader`, `framWriteHeader`, `framFormat`, `initFRAM` |
+| `settings` | the nine user and display settings, `tzPresets`/`TZPreset`, the four timeout preset tables and their counts, `settingsLoadedFromSD` | `framSettingsChecksum` (static), `saveSettingsToFRAM`, `loadSettingsFromFRAM`, `applyTimezone`, `mktimeUTC`, `formatTimeStr`, `loadSettings`, `saveSettings`, `factoryReset`, `findTimeoutIndex` |
+| `rtc` | `rtc`, `rtcAvailable` | `initRTC`, `syncRTCFromSystemTime` |
+
+Twelve of the 34 remaining cut-set variables left `src.ino`. `FRAM_CS` and `TFT_BL` joined `fc_config.h`, which `fram.cpp` and `factoryReset` need.
+
+**Calls made under the grant, for review:** the timeout preset tables and `findTimeoutIndex` are *settings* (they define what `tftSleepMs` may be), not display, so they went with the unit that persists them; `framFlushToSD` stayed, because it flushes the battery and weather buffers — two domains not yet published — and the weather child (#272) decides its home.
+
+**Five things the harness learned**, each found by this band and fixed in `extract_unit.py`: bare include names are wrapped (`"x.h"` for our files, `<x.h>` otherwise); a `--header-lines` block is emitted *before* the externs, since an `extern FRAMHeader framHeader;` needs the struct first; a table initialiser spanning lines (`tzPresets`, 16 of them) is carried whole; forward `extern` declarations of published variables are dropped like prototypes are (the timeout tables had six); and the comment line that introduced a removed declaration is swept when only a blank follows it (bands 2 and 3a had left eight).
+
+**Measured** — `scripts/verify_extraction.py`, PASS:
+
+```
+symbols   584 before -> 585 after, union of 8 objects
+          38 relocated: fram 7, rtc 4, settings 27 (incl. the shared_count inline only settings.cpp instantiates)
+           2 linkage changes, both declared: settingsLoadedFromSD b -> B, tzPresets r -> R
+           1 added: _GLOBAL__sub_I_fram (41 bytes) -- fram.cpp constructs the FRAM object;
+             src.ino's initialiser shrank by 34
+          removed: none
+deltas    26 symbols, net +22: 8 call a moved function, 5 touch published state,
+          2 are moved functions (loadSettings -4, findTimeoutIndex -2), 11 identical references
+          unexplained: none
+sections  .flash.text  +64 = function deltas +22, the new initialiser +41, alignment +1
+          .flash.rodata +56, .dram0.bss +16: no data symbol changed size; packing and string-literal
+                          residue across three new objects (rodata/bss bytes: fram 195/73,
+                          settings 1710/10, rtc 155/5)
+Flash     1,856,026 -> 1,856,146 (+120)   RAM 103,232 -> 103,248 (+16)
+src.ino   7,986 -> 7,483 lines           arduino-cli SUCCESS   58 tests pass
+```
+
 ---
 
 ## Appendix — the full tables
