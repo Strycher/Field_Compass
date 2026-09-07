@@ -35,7 +35,7 @@
 #include <time.h>
 #include <stdarg.h>
 #include <Adafruit_GFX.h>
-#include <TFT_eSPI.h>          // ST7796U display driver (pins in User_Setup.h)
+#include <TFT_eSPI.h>          // ST7796U display driver (pins in platformio.ini build_flags, #184)
 #include <Adafruit_FT6206.h>   // FT6336U capacitive touch (I2C 0x38)
 #include <Adafruit_SH110X.h>
 #include <bsec2.h>
@@ -103,8 +103,9 @@ const char* WIFI_PASS_3 = "5132547071";
 const char* NTP_SERVER = "pool.ntp.org";
 // Timezone handled by POSIX TZ string — see posixTZ global (#98)
 
-// TFT Display pins (ST7796U 3.5" IPS, SPI — also configured in TFT_eSPI User_Setup.h)
-// TFT_CS=18, TFT_DC=17, TFT_RST=16 defined by TFT_eSPI User_Setup.h
+// TFT Display pins (ST7796U 3.5" IPS, SPI) — TFT_CS=18, TFT_DC=17, TFT_RST=16 are
+// defined in platformio.ini build_flags under USER_SETUP_LOADED=1, which tells
+// TFT_eSPI to skip its own header selection entirely. Not User_Setup.h (#184).
 #define FRAM_CS   15  // A3 -> FRAM CS
 #define SD_CS     10  // Adalogger FeatherWing SD slot
 
@@ -256,7 +257,7 @@ const char* NTP_SERVER = "pool.ntp.org";
 
 // ============== Global Objects ==============
 
-// TFT Display (ST7796U via TFT_eSPI — pins configured in User_Setup.h)
+// TFT Display (ST7796U via TFT_eSPI — pins configured in platformio.ini build_flags, #184)
 TFT_eSPI tft = TFT_eSPI();
 
 // TFT_eSprite removed — LVGL handles all TFT rendering (#114)
