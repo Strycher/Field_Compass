@@ -1,8 +1,13 @@
 # UM FeatherS3D bench wiring — the only list
 
+**LOCKED by the owner on 2026-09-08 02:20 EDT.** Every peripheral on this list was verified
+up from the board's own boot log at 02:16 (#283). Change this page only with a new
+verified boot log and the owner's word.
+
 Labels below are exactly what is printed on the UM board. No GPIO numbers, no Adafruit
 names. If a number here is not printed on the board, it does not belong here.
-Firmware: env `um_feathers3`, branch `fc/283-um-feathers3-env`.
+Firmware: env `um_feathers3`; the GPIO view of the same wiring is in `CLAUDE.md`
+→ Pin Assignments and `src/fc_config.h`.
 
 ## Display module (Hosyond 3.5" ST7796U + FT6336U touch)
 

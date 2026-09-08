@@ -127,6 +127,11 @@ The Feather form factor breaks out 21 GPIO pins on its headers. **18 are in use;
 
 ## UM FeatherS3 rewire (2026-09-05) — bench sheet and resulting pin changes
 
+> ✅ **LOCKED WIRING (owner, 2026-09-08 02:20 EDT): [`docs/um-bench-wiring.md`](um-bench-wiring.md)
+> is the authoritative wire list for the UM board — silkscreen labels only, every
+> peripheral verified up from the boot log at 02:16.** Everything else in this section is
+> the record of how that list was reached and why; do not wire from it.
+
 **Status.** On 2026-09-05 the breadboard moved from the Adafruit 5477 Feather to a
 **UM FeatherS3D** (Adafruit PID 6399, ESP32-S3 N16R8: 16 MB flash, 8 MB PSRAM), wired
 per the bench sheet below. It is registered in the pio-flash registry as `um_feather`
@@ -169,7 +174,7 @@ not header positions**, and that table was retracted at 05:59. Never derive UM h
 positions from the variant's analog aliases. (The same mistake was repeated on 2026-09-07
 and is the reason this section exists.)
 
-### Bench sheet — unplug from, plug into (06:02)
+### Bench sheet — unplug from, plug into (06:02) — RECORD ONLY, superseded by `um-bench-wiring.md`
 
 ⚠ Adafruit has two `3V` pins. The UM board has `0` — GPIO 0, the BOOT strapping pin — in
 the second one's position. Both UM 3.3 V outputs are `3V3.1` (position 2) and `3V3.2`
@@ -320,7 +325,7 @@ own header order is not recorded here — read the labels on the module, not the
 | SDI (MOSI) | SPI data in | `MO` (35) | `MO` |
 | SCK | SPI clock | `SCK` (36) | `SCK` |
 | LED | backlight PWM, TFT_BL | `5` | `A5` |
-| SDO (MISO) | SPI data out, unused by firmware | `MI` (37) or unconnected | `MI` |
+| SDO (MISO) | SPI data out, unused by firmware | `MI` (37), as on the Adafruit setup | `MI` |
 | CTP_SDA | touch I2C data | `SDA` (8) | `SDA` |
 | CTP_SCL | touch I2C clock | `SCL` (9) | `SCL` |
 | CTP_INT | touch interrupt, CTP_INT | `6` | `A4` |
