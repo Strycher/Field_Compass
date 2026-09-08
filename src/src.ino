@@ -251,9 +251,23 @@ void setup() {
     .idle_core_mask = (1 << 0) | (1 << 1),  // Watch both cores
     .trigger_panic = true  // Reset on timeout
   };
-  esp_task_wdt_init(&wdt_config);
-  esp_task_wdt_add(NULL);  // Add current task to watchdog
-  logPrintf("Watchdog enabled: %ds timeout\n", WDT_TIMEOUT_SEC);
+  // Arduino core 3.x starts the task watchdog itself before setup() runs
+  // (sdkconfig: CONFIG_ESP_TASK_WDT_INIT=1, CONFIG_ESP_TASK_WDT_TIMEOUT_S=5),
+  // so esp_task_wdt_init() returns ESP_ERR_INVALID_STATE here and the 5 s
+  // default silently stayed in force -- long enough for the WiFi reconnect
+  // wait to trip it and reboot the board every ~70 s (#285). Reconfigure
+  // the running watchdog instead, and never claim a timeout we did not get.
+  esp_err_t wdtErr = esp_task_wdt_init(&wdt_config);
+  if (wdtErr == ESP_ERR_INVALID_STATE) {
+    wdtErr = esp_task_wdt_reconfigure(&wdt_config);
+  }
+  esp_err_t wdtAddErr = esp_task_wdt_add(NULL);  // Subscribe loopTask
+  if (wdtErr == ESP_OK && wdtAddErr == ESP_OK) {
+    logPrintf("Watchdog enabled: %ds timeout\n", WDT_TIMEOUT_SEC);
+  } else {
+    logPrintf("Watchdog: config %s, subscribe %s -- core default timeout stays in force\n",
+              esp_err_to_name(wdtErr), esp_err_to_name(wdtAddErr));
+  }
 
   // Initialize activity timer for display sleep
   lastActivityTime = millis();
