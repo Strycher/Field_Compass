@@ -1,0 +1,95 @@
+// i2c_health.cpp -- per-device I2C failure tracking, back-off and re-probe (#289).
+#include "i2c_health.h"
+#include "logging.h"
+#include <Wire.h>
+#include <esp_system.h>
+
+void i2cNoteOk(I2CDevice& d) {
+  d.fails = 0;
+}
+
+bool i2cNoteFail(I2CDevice& d) {
+  d.totalFails++;
+  if (d.fails < 255) d.fails++;
+  if (!*d.available) return false;          // already dropped
+  if (d.fails < I2C_FAIL_LIMIT) return false;
+  *d.available = false;
+  d.drops++;
+  d.droppedAt = millis();
+  d.lastProbe = d.droppedAt;                 // first re-probe one interval from now
+  logPrintf("[I2C] %s (0x%02X) stopped answering: %u consecutive failures, dropped; re-probing every %d s\n",
+            d.name, d.addr, (unsigned)d.fails, I2C_REPROBE_MS / 1000);
+  return true;
+}
+
+bool i2cProbe(uint8_t addr) {
+  // Zero-length write: the core turns it into i2c_master_probe (address and
+  // ACK only), the same transaction scanI2CBus() uses.
+  Wire.beginTransmission(addr);
+  return Wire.endTransmission() == 0;
+}
+
+// A slave left mid-transaction by a glitch can hold SDA low until it sees
+// enough clocks to finish its byte and then a STOP. Clock it out with the
+// pins as plain GPIO, then hand the pins back to the I2C peripheral. Same
+// end()/begin() pair the #283 bus diagnostic uses, verified on both boards.
+void i2cBusRecover() {
+  Wire.end();
+  digitalWrite(SDA, HIGH);                   // output latch high before the mode change,
+  digitalWrite(SCL, HIGH);                   // so neither line dips when it becomes GPIO
+  pinMode(SDA, INPUT_PULLUP);
+  pinMode(SCL, OUTPUT_OPEN_DRAIN);
+  delayMicroseconds(5);
+  for (int i = 0; i < 9; i++) {
+    digitalWrite(SCL, LOW);
+    delayMicroseconds(5);
+    digitalWrite(SCL, HIGH);
+    delayMicroseconds(5);
+    if (digitalRead(SDA) == HIGH) break;   // slave released the line
+  }
+  // START then STOP with no address: every slave's state machine resets on
+  // the STOP. SDA falling while SCL is high is the START.
+  pinMode(SDA, OUTPUT_OPEN_DRAIN);
+  digitalWrite(SDA, LOW);
+  delayMicroseconds(5);
+  digitalWrite(SDA, HIGH);
+  delayMicroseconds(5);
+  Wire.begin();                              // variant SDA/SCL at the default clock, as in setup()
+}
+
+bool i2cReprobeDue(I2CDevice& d) {
+  if (*d.available || d.drops == 0) return false;
+  unsigned long now = millis();
+  if (now - d.lastProbe < I2C_REPROBE_MS) return false;
+  d.lastProbe = now;
+  if (!i2cProbe(d.addr)) {
+    i2cBusRecover();
+    if (!i2cProbe(d.addr)) return false;
+  }
+  logPrintf("[I2C] %s (0x%02X) answers again after %lu s (drop #%lu, %lu failed reads so far); re-initialising\n",
+            d.name, d.addr, (now - d.droppedAt) / 1000, (unsigned long)d.drops, (unsigned long)d.totalFails);
+  d.fails = 0;
+  return true;
+}
+
+void logResetReason() {
+  esp_reset_reason_t r = esp_reset_reason();
+  const char* s;
+  switch (r) {
+    case ESP_RST_POWERON:   s = "power-on"; break;
+    case ESP_RST_EXT:       s = "external pin"; break;
+    case ESP_RST_SW:        s = "software (esp_restart)"; break;
+    case ESP_RST_PANIC:     s = "PANIC -- the previous run crashed"; break;
+    case ESP_RST_INT_WDT:   s = "INTERRUPT WATCHDOG"; break;
+    case ESP_RST_TASK_WDT:  s = "TASK WATCHDOG -- loop() stalled"; break;
+    case ESP_RST_WDT:       s = "other watchdog"; break;
+    case ESP_RST_DEEPSLEEP: s = "deep-sleep wake"; break;
+    case ESP_RST_BROWNOUT:  s = "BROWNOUT -- supply dipped"; break;
+    case ESP_RST_SDIO:      s = "SDIO"; break;
+    case ESP_RST_USB:       s = "USB peripheral"; break;
+    case ESP_RST_JTAG:      s = "JTAG"; break;
+    case ESP_RST_EFUSE:     s = "efuse error"; break;
+    default:                s = "unknown"; break;
+  }
+  logPrintf("[BOOT] Reset reason: %s (%d)\n", s, (int)r);
+}

@@ -2,9 +2,17 @@
 #include "battery.h"
 #include "fram.h"
 #include "logging.h"
+#include "i2c_health.h"
 
 Adafruit_MAX17048 battery;
 bool batteryAvailable = false;
+
+// Dropout tracking (#289). The gauge is read on a 10 s timer and by the
+// settings screen and /diags, never in a tight loop, so a health check every
+// BATT_CHECK_MS is enough. isDeviceReady() reads the version register and is
+// false on a NACK; every cellVoltage()/cellPercent() call already gates on it.
+static I2CDevice battDev = {"MAX17048", 0x36, &batteryAvailable};
+#define BATT_CHECK_MS 2000
 
 void initBattery() {
   logPrint("Initializing MAX17048... ");
@@ -15,7 +23,20 @@ void initBattery() {
   }
 
   batteryAvailable = true;
+  i2cNoteOk(battDev);
   logPrintln("OK");
+}
+
+// Called every loop pass (#289).
+void serviceBattery() {
+  if (!batteryAvailable) {
+    if (i2cReprobeDue(battDev)) initBattery();
+    return;
+  }
+  static unsigned long lastCheck = 0;
+  if (millis() - lastCheck < BATT_CHECK_MS) return;
+  lastCheck = millis();
+  if (battery.isDeviceReady()) i2cNoteOk(battDev); else i2cNoteFail(battDev);
 }
 
 // Log battery data to SD card for analysis

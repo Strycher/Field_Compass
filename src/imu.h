@@ -33,3 +33,4 @@ void initIMU();
 void loadMagCal();
 void saveMagCal();
 void readIMU();
+void serviceIMU();   // re-probe a dropped chip and re-init it (#289)
