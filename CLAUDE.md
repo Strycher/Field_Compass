@@ -70,9 +70,9 @@ Pre-migration commit SHAs quoted in old issues refer to the archive, not here.
 
 | Component | Value |
 |-----------|-------|
-| MCU | Adafruit ESP32-S3 Feather 4MB Flash 2MB PSRAM (PID 5477) |
-| Display | Hosyond 3.5" ST7796U IPS TFT 480x320 (MSP3526), TFT_eSPI **rotation 3** — the panel is mounted 180° from TFT_eSPI's assumption, so landscape is the complement of the nominal rotation (#157). Configured via `build_flags`, not `User_Setup.h` (#184) |
-| Touch | FT6336U capacitive on I2C `0x38` (CTP_INT = GPIO14, FALLING edge) |
+| MCU | **Two boards build from this tree (#283).** Bench since 2026-09-05: **UM FeatherS3D** (Adafruit PID 6399, 16 MB flash, 8 MB QSPI PSRAM), env `um_feathers3`, registry `um_feather`. Original: Adafruit ESP32-S3 Feather 4MB Flash 2MB PSRAM (PID 5477), env `feather_s3`, registry `field_compass` |
+| Display | Hosyond 3.5" ST7796U IPS TFT 480x320 (MSP3526), TFT_eSPI **rotation 3** — the panel is mounted 180° from TFT_eSPI's assumption, so landscape is the complement of the nominal rotation (#157). Configured via `build_flags`, not `User_Setup.h` (#184). On the ESP32-S3 TFT_eSPI needs `USE_FSPI_PORT` or it writes to address 0 (#284) |
+| Touch | FT6336U capacitive on I2C `0x38` (CTP_INT: GPIO 6 on the UM board, GPIO 14 on the Adafruit; CHANGE interrupt) |
 | IMU | LSM6DSOX + LIS3MDL (STEMMA QT) — heading reference is X+ |
 | GPS | PA1616D (MT3339) — Serial1 @ 9600, CR1220 backup, PMTK101 hot restart |
 | SD | Adalogger FeatherWing (SD_CS = GPIO10) |
@@ -83,11 +83,26 @@ Pre-migration commit SHAs quoted in old issues refer to the archive, not here.
 
 ### Pin Assignments
 
-- **I2C:** SDA=GPIO3, SCL=GPIO4 (STEMMA QT)
+**UM FeatherS3D (the bench board) — wire it from [`docs/um-bench-wiring.md`](docs/um-bench-wiring.md)
+and nothing else.** That page is silkscreen labels only and was locked by the owner on
+2026-09-08 after every peripheral came up. The GPIO view of the same wiring, as the
+firmware sees it (`src/fc_config.h` UM block + `platformio.ini` `[env:um_feathers3]`):
+
+- **I2C1:** SDA=8, SCL=9 (header + first STEMMA QT); **I2C2:** SDA=16, SCL=15 (second STEMMA QT, LDO2-powered)
+- **SPI:** SCK=36, MOSI=35, MISO=37
+- **TFT:** CS=17, DC=18, RST=14, BL=5
+- **SD/FRAM/Touch:** SD_CS=3, FRAM_CS=12, CTP_INT=6
+- **Buttons:** A=1, B=38, C=33 · **LDO2 enable:** 39 · **GPS UART:** RX=44, TX=43
+
+**Adafruit ESP32-S3 Feather (PID 5477), env `feather_s3`** — these numbers are Adafruit GPIOs
+and collide with the UM silkscreen numbers (14, 17, 18 mean different things). Do not wire
+the UM board from this list:
+
+- **I2C:** SDA=3, SCL=4 (STEMMA QT)
 - **SPI:** SCK=36, MOSI=35, MISO=37
 - **TFT:** CS=18, DC=17, RST=16, BL=8 (PWM-dimmable)
 - **SD/FRAM/Touch:** SD_CS=10, FRAM_CS=15, CTP_INT=14
-- **GPS Serial1:** RX=GPIO5, TX=GPIO6
+- **Buttons:** A=9, B=6, C=5 · **GPS Serial1:** RX=38, TX=39 (variant `RX`/`TX`; an earlier line here said 5/6, which was wrong)
 
 ## Repository Layout (#186)
 
