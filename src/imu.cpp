@@ -8,11 +8,20 @@ Adafruit_LIS3MDL lis;
 bool imuAvailable = false;
 bool magAvailable = false;
 
-// Dropout tracking (#289). Both chips sit on one breakout, so in practice
-// they fail together; they are still tracked by address because they are
-// separate I2C devices. The address is whichever one answered in initIMU().
-static I2CDevice imuDev = {"LSM6DSOX", 0x6A, &imuAvailable};
-static I2CDevice magDev = {"LIS3MDL",  0x1C, &magAvailable};
+// Dropout tracking (#289). Both chips sit on one breakout (Adafruit 4517) but
+// are separate I2C devices, and on the bench they failed separately: the
+// LIS3MDL NACKed nearly every data byte for hours while the LSM6DSOX beside
+// it read fine. Each has two possible addresses; the one that answered in
+// initIMU() is recorded, the other is the alternate the re-probe also tries.
+// The health check is the WHO_AM_I read: the LIS3MDL kept ACKing its address
+// (the boot scan listed 0x1C throughout) while failing every data read, so
+// an address probe is not a signal for these chips.
+static I2CDevice imuDev = {"LSM6DSOX", 0x6A, &imuAvailable, LSM6DS_WHOAMI,        LSM6DSOX_CHIP_ID, 0x6B};
+static I2CDevice magDev = {"LIS3MDL",  0x1C, &magAvailable, LIS3MDL_REG_WHO_AM_I, 0x3D,             0x1E};
+// getEvent() on both chips returns true unconditionally, so the read path
+// carries no failure signal; the checks run on this timer instead. Worst
+// case a dead chip is read for IMU_CHECK_MS x I2C_FAIL_LIMIT = 1 s.
+#define IMU_CHECK_MS 200
 float magOffsetX = 0, magOffsetY = 0, magOffsetZ = 0;
 bool magCalibrated = false;
 bool magCalibrating = false;
@@ -29,6 +38,11 @@ void magLogPrintln(const char* msg) {
 }
 
 void initIMU() {
+  // Re-runnable (#289): a re-init that fails must not leave the flag from
+  // the previous success standing.
+  imuAvailable = false;
+  magAvailable = false;
+
   logPrint("Initializing LSM6DSOX... ");
 
   uint8_t addr = 0x6A;
@@ -40,11 +54,22 @@ void initIMU() {
     }
   }
   imuDev.addr = addr;
+  imuDev.altAddr = (addr == 0x6A) ? 0x6B : 0x6A;
 
   lsm.setAccelRange(LSM6DS_ACCEL_RANGE_4_G);
   lsm.setGyroRange(LSM6DS_GYRO_RANGE_500_DPS);
   lsm.setAccelDataRate(LSM6DS_RATE_104_HZ);
   lsm.setGyroDataRate(LSM6DS_RATE_104_HZ);
+
+  // Read one setting back. begin_I2C() checks only WHO_AM_I and the setters
+  // are void, so a chip that NACKs its configuration writes would be declared
+  // available while misconfigured or powered down. The 17:38 boot on
+  // 2026-09-08 did exactly that on the LIS3MDL: WHO_AM_I read, every write
+  // after it NACKed, "OK". A failed read-back returns all-ones, never 104 Hz.
+  if (lsm.getAccelDataRate() != LSM6DS_RATE_104_HZ) {
+    logPrintln("CONFIG NOT ACCEPTED (read-back mismatch)");
+    return;
+  }
 
   imuAvailable = true;
   i2cNoteOk(imuDev);
@@ -61,26 +86,41 @@ void initIMU() {
     }
   }
   magDev.addr = addr;
+  magDev.altAddr = (addr == 0x1C) ? 0x1E : 0x1C;
 
   lis.setPerformanceMode(LIS3MDL_MEDIUMMODE);
   lis.setOperationMode(LIS3MDL_CONTINUOUSMODE);
   lis.setDataRate(LIS3MDL_DATARATE_155_HZ);
   lis.setRange(LIS3MDL_RANGE_4_GAUSS);
 
+  if (lis.getDataRate() != LIS3MDL_DATARATE_155_HZ) {   // same read-back as the LSM6DSOX above
+    logPrintln("CONFIG NOT ACCEPTED (read-back mismatch)");
+    return;
+  }
+
   magAvailable = true;
   i2cNoteOk(magDev);
   logPrintln("OK");
 }
 
-// Called every loop pass (#289). Nothing to do while both chips answer; once
-// one has been dropped, re-probe it on the slow timer and run the normal
-// init when it answers. initIMU() re-initialises both chips, which is what a
-// breakout that lost power or its bus needs anyway.
+// Called every loop pass (#289). While both chips are up, read each WHO_AM_I
+// every IMU_CHECK_MS and count the result. Once either has been dropped,
+// re-probe it on the slow timer and run the normal init when it answers;
+// initIMU() re-initialises both chips, which a breakout that lost power or
+// its bus needs anyway, and tries both addresses of each.
 void serviceIMU() {
-  if ((!imuAvailable && i2cReprobeDue(imuDev)) ||
-      (!magAvailable && i2cReprobeDue(magDev))) {
-    initIMU();
+  if (!imuAvailable || !magAvailable) {
+    if ((!imuAvailable && i2cReprobeDue(imuDev)) ||
+        (!magAvailable && i2cReprobeDue(magDev))) {
+      initIMU();
+    }
+    return;
   }
+  static unsigned long lastCheck = 0;
+  if (millis() - lastCheck < IMU_CHECK_MS) return;
+  lastCheck = millis();
+  if (i2cCheck(imuDev)) i2cNoteOk(imuDev); else i2cNoteFail(imuDev);
+  if (i2cCheck(magDev)) i2cNoteOk(magDev); else i2cNoteFail(magDev);
 }
 
 // Load magnetometer calibration from SD card
@@ -140,18 +180,10 @@ void saveMagCal() {
 void readIMU() {
   sensors_event_t accel, gyro, temp, mag;
 
-  // Both getEvent() calls return true unconditionally (checked in the pinned
-  // Adafruit_LSM6DS / Adafruit_LIS3MDL sources) and read into an uninitialised
-  // buffer on a NACK, so the bus failure has to be caught before the read:
-  // one address probe per chip per pass, ~0.1 ms each on a healthy bus. On a
-  // dead chip the probe fails fast, and after I2C_FAIL_LIMIT passes the loop
-  // gate (imuAvailable && magAvailable) stops calling this until serviceIMU()
-  // brings the breakout back (#289).
-  if (!i2cProbe(imuDev.addr)) { i2cNoteFail(imuDev); return; }
-  i2cNoteOk(imuDev);
-  if (!i2cProbe(magDev.addr)) { i2cNoteFail(magDev); return; }
-  i2cNoteOk(magDev);
-
+  // Neither getEvent() reports a failed read (they return true and leave the
+  // buffer uninitialised on a NACK); serviceIMU() watches the chips instead
+  // and the loop gate (imuAvailable && magAvailable) stops this once one is
+  // dropped (#289).
   lsm.getEvent(&accel, &gyro, &temp);
   lis.getEvent(&mag);
 

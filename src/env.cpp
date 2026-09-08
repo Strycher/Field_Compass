@@ -15,9 +15,12 @@ bool bmeAvailable = false;
 bool shtAvailable = false;          // SHT41 temp/humidity (#48)
 
 // Dropout tracking (#289). The BME688 address is whichever answered in
-// initBME688(); the SHT41 has only one.
+// initBME688(), the other is the alternate the re-probe also tries, and its
+// chip-ID register is the re-probe check. The SHT41 has one address and no
+// ID register, so its re-probe is an address probe; initSHT41() (a serial
+// number read) is the real test when it answers.
 static I2CDevice shtDev = {"SHT41",  0x44, &shtAvailable};
-static I2CDevice bmeDev = {"BME688", 0x77, &bmeAvailable};
+static I2CDevice bmeDev = {"BME688", 0x77, &bmeAvailable, BME68X_REG_CHIP_ID, BME68X_CHIP_ID, 0x76};
 // The BME688 is touched once per BSEC sample (LP mode = 3 s) and its status
 // persists until the next access, so its health is sampled on that cadence;
 // sampling every loop pass would count one failed read five times over.
@@ -109,6 +112,7 @@ void initBME688() {
     }
   }
   bmeDev.addr = addr;
+  bmeDev.altAddr = (addr == 0x77) ? 0x76 : 0x77;
   i2cNoteOk(bmeDev);
 
   // Load BSEC2 IAQ config

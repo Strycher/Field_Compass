@@ -6,19 +6,21 @@
 
 void i2cNoteOk(I2CDevice& d) {
   d.fails = 0;
+  d.recent <<= 1;
 }
 
 bool i2cNoteFail(I2CDevice& d) {
   d.totalFails++;
   if (d.fails < 255) d.fails++;
+  d.recent = (d.recent << 1) | 1;
   if (!*d.available) return false;          // already dropped
-  if (d.fails < I2C_FAIL_LIMIT) return false;
+  if (d.fails < I2C_FAIL_LIMIT && __builtin_popcount(d.recent) < I2C_FAIL_WINDOW) return false;
   *d.available = false;
   d.drops++;
   d.droppedAt = millis();
   d.lastProbe = d.droppedAt;                 // first re-probe one interval from now
-  logPrintf("[I2C] %s (0x%02X) stopped answering: %u consecutive failures, dropped; re-probing every %d s\n",
-            d.name, d.addr, (unsigned)d.fails, I2C_REPROBE_MS / 1000);
+  logPrintf("[I2C] %s (0x%02X) stopped answering: %u consecutive failures, %d of the last 16 checks; dropped, re-probing every %d s\n",
+            d.name, d.addr, (unsigned)d.fails, __builtin_popcount(d.recent), I2C_REPROBE_MS / 1000);
   return true;
 }
 
@@ -27,6 +29,28 @@ bool i2cProbe(uint8_t addr) {
   // ACK only), the same transaction scanI2CBus() uses.
   Wire.beginTransmission(addr);
   return Wire.endTransmission() == 0;
+}
+
+bool i2cReadReg(uint8_t addr, uint8_t reg, uint8_t* val) {
+  // The same write-then-read every Adafruit driver uses. endTransmission(false)
+  // only queues the register byte on this core; the combined transaction runs
+  // in requestFrom(), which returns 0 bytes when any part of it is NACKed.
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  Wire.endTransmission(false);
+  if (Wire.requestFrom((uint8_t)addr, (uint8_t)1) != 1) return false;
+  *val = Wire.read();
+  return true;
+}
+
+static bool checkAt(uint8_t addr, const I2CDevice& d) {
+  if (d.idReg == I2C_NO_REG) return i2cProbe(addr);
+  uint8_t v;
+  return i2cReadReg(addr, d.idReg, &v) && v == d.idVal;
+}
+
+bool i2cCheck(const I2CDevice& d) {
+  return checkAt(d.addr, d);
 }
 
 // A slave left mid-transaction by a glitch can hold SDA low until it sees
@@ -62,13 +86,20 @@ bool i2cReprobeDue(I2CDevice& d) {
   unsigned long now = millis();
   if (now - d.lastProbe < I2C_REPROBE_MS) return false;
   d.lastProbe = now;
-  if (!i2cProbe(d.addr)) {
+  if (!checkAt(d.addr, d)) {
     i2cBusRecover();
-    if (!i2cProbe(d.addr)) return false;
+    if (!checkAt(d.addr, d)) {
+      if (!d.altAddr || !checkAt(d.altAddr, d)) return false;
+      logPrintf("[I2C] %s answers at 0x%02X now, not 0x%02X\n", d.name, d.altAddr, d.addr);
+      uint8_t was = d.addr;
+      d.addr = d.altAddr;
+      d.altAddr = was;
+    }
   }
-  logPrintf("[I2C] %s (0x%02X) answers again after %lu s (drop #%lu, %lu failed reads so far); re-initialising\n",
+  logPrintf("[I2C] %s (0x%02X) answers again after %lu s (drop #%lu, %lu failed checks so far); re-initialising\n",
             d.name, d.addr, (now - d.droppedAt) / 1000, (unsigned long)d.drops, (unsigned long)d.totalFails);
   d.fails = 0;
+  d.recent = 0;                              // a fresh window, or the old one drops it on its first miss
   return true;
 }
 
