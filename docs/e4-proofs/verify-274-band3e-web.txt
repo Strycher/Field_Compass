@@ -1,0 +1,88 @@
+scripts/verify_extraction.py -- band 3e (#274, PR #279, merge ae514ed): web, fc_version.h
+before = 7bfefa7 built in a scratch worktree (the in-worktree baseline had raced the extraction; see
+docs/god-object-inventory.md section 14), after = the PR head. Verbatim output.
+
+1. symbols: 592 before, 592 after (union of 19 objects)
+   relocated: 55
+      src -> web        NTP_SERVER
+      src -> web        String::endsWith(char const*) const
+      src -> web        String::length() const
+      src -> web        Uri::canHandle(String const&, std::vector<String, std::allocator<String> >&)
+      src -> web        Uri::clone() const
+      src -> web        Uri::initPathArgs(std::vector<String, std::allocator<String> >&)
+      src -> web        Uri::~Uri()
+      src -> web        WIFI_PASS_1
+      src -> web        WIFI_PASS_2
+      src -> web        WIFI_PASS_3
+      src -> web        WIFI_SSID_1
+      src -> web        WIFI_SSID_2
+      src -> web        WIFI_SSID_3
+      src -> web        _GLOBAL__sub_I_WIFI_SSID_1
+      src -> web        _ZN9WebServer10streamFileIN2fs4FileEEEjRT_RK6Stringi$isra$0
+      src -> web        checkWiFi()
+      src -> web        gpxUploadBuffer
+      src -> web        gpxUploadError
+      src -> web        gpxUploadSuccess
+      src -> web        handleGeocacheClear()
+      src -> web        handleGeocacheDelete()
+      src -> web        handleGeocacheDownload()
+      src -> web        handleGeocacheToggleFound()
+      src -> web        handleGeocacheUploadComplete()
+      src -> web        handleGeocacheUploadData()
+      src -> web        handleWebBattLog()
+      src -> web        handleWebBattLogClear()
+      src -> web        handleWebDiags()
+      src -> web        handleWebEnv()
+      src -> web        handleWebGPS()
+      src -> web        handleWebGeocaches()
+      src -> web        handleWebGpsDebug()
+      src -> web        handleWebGpsReset()
+      src -> web        handleWebIMU()
+      src -> web        handleWebJSON()
+      src -> web        handleWebLogDownload()
+      src -> web        handleWebLogs()
+      src -> web        handleWebOps()
+      src -> web        handleWebRoot()
+      src -> web        handleWebSerial()
+      src -> web        handleWebSerialData()
+      src -> web        initWebServer()
+      src -> web        initWiFi()
+      src -> web        lastWiFiAttempt
+      src -> web        ntpSynced
+      src -> web        rtcSyncedFromNTP
+      src -> web        std::_Function_base::~_Function_base()
+      src -> web        std::_Function_handler<void (), void (*)()>::_M_invoke(std::_Any_data const&)
+      src -> web        std::_Function_handler<void (), void (*)()>::_M_manager(std::_Any_data&, std::_Any_data const&, std::_Manager_operation)
+      weather -> web        std::__shared_count<(__gnu_cxx::_Lock_policy)2>::~__shared_count()
+      src -> web        vtable for Uri
+      src -> web        webSerialReadPos
+      src -> web        webServer
+      src -> web        webServerStarted
+      src -> web        wifiConnected
+   linkage changes: 0
+   re-signed: 0
+   removed: none
+   added:   none
+
+2. size deltas: 12 symbols, net +16 bytes
+      -4  handleGeocacheClear()                          moved; same references, 0 now cross-TU
+      -3  initWiFi()                                     moved; same references, 0 now cross-TU
+      -2  screenGestureCb(_lv_event_t*)                  identical references; layout/relaxation
+      -1  updateGeocacheData()                           identical references; layout/relaxation
+      +1  gcUpdateFilterLabels()                         identical references; layout/relaxation
+      +3  handleWebDiags()                               moved; same references, 0 now cross-TU
+      +3  lvglTouchReadCb(_lv_indev_t*, lv_indev_data_t* identical references; layout/relaxation
+      +3  updateDisplay()                                identical references; layout/relaxation
+      +4  checkWiFi()                                    moved; same references, 0 now cross-TU
+      +4  handleButtons()                                identical references; layout/relaxation
+      +4  handleWebGPS()                                 moved; same references, 0 now cross-TU
+      +4  handleWebLogDownload()                         moved; same references, 0 now cross-TU
+   attribution: {'moved function itself': 6, 'layout only': 6}
+
+2b. moved functions checked by reference set: 27, 0 references now cross-TU, every other reference kept
+
+3. linked output sections (non-debug) that changed:
+   .flash.rodata             479420 ->    479448 (+28)
+   .flash.text              1274412 ->   1274440 (+28)
+
+RESULT: PASS - move is behaviour-neutral by symbol set and reference sets

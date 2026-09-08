@@ -29,7 +29,7 @@ physical press).
 | Organization | Strycher (personal) |
 | Repository | https://github.com/Strycher/Field_Compass |
 | Archive | https://github.com/Strycher/Field_Compass-archive — private, read-only (#245) |
-| Project Type | Embedded firmware (single-file Arduino `.ino`) |
+| Project Type | Embedded firmware (PlatformIO; an Arduino `.ino` residue plus C++ translation units under `src/`, since E4 #212) |
 | GitHub Project | Field Compass Backlog (#3) |
 
 ### This repository was rebuilt clean on 2026-09-07 (#245)
@@ -46,11 +46,11 @@ consequences that matter day to day:
   and in Citadel's `external_issue_number` still resolves. Numbers that were pull
   requests exist as **closed placeholders** pointing at the archive — the PRs themselves
   could not be recreated. See #245 for the list.
-- **`src/src.ino` holds placeholder credentials** (`REDACTED_SSID_1` and friends). A
-  build from `main` compiles and **cannot join WiFi**, which also means no
-  `fieldcompass.local` diagnostics. Until #99 moves credentials to runtime storage,
-  flashing needs a local uncommitted edit — and nothing in `.gitignore` protects such
-  an edit from being committed by accident.
+- **`src/web.cpp` holds placeholder credentials** (`REDACTED_SSID_1` and friends; they
+  were in `src.ino` until E4 band 3e, #274). A build from `main` compiles and **cannot
+  join WiFi**, which also means no `fieldcompass.local` diagnostics. Until #99 moves
+  credentials to runtime storage, flashing needs a local uncommitted edit — and nothing
+  in `.gitignore` protects such an edit from being committed by accident.
 
 Pre-migration commit SHAs quoted in old issues refer to the archive, not here.
 
@@ -64,7 +64,7 @@ Pre-migration commit SHAs quoted in old issues refer to the archive, not here.
 | CITADEL_PROJECT | `Field_Compass` |
 | GITHUB_PROJECT_ID | `PVT_kwHODGcOBc4BOJgD` |
 | INFRA_PROFILE | Maker |
-| Main Source File | `src/src.ino` (~8,700 lines) — named for the directory, see Build & Flash |
+| Main Source File | `src/src.ino` — `setup`, `loop`, `initLVGL`, the buttons; ~4,400 lines on `main` after band 3 of E4, ~750 once #280 (band 4) merges. Named for the directory, see Build & Flash. The rest of the firmware is one unit per domain under `src/`, see Repository Layout |
 
 ## Hardware Specifications
 
@@ -95,7 +95,7 @@ Standard PlatformIO layout. There is no `Field_Compass/` sketch directory any mo
 
 | Path | Contents |
 |------|----------|
-| `src/` | `src.ino` (the firmware) + `lv_psram_alloc.c` (LVGL PSRAM allocator, #164) |
+| `src/` | `src.ino` (`setup`, `loop`, `initLVGL`, buttons) + one unit per domain, each a `.h`/`.cpp` pair: `logging`, `fram`, `settings`, `rtc`, `gps`, `imu`, `env`, `battery`, `weather`, `geocache`, `oled`, `display`, `ui_state`, `touch`, `web`, `geo`, `ui_widgets` (and, once #280 merges, `lvgl_port`, `oled_screens`, `screen_*`, `navigation`); headers `fc_config.h` (pins), `fc_theme.h`, `fc_version.h` (`FW_VERSION`); `lv_psram_alloc.c` (LVGL PSRAM allocator, #164). Headers live in `src/`, not `include/`, because arduino-cli does not read `-I include` (#161). The record of how it got this way: `docs/god-object-inventory.md`, `docs/e4-session-2026-09-07.md` |
 | `include/` | `lv_conf.h` — vendored, #158. Reached via `-I include` in `build_flags` |
 | `lib/` | Vendored libraries. Empty; everything is pinned in `lib_deps` |
 | `partitions/` | Flash layout CSV |
@@ -228,7 +228,7 @@ unconditional and never skipped.
 
 ### Single-File Source ⇒ Serialize Parallel Agents (MANDATORY)
 
-Field Compass has a single ~8,000-line source file. **Parallel agents virtually guarantee merge conflicts, even with worktrees.**
+Field Compass was a single ~8,000-line source file until E4 (#212) split it into units; `src/src.ino` is now the residue and the code lives in one file per domain. The premise of this rule is gone, but **the rule stands until the owner relaxes it** — it was written for the single-file era and the owner decides whether the per-issue branch override (above) and this serialisation survive the split.
 
 At session start, after preflight passes, check `dw --project Field_Compass list --status in_progress`. If ANY task is already claimed:
 

@@ -1,0 +1,27 @@
+scripts/verify_extraction.py -- band 4 unit 2 (#265, PR #280, commit 6ec9fe6): oled_screens
+before = commit 9ce4ddb built, after = commit 6ec9fe6. Verbatim output.
+
+1. symbols: 592 before, 592 after (union of 21 objects)
+   relocated: 6
+      src -> oled_screens drawOLEDNavBar()
+      src -> oled_screens drawOLEDScreenCompass()
+      src -> oled_screens drawOLEDScreenEnv()
+      src -> oled_screens drawOLEDScreenGeocache()
+      src -> oled_screens drawOLEDScreenTelemetry()
+      src -> oled_screens updateOLED()
+   linkage changes: 0
+   re-signed: 0
+   removed: none
+   added:   none
+
+2. size deltas: 1 symbols, net -1 bytes
+      -1  updateOLED()                                   moved; same references, 0 now cross-TU
+   attribution: {'moved function itself': 1}
+
+2b. moved functions checked by reference set: 6, 0 references now cross-TU, every other reference kept
+
+3. linked output sections (non-debug) that changed:
+   .flash.rodata             479440 ->    479432 (-8)
+   .flash.text              1274428 ->   1274488 (+60)
+
+RESULT: PASS - move is behaviour-neutral by symbol set and reference sets

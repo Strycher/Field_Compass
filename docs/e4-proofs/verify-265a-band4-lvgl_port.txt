@@ -1,0 +1,65 @@
+scripts/verify_extraction.py -- band 4 unit 1 (#265, PR #280, commit 9ce4ddb): lvgl_port
+before = ae514ed built in the task worktree before any move, after = commit 9ce4ddb. Verbatim output.
+
+1. symbols: 592 before, 592 after (union of 20 objects)
+   relocated: 27
+      src -> lvgl_port  fcStyleBody
+      src -> lvgl_port  fcStyleError
+      src -> lvgl_port  fcStyleHeader
+      src -> lvgl_port  fcStyleHero
+      src -> lvgl_port  fcStyleLabel
+      src -> lvgl_port  fcStyleValue
+      src -> lvgl_port  fcStyleWarn
+      src -> lvgl_port  initFCTheme()
+      src -> lvgl_port  lastTouchX
+      src -> lvgl_port  lastTouchY
+      src -> lvgl_port  lvglAvailable
+      src -> lvgl_port  lvglBuf1
+      src -> lvgl_port  lvglBuf2
+      src -> lvgl_port  lvglDisplay
+      src -> lvgl_port  lvglEncoderIndev
+      src -> lvgl_port  lvglEncoderReadCb(_lv_indev_t*, lv_indev_data_t*)
+      src -> lvgl_port  lvglEncoderReadCb(_lv_indev_t*, lv_indev_data_t*)::prevA
+      src -> lvgl_port  lvglEncoderReadCb(_lv_indev_t*, lv_indev_data_t*)::prevB
+      src -> lvgl_port  lvglFlushCb(_lv_display_t*, lv_area_t const*, unsigned char*)
+      src -> lvgl_port  lvglGroup
+      src -> lvgl_port  lvglLogCb(signed char, char const*)
+      src -> lvgl_port  lvglTickCb()
+      src -> lvgl_port  lvglTouchIndev
+      src -> lvgl_port  lvglTouchReadCb(_lv_indev_t*, lv_indev_data_t*)
+      src -> lvgl_port  touchPressCount
+      src -> lvgl_port  touchReleaseCount
+      src -> lvgl_port  touchWasPressed
+   linkage changes: 13
+      lastTouchX                     d -> D
+      lastTouchY                     d -> D
+      lvglAvailable                  b -> B
+      lvglBuf1                       b -> B
+      lvglBuf2                       b -> B
+      lvglDisplay                    b -> B
+      lvglEncoderIndev               b -> B
+      lvglGroup                      b -> B
+      lvglTickCb()                   t -> T
+      lvglTouchIndev                 b -> B
+      touchPressCount                b -> B
+      touchReleaseCount              b -> B
+      touchWasPressed                b -> B
+   re-signed: 0
+   removed: none
+   added:   none
+
+2. size deltas: 5 symbols, net +2 bytes
+      -4  initSD()                                       identical references; layout/relaxation
+      -1  handleGeocacheButtons(bool, bool)              identical references; layout/relaxation
+      +1  updateGeocacheData()                           identical references; layout/relaxation
+      +2  screenGestureCb(_lv_event_t*)                  identical references; layout/relaxation
+      +4  updateCompassData()                            identical references; layout/relaxation
+   attribution: {'layout only': 5}
+
+2b. moved functions checked by reference set: 5, 0 references now cross-TU, every other reference kept
+
+3. linked output sections (non-debug) that changed:
+   .flash.rodata             479448 ->    479440 (-8)
+   .flash.text              1274440 ->   1274428 (-12)
+
+RESULT: PASS - move is behaviour-neutral by symbol set and reference sets

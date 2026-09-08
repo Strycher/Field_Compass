@@ -1,0 +1,87 @@
+scripts/verify_extraction.py -- band 3c (#272, PR #277, merge 0053f77): weather, geocache
+before = e6465bb built in the task worktree before any move, after = the PR head. Verbatim output.
+First band checked with the moved-function reference-set rule (section 2b).
+
+1. symbols: 589 before, 589 after (union of 14 objects)
+   relocated: 46
+      src -> geocache   String::replace(char const*, char const*)
+      src -> geocache   cacheList
+      src -> geocache   cacheListCount
+      src -> geocache   decodeROT13(char*)
+      src -> geocache   extractXMLField(String const&, char const*, char const*, char*, unsigned int)
+      src -> geocache   extractXMLFloat(String const&, char const*, char const*, float)
+      src -> geocache   gcApplyFilters()
+      src -> geocache   gcCachedDist
+      src -> geocache   gcFilterDMax
+      src -> geocache   gcFilterDMin
+      src -> geocache   gcFilterFoundMode
+      src -> geocache   gcFilterMaxDistKm
+      src -> geocache   gcFilterTMax
+      src -> geocache   gcFilterTMin
+      src -> geocache   gcFilteredCount
+      src -> geocache   gcFilteredIndices
+      src -> geocache   gcLastSortTime
+      src -> geocache   gcSortMode
+      src -> geocache   gcUpdateDistances()
+      src -> geocache   listHighlightIndex
+      src -> geocache   loadCacheFoundStatus()
+      src -> geocache   loadGeocachesFromSD()
+      src -> geocache   parseGPXFromString(String const&, bool)
+      src -> geocache   saveCacheFoundStatus()
+      src -> weather    addToWeatherHistory(WeatherReading)
+      src -> weather    calculateForecast()
+      src -> weather    calculateWeatherTrend()
+      src -> weather    framFlushToSD()
+      src -> weather    getCurrentTimestamp()
+      src -> weather    getTrendArrow()
+      src -> weather    getWeatherFilename(char*, int)
+      src -> weather    getWeatherReading(int)
+      src -> weather    lastFramFlush
+      src -> weather    lastWeatherLog
+      src -> weather    lastWeatherLogCheck
+      src -> weather    loadWeatherHistory()
+      src -> weather    logWeatherReading()
+      src -> weather    logWeatherToFRAM(WeatherReading&)
+      src -> weather    std::__shared_count<(__gnu_cxx::_Lock_policy)2>::~__shared_count()
+      src -> weather    updateWeatherLogStats()
+      src -> weather    weatherHistory
+      src -> weather    weatherHistoryCount
+      src -> weather    weatherHistoryHead
+      src -> weather    weatherLogEntryCount
+      src -> weather    weatherLogFileCount
+      src -> weather    weatherTrend
+   linkage changes: 2
+      weatherLogEntryCount           b -> B
+      weatherLogFileCount            b -> B
+   re-signed: 0
+   removed: none
+   added:   none
+
+2. size deltas: 18 symbols, net +43 bytes
+      -4  handleButtons()                                calls moved: ['framFlushToSD()']
+      -4  handleWebLogDownload()                         identical references; layout/relaxation
+      -4  initSD()                                       identical references; layout/relaxation
+      -4  updateSettingsData()                           touches published: ['weatherHistoryCount', 'weatherLogEntryCount', 'weatherLogFileCount']
+      -1  gcUpdateFilterLabels()                         touches published: ['gcFilterDMax', 'gcFilterDMin', 'gcFilterFoundMode', 'gcFilterMaxDistKm']
+      -1  handleWebGpsReset()                            identical references; layout/relaxation
+      -1  handleWebIMU()                                 identical references; layout/relaxation
+      -1  updateGeocacheData()                           calls moved: ['gcApplyFilters()']
+      -1  updateOLED()                                   identical references; layout/relaxation
+      +1  drawOLEDScreenEnv()                            calls moved: ['getTrendArrow()']
+      +1  handleWebBattLog()                             identical references; layout/relaxation
+      +2  decodeROT13(char*)                             moved; same references, 0 now cross-TU
+      +2  handleWebJSON()                                identical references; layout/relaxation
+      +4  handleGeocacheUploadData()                     calls moved: ['gcApplyFilters()', 'loadCacheFoundStatus()', 'parseGPXFromString(String const&, bool)']
+      +4  handleWebDiags()                               touches published: ['weatherHistoryCount', 'weatherLogEntryCount', 'weatherLogFileCount']
+      +4  handleWebGPS()                                 identical references; layout/relaxation
+     +16  loadCacheFoundStatus()                         moved; same references, 0 now cross-TU
+     +30  loadGeocachesFromSD()                          moved; same references, 0 now cross-TU
+   attribution: {'calls a moved function': 4, 'layout only': 8, 'touches published state': 3, 'moved function itself': 3}
+
+2b. moved functions checked by reference set: 21, 0 references now cross-TU, every other reference kept
+
+3. linked output sections (non-debug) that changed:
+   .flash.rodata             479332 ->    479400 (+68)
+   .flash.text              1274272 ->   1274388 (+116)
+
+RESULT: PASS - move is behaviour-neutral by symbol set and reference sets

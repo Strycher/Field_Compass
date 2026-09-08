@@ -1,0 +1,86 @@
+scripts/verify_extraction.py -- band 3a (#270, PR #275, merge 43e569a): fram, settings, rtc
+before = 4cc1f21 built in the task worktree before any move, after = the PR head. Verbatim output.
+
+1. symbols: 584 before, 585 after (union of 8 objects)
+   relocated: 38
+      src -> fram       fram
+      src -> fram       framAvailable
+      src -> fram       framFormat()
+      src -> fram       framHeader
+      src -> fram       framReadHeader()
+      src -> fram       framWriteHeader()
+      src -> fram       initFRAM()
+      src -> rtc        initRTC()
+      src -> rtc        rtc
+      src -> rtc        rtcAvailable
+      src -> rtc        syncRTCFromSystemTime(char const*)
+      src -> settings   OLED_TIMEOUT_COUNT
+      src -> settings   TFT_TIMEOUT_COUNT
+      src -> settings   applyTimezone()
+      src -> settings   factoryReset()
+      src -> settings   findTimeoutIndex(unsigned long const*, int, unsigned long)
+      src -> settings   formatTimeStr(char*, int, int, int, bool)
+      src -> settings   loadSettings()
+      src -> settings   loadSettingsFromFRAM()
+      src -> settings   mktimeUTC(tm*)
+      src -> settings   oledSleepMs
+      src -> settings   oledTimeoutLabels
+      src -> settings   oledTimeoutPresets
+      src -> settings   posixTZ
+      src -> settings   saveSettings()
+      src -> settings   saveSettingsToFRAM()
+      src -> settings   settingsLoadedFromSD
+      src -> settings   std::__shared_count<(__gnu_cxx::_Lock_policy)2>::~__shared_count()
+      src -> settings   tftBrightness
+      src -> settings   tftSleepMs
+      src -> settings   tftTimeoutLabels
+      src -> settings   tftTimeoutPresets
+      src -> settings   tzDisplayName
+      src -> settings   tzPresets
+      src -> settings   tzSelectedIndex
+      src -> settings   use12Hour
+      src -> settings   useFahrenheit
+      src -> settings   useMetricUnits
+   linkage changes: 2
+      settingsLoadedFromSD           b -> B
+      tzPresets                      r -> R
+   re-signed: 0
+   removed: none
+   added:   ['_GLOBAL__sub_I_fram']
+      tolerated: _GLOBAL__sub_I_fram (static initialiser of the new TU)
+
+2. size deltas: 26 symbols, net +22 bytes
+     -34  _GLOBAL__sub_I_WIFI_SSID_1                     identical references; layout/relaxation
+      -4  checkWiFi()                                    identical references; layout/relaxation
+      -4  handleGeocacheUploadComplete()                 identical references; layout/relaxation
+      -4  handleWebLogDownload()                         identical references; layout/relaxation
+      -4  loadSettings()                                 moved function; relaxation in the new TU
+      -2  findTimeoutIndex(unsigned long const*, int, un moved function; relaxation in the new TU
+      -1  drawOLEDScreenTelemetry()                      touches published: ['useMetricUnits']
+      -1  extractXMLField(String const&, char const*, ch identical references; layout/relaxation
+      -1  getTrendArrow()                                identical references; layout/relaxation
+      -1  handleGeocacheButtons(bool, bool)              identical references; layout/relaxation
+      +1  drawOLEDScreenEnv()                            touches published: ['useFahrenheit']
+      +1  loadWeatherHistory()                           identical references; layout/relaxation
+      +1  updateCompassData()                            calls moved: ['formatTimeStr(char*, int, int, int, bool)']
+      +2  loadGeocachesFromSD()                          identical references; layout/relaxation
+      +3  updateDisplay()                                identical references; layout/relaxation
+      +4  saveBsecState()                                identical references; layout/relaxation
+      +4  updateGeocacheData()                           touches published: ['useMetricUnits']
+      +4  updateSettingsData()                           calls moved: ['formatTimeStr(char*, int, int, int, bool)']
+      +5  dispOledDropdownCb(_lv_event_t*)               calls moved: ['findTimeoutIndex(unsigned long const*, int, unsigned long)']
+      +5  dispTftDropdownCb(_lv_event_t*)                calls moved: ['findTimeoutIndex(unsigned long const*, int, unsigned long)']
+      +8  buildSettingsScreen()                          calls moved: ['findTimeoutIndex(unsigned long const*, int, unsigned long)']
+      +8  dispBackCb(_lv_event_t*)                       calls moved: ['findTimeoutIndex(unsigned long const*, int, unsigned long)', 'loadSettings()']
+      +8  dispOledSelectedCb(_lv_event_t*)               touches published: ['oledSleepMs', 'oledTimeoutLabels']
+      +8  dispTftSelectedCb(_lv_event_t*)                touches published: ['tftSleepMs', 'tftTimeoutLabels']
+      +8  handleWebOps()                                 calls moved: ['formatTimeStr(char*, int, int, int, bool)']
+      +8  resetBtnCb(_lv_event_t*)                       calls moved: ['factoryReset()', 'findTimeoutIndex(unsigned long const*, int, unsigned long)']
+   attribution: {'layout only': 11, 'moved function itself': 2, 'touches published state': 5, 'calls a moved function': 8}
+
+3. linked output sections (non-debug) that changed:
+   .dram0.bss                 79312 ->     79328 (+16)
+   .flash.rodata             479180 ->    479236 (+56)
+   .flash.text              1274044 ->   1274108 (+64)
+
+RESULT: PASS - move is behaviour-neutral by symbol set and reference sets
