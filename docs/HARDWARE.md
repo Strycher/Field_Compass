@@ -369,6 +369,15 @@ Source for all of these: UM's FeatherS3D pinout card,
   be powered at all times belongs on `3V3.1` (position 2) or a STEMMA QT 3V3 pin.
 - **MAX17048 present** on I2C1 at the usual address, INT on IO2. Ambient light sensor on
   IO4, blue LED IO13, RGB LED IO40, VBUS detect IO34. IO0 and IO3 are strapping pins.
+- **Power paths, from the FeatherS3D schematic rev P4** (`series_d/schematics/
+  schematic-feathers3d-p1.pdf`, read 2026-09-08): the `5V` header pin is the net `USB`,
+  which is USB-C VBUS through Schottky D4 (MSK4005) and nothing else. Battery goes VBAT →
+  power-path FET T2 (CJ3139K) → LDO1 (U1, NCP167BMX330, 3.3 V); LDO2 is U3 (NCP167) →
+  `3V3_2`, enabled by IO39. Charger is an LP4055A. **There is no boost converter**: on
+  battery alone the `5V` pin is 0 V, so a 5 V load (the display's preferred feed, above)
+  needs an external boost from `BAT`. IO34 "5V SENSE" reads the USB net through a
+  2 kΩ / 3.3 kΩ divider. STEMMA1 (LDO1) = IO9 SCL / IO8 SDA; STEMMA2 (LDO2) = IO15 SCL /
+  IO16 SDA, as the wiring page says.
 - **First run results** (image 8af7ce5): TFT init and LVGL completed and the backlight lit,
   but the panel stayed blank, the I2C1 scan found zero devices (the stacked OLED wing
   included), and the first SD mount never returned. The SD hang was two SPI drivers on one
