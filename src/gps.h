@@ -45,6 +45,6 @@ extern bool rtcSyncedFromGPS;
 
 void initGPS();
 void readGPS();
-int nmeaParse(char* sentence, char* fields[], int maxFields);
+int nmeaParse(char* sentence, const char* fields[], int maxFields);
 void parseNMEA(char* sentence);
 float getGpsAccuracyMeters();
