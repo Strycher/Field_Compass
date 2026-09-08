@@ -1,0 +1,82 @@
+scripts/verify_extraction.py -- band 2 (#263, PR #269, merge 4cc1f21): logging
+before = e8a404d rebuilt (band-1 result), after = the PR head. Verbatim output.
+
+1. symbols: 572 before, 573 after (union of 4 objects)
+   relocated: 31
+      src -> logging    fs::File::File(std::shared_ptr<fs::FileImpl>)
+      src -> logging    fs::File::~File()
+      src -> logging    lastLogFlush
+      src -> logging    lastLogRotation
+      src -> logging    logPrint(char const*)
+      src -> logging    logPrintf(char const*, ...)
+      src -> logging    logPrintln(char const*)
+      src -> logging    logTimestamp()
+      src -> logging    logTimestamp()::tsBuf
+      src -> logging    recordSDError(SDErrorType)
+      src -> logging    recordSDSuccess()
+      src -> logging    sdAvailable
+      src -> logging    sdHealth
+      src -> logging    sdOpenSafe(char const*, char const*, bool)
+      src -> logging    serialLogActive
+      src -> logging    serialLogAppend(char const*)
+      src -> logging    serialLogBuf
+      src -> logging    serialLogBufPos
+      src -> logging    serialLogFile
+      src -> logging    serialLogFilename
+      src -> logging    serialLogFlush()
+      src -> logging    serialLogRotate()
+      src -> logging    serialRing
+      src -> logging    serialRingAppend(char const*)
+      src -> logging    serialRingHead
+      src -> logging    serialRingPeek()
+      src -> logging    serialRingRead()
+      src -> logging    serialRingTail
+      src -> logging    shouldAttemptReInit()
+      src -> logging    std::__shared_count<(__gnu_cxx::_Lock_policy)2>::~__shared_count()
+      src -> logging    trySDReInit()
+   linkage changes: 8
+      lastLogFlush                   b -> B
+      lastLogRotation                b -> B
+      sdHealth                       b -> B
+      serialLogActive                b -> B
+      serialLogFilename              b -> B
+      serialRing                     b -> B
+      serialRingHead                 b -> B
+      serialRingTail                 b -> B
+   re-signed: 1
+      initSerialLog() -> initSerialLog(bool)
+   removed: none
+   added:   ['_GLOBAL__sub_I_serialRing']
+      tolerated: _GLOBAL__sub_I_serialRing (static initialiser of the new TU)
+
+2. size deltas: 23 symbols, net -27 bytes
+     -34  _GLOBAL__sub_I_WIFI_SSID_1                     identical references; layout/relaxation
+      -4  handleWebOps()                                 identical references; layout/relaxation
+      -4  initTouch()                                    calls moved: ['logPrint(char const*)', 'logPrintln(char const*)']
+      -4  loadCacheFoundStatus()                         calls moved: ['logPrintf(char const*, ...)', 'logPrintln(char const*)', 'recordSDSuccess()', 'sdOpenSafe(char const*, char const*, bool)']
+      -4  saveBsecState()                                calls moved: ['logPrintf(char const*, ...)', 'logPrintln(char const*)', 'recordSDError(SDErrorType)', 'sdOpenSafe(char const*, char const*, bool)']
+      -4  updateGeocacheData()                           identical references; layout/relaxation
+      -4  updateSettingsData()                           calls moved: ['logPrintf(char const*, ...)']
+      -3  handleWebGPS()                                 identical references; layout/relaxation
+      -3  updateDisplay()                                identical references; layout/relaxation
+      -2  loadGeocachesFromSD()                          calls moved: ['logPrintf(char const*, ...)', 'logPrintln(char const*)', 'recordSDSuccess()', 'sdOpenSafe(char const*, char const*, bool)']
+      -1  drawOLEDScreenEnv()                            identical references; layout/relaxation
+      -1  loadWeatherHistory()                           calls moved: ['logPrint(char const*)', 'logPrintf(char const*, ...)', 'recordSDSuccess()', 'sdOpenSafe(char const*, char const*, bool)']
+      +1  serialRingAppend(char const*)                  moved function; relaxation in the new TU
+      +2  parseGPXFromString(String const&, bool)        calls moved: ['logPrintf(char const*, ...)']
+      +3  initWiFi()                                     calls moved: ['logPrint(char const*)', 'logPrintf(char const*, ...)', 'logPrintln(char const*)']
+      +3  updateCompassData()                            identical references; layout/relaxation
+      +4  TFT_eSPI::~TFT_eSPI()                          not an authored function; layout
+      +4  TFT_eSPI::~TFT_eSPI()                          not an authored function; layout
+      +4  handleButtons()                                touches published: ['sdAvailable']
+      +4  handleWebDiags()                               touches published: ['sdAvailable']
+      +4  initBME688()                                   calls moved: ['logPrint(char const*)', 'logPrintf(char const*, ...)', 'logPrintln(char const*)']
+      +4  loadBsecState()                                calls moved: ['logPrintf(char const*, ...)', 'logPrintln(char const*)', 'recordSDError(SDErrorType)', 'sdOpenSafe(char const*, char const*, bool)']
+      +8  setup()                                        calls re-signed ['initSerialLog']; argument now ['rtcAvailable']
+   attribution: {'layout only': 7, 'calls a moved function': 10, 'moved function itself': 1, 'library instantiation': 2, 'touches published state': 2, 'caller of a re-signed function': 1}
+
+3. linked output sections (non-debug) that changed:
+   .flash.rodata             479148 ->    479180 (+32)
+   .flash.text              1273996 ->   1274044 (+48)
+
+RESULT: PASS - move is behaviour-neutral by symbol set and reference sets

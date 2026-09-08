@@ -1,0 +1,253 @@
+scripts/verify_extraction.py -- band 4 unit 3 (#265, PR #280, commit b6f2261): the five LVGL screens and navigation
+before = commit 6ec9fe6 built, after = commit b6f2261. Verbatim output. The one tolerated addition is a
+constant-propagation clone GCC made of an LVGL inline for a single caller in the smaller telemetry TU.
+
+1. symbols: 592 before, 593 after (union of 27 objects)
+   relocated: 213
+      src -> navigation fcHeaderCreate(_lv_obj_t*, char const*)
+      src -> navigation fcListPickerActiveOverlay
+      src -> navigation fcListPickerItemCb(_lv_event_t*)
+      src -> navigation fcListPickerOpen(char const*, char const**, int, int, _lv_obj_t*)
+      src -> navigation gearIconClickCb(_lv_event_t*)
+      src -> navigation mainScreens
+      src -> navigation navigateFromSettings()
+      src -> navigation navigateScreen(int)
+      src -> navigation navigateToSettings()
+      src -> navigation screenGestureCb(_lv_event_t*)
+      src -> navigation updateDisplay()
+      src -> navigation updateDisplay()::lastUpdate
+      src -> navigation updateSDIndicators()
+      src -> screen_compass buildCompassScreen()
+      src -> screen_compass compassHeader
+      src -> screen_compass compassLastHeading
+      src -> screen_compass compassLblAlt
+      src -> screen_compass compassLblE
+      src -> screen_compass compassLblFcst
+      src -> screen_compass compassLblGps
+      src -> screen_compass compassLblHdg
+      src -> screen_compass compassLblLat
+      src -> screen_compass compassLblLon
+      src -> screen_compass compassLblN
+      src -> screen_compass compassLblS
+      src -> screen_compass compassLblSpd
+      src -> screen_compass compassLblTemp
+      src -> screen_compass compassLblTime
+      src -> screen_compass compassLblW
+      src -> screen_compass compassNavBar
+      src -> screen_compass compassRoseDrawCb(_lv_event_t*)
+      src -> screen_compass compassRoseObj
+      src -> screen_compass compassScr
+      src -> screen_compass updateCompassData()
+      src -> screen_env buildEnvScreen()
+      src -> screen_env buildEnvScreen()::{lambda(_lv_obj_t**, _lv_obj_t**, char const*, int)#1}::operator()(_lv_obj_t**, _lv_obj_t**, char const*, int) const
+      src -> screen_env envHeader
+      src -> screen_env envLblCo2Label
+      src -> screen_env envLblCo2Value
+      src -> screen_env envLblFcstLabel
+      src -> screen_env envLblFcstValue
+      src -> screen_env envLblHumidLabel
+      src -> screen_env envLblHumidValue
+      src -> screen_env envLblIaqLabel
+      src -> screen_env envLblIaqValue
+      src -> screen_env envLblNoSensors
+      src -> screen_env envLblPressLabel
+      src -> screen_env envLblPressValue
+      src -> screen_env envLblTempLabel
+      src -> screen_env envLblTempValue
+      src -> screen_env envNavBar
+      src -> screen_env envScr
+      src -> screen_env updateEnvData()
+      src -> screen_geocache buildGeocacheScreen()
+      src -> screen_geocache buildGeocacheScreen()::pulseAnim
+      src -> screen_geocache buildGeocacheScreen()::{lambda(void*, long)#1}::_FUN(void*, long)
+      src -> screen_geocache gcDPresetIdx
+      src -> screen_geocache gcDTPresets
+      src -> screen_geocache gcDetLblCoords
+      src -> screen_geocache gcDetLblCount
+      src -> screen_geocache gcDetLblDT
+      src -> screen_geocache gcDetLblDist
+      src -> screen_geocache gcDetLblFound
+      src -> screen_geocache gcDetLblGC
+      src -> screen_geocache gcDetLblHint
+      src -> screen_geocache gcDetLblHintLabel
+      src -> screen_geocache gcDetLblHints
+      src -> screen_geocache gcDetLblName
+      src -> screen_geocache gcDetNavBar
+      src -> screen_geocache gcDistPresets
+      src -> screen_geocache gcFiltLblActive
+      src -> screen_geocache gcFiltLblDRange
+      src -> screen_geocache gcFiltLblDist
+      src -> screen_geocache gcFiltLblFound
+      src -> screen_geocache gcFiltLblSort
+      src -> screen_geocache gcFiltLblTRange
+      src -> screen_geocache gcFilterBackCb(_lv_event_t*)
+      src -> screen_geocache gcFilterBtnCb(_lv_event_t*)
+      src -> screen_geocache gcFilterDMinUpCb(_lv_event_t*)
+      src -> screen_geocache gcFilterDistCb(_lv_event_t*)
+      src -> screen_geocache gcFilterFoundCb(_lv_event_t*)
+      src -> screen_geocache gcFilterResetCb(_lv_event_t*)
+      src -> screen_geocache gcFilterSortCb(_lv_event_t*)
+      src -> screen_geocache gcFilterTMinUpCb(_lv_event_t*)
+      src -> screen_geocache gcListLblCount
+      src -> screen_geocache gcListLblHints
+      src -> screen_geocache gcListNavBar
+      src -> screen_geocache gcListRowLabel
+      src -> screen_geocache gcListRowTapCb(_lv_event_t*)
+      src -> screen_geocache gcListRows
+      src -> screen_geocache gcListScrollCtr
+      src -> screen_geocache gcNavGraphicObj
+      src -> screen_geocache gcNavHeader
+      src -> screen_geocache gcNavLastBearing
+      src -> screen_geocache gcNavLastHeading
+      src -> screen_geocache gcNavLastInZone
+      src -> screen_geocache gcNavLblAccuracy
+      src -> screen_geocache gcNavLblBearing
+      src -> screen_geocache gcNavLblDT
+      src -> screen_geocache gcNavLblDist
+      src -> screen_geocache gcNavLblHint
+      src -> screen_geocache gcNavLblName
+      src -> screen_geocache gcNavListBtnCb(_lv_event_t*)
+      src -> screen_geocache gcNavNavBar
+      src -> screen_geocache gcNavPulseRadius
+      src -> screen_geocache gcTPresetIdx
+      src -> screen_geocache gcUpdateFilterLabels()
+      src -> screen_geocache geocacheDetailsCtr
+      src -> screen_geocache geocacheFilterCtr
+      src -> screen_geocache geocacheListCtr
+      src -> screen_geocache geocacheNavCtr
+      src -> screen_geocache geocacheNavDrawCb(_lv_event_t*)
+      src -> screen_geocache geocacheScr
+      src -> screen_geocache handleGeocacheButtons(bool, bool)
+      src -> screen_geocache updateGeocacheData()
+      src -> screen_settings aboutBackCb(_lv_event_t*)
+      src -> screen_settings aboutValueLabels
+      src -> screen_settings buildSettingsScreen()
+      src -> screen_settings buildSettingsScreen()::aboutLabels
+      src -> screen_settings buildSettingsScreen()::diagLabels
+      src -> screen_settings calArc
+      src -> screen_settings calBackCb(_lv_event_t*)
+      src -> screen_settings calCountdownLabel
+      src -> screen_settings calIdleActBar
+      src -> screen_settings calInstructLabel
+      src -> screen_settings calMinMaxLabel
+      src -> screen_settings calOffsetsLabel
+      src -> screen_settings calStartBtn
+      src -> screen_settings calStartBtnCb(_lv_event_t*)
+      src -> screen_settings calStatusLabel
+      src -> screen_settings cfgBackCb(_lv_event_t*)
+      src -> screen_settings cfgDistToggle
+      src -> screen_settings cfgOKCb(_lv_event_t*)
+      src -> screen_settings cfgPreviewLabel
+      src -> screen_settings cfgTempToggle
+      src -> screen_settings cfgTimeToggle
+      src -> screen_settings cfgToggleCb(_lv_event_t*)
+      src -> screen_settings cfgTzDropdown
+      src -> screen_settings cfgTzDropdownCb(_lv_event_t*)
+      src -> screen_settings cfgTzDropdownCb(_lv_event_t*)::tzNames
+      src -> screen_settings cfgTzSelectedCb(_lv_event_t*)
+      src -> screen_settings diagValueLabels
+      src -> screen_settings diagsBackCb(_lv_event_t*)
+      src -> screen_settings dispBackCb(_lv_event_t*)
+      src -> screen_settings dispBrightnessChangedCb(_lv_event_t*)
+      src -> screen_settings dispBrightnessLabel
+      src -> screen_settings dispBrightnessSlider
+      src -> screen_settings dispOKCb(_lv_event_t*)
+      src -> screen_settings dispOledDropdown
+      src -> screen_settings dispOledDropdownCb(_lv_event_t*)
+      src -> screen_settings dispOledSelectedCb(_lv_event_t*)
+      src -> screen_settings dispTftDropdown
+      src -> screen_settings dispTftDropdownCb(_lv_event_t*)
+      src -> screen_settings dispTftSelectedCb(_lv_event_t*)
+      src -> screen_settings fcSettingsScrollCreate(_lv_obj_t*, int)
+      src -> screen_settings logLvglHeap(char const*)
+      src -> screen_settings lv_obj_set_style_pad_all
+      src -> screen_settings resetBackCb(_lv_event_t*)
+      src -> screen_settings resetBtnCb(_lv_event_t*)
+      src -> screen_settings settingsAboutCtr
+      src -> screen_settings settingsBackToScreenCb(_lv_event_t*)
+      src -> screen_settings settingsCalCtr
+      src -> screen_settings settingsConfigCtr
+      src -> screen_settings settingsDiagsCtr
+      src -> screen_settings settingsDisplayCtr
+      src -> screen_settings settingsMenuBtnCb(_lv_event_t*)
+      src -> screen_settings settingsMenuCtr
+      src -> screen_settings settingsMenuItems
+      src -> screen_settings settingsResetCtr
+      src -> screen_settings settingsScr
+      src -> screen_settings settingsScrollAreas
+      src -> screen_settings updateSettingsData()
+      src -> screen_settings updateSettingsData()::prevSubScreen
+      src -> screen_telemetry _ZZ20buildTelemetryScreenvENKUlPP9_lv_obj_tPKciiPK10_lv_font_t10lv_color_tE_clES1_S3_iiS6_S7_$isra$0
+      src -> screen_telemetry buildTelemetryScreen()
+      src -> screen_telemetry telDivider
+      src -> screen_telemetry telHeader
+      src -> screen_telemetry telLblAccelLabel
+      src -> screen_telemetry telLblAccelValue
+      src -> screen_telemetry telLblAltLabel
+      src -> screen_telemetry telLblAltValue
+      src -> screen_telemetry telLblGpsAcquiring
+      src -> screen_telemetry telLblGpsCheckConn
+      src -> screen_telemetry telLblGpsElapsed
+      src -> screen_telemetry telLblGpsNoData
+      src -> screen_telemetry telLblGpsSatCount
+      src -> screen_telemetry telLblGpsSection
+      src -> screen_telemetry telLblGpsSkyHint
+      src -> screen_telemetry telLblHdgLabel
+      src -> screen_telemetry telLblHdgValue
+      src -> screen_telemetry telLblHdopLabel
+      src -> screen_telemetry telLblHdopValue
+      src -> screen_telemetry telLblImuSection
+      src -> screen_telemetry telLblLatLabel
+      src -> screen_telemetry telLblLatValue
+      src -> screen_telemetry telLblLonLabel
+      src -> screen_telemetry telLblLonValue
+      src -> screen_telemetry telLblNoImu
+      src -> screen_telemetry telLblPitchLabel
+      src -> screen_telemetry telLblPitchValue
+      src -> screen_telemetry telLblRollLabel
+      src -> screen_telemetry telLblRollValue
+      src -> screen_telemetry telLblSatLabel
+      src -> screen_telemetry telLblSatValue
+      src -> screen_telemetry telLblSpdLabel
+      src -> screen_telemetry telLblSpdValue
+      src -> screen_telemetry telLblStatusLabel
+      src -> screen_telemetry telLblStatusValue
+      src -> screen_telemetry telNavBar
+      src -> screen_telemetry telShowGpsDataRows(bool)
+      src -> screen_telemetry telShowImuDataRows(bool)
+      src -> screen_telemetry telemetryScr
+      src -> screen_telemetry updateTelemetryData()
+   linkage changes: 12
+      compassHeader                  b -> B
+      compassNavBar                  b -> B
+      compassScr                     b -> B
+      envHeader                      b -> B
+      envScr                         b -> B
+      gcNavHeader                    b -> B
+      geocacheScr                    b -> B
+      screenGestureCb(_lv_event_t*)  t -> T
+      settingsScr                    b -> B
+      settingsScrollAreas            b -> B
+      telHeader                      b -> B
+      telemetryScr                   b -> B
+   re-signed: 0
+   removed: none
+   added:   ['lv_obj_set_style_pad_all$constprop$0']
+      tolerated: lv_obj_set_style_pad_all$constprop$0 (a compiler clone of a library inline: the smaller TU specialised it for one caller; reference sets compare it as the original)
+
+2. size deltas: 6 symbols, net +104 bytes
+      -8  buildTelemetryScreen()                         moved; same references, 2 now cross-TU
+      -4  updateCompassData()                            moved; same references, 0 now cross-TU
+      +4  initSD()                                       identical references; layout/relaxation
+     +36  buildCompassScreen()                           moved; same references, 3 now cross-TU
+     +36  buildGeocacheScreen()                          moved; same references, 3 now cross-TU
+     +40  buildEnvScreen()                               moved; same references, 3 now cross-TU
+   attribution: {'moved function itself': 5, 'layout only': 1}
+
+2b. moved functions checked by reference set: 61, 27 references now cross-TU, every other reference kept
+
+3. linked output sections (non-debug) that changed:
+   .flash.rodata             479432 ->    479336 (-96)
+   .flash.text              1274488 ->   1274672 (+184)
+
+RESULT: PASS - move is behaviour-neutral by symbol set and reference sets

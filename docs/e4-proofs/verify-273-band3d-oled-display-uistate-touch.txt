@@ -1,0 +1,67 @@
+scripts/verify_extraction.py -- band 3d (#273, PR #278, merge 7bfefa7): oled, display, ui_state, touch
+before = 0053f77 built in the task worktree before any move, after = the PR head. Verbatim output.
+
+1. symbols: 589 before, 592 after (union of 18 objects)
+   relocated: 29
+      src -> display    TFT_eSPI::~TFT_eSPI()
+      src -> display    checkDisplaySleep()
+      src -> display    checkTFTHealth()
+      src -> display    initTFT()
+      src -> display    lastActivityTime
+      src -> display    lastTFTReinit
+      src -> display    lastTFTUpdate
+      src -> display    sleepTFT()
+      src -> display    tft
+      src -> display    tftSleeping
+      src -> display    tftUpdateCount
+      src -> display    wakeAllDisplays()
+      src -> display    wakeTFT()
+      src -> oled       initOLED()
+      src -> oled       oled
+      src -> oled       oledAvailable
+      src -> oled       oledSleeping
+      src -> oled       sleepOLED()
+      src -> oled       wakeOLED()
+      src -> touch      ctp
+      src -> touch      initTouch()
+      src -> touch      touchAvailable
+      src -> touch      touchISR()
+      src -> ui_state   currentScreen
+      src -> ui_state   geocacheSubScreen
+      src -> ui_state   listScrollOffset
+      src -> ui_state   previousScreen
+      src -> ui_state   selectedCacheIndex
+      src -> ui_state   settingsSubScreen
+   linkage changes: 3
+      lastTFTReinit                  b -> B
+      lastTFTUpdate                  b -> B
+      tftUpdateCount                 b -> B
+   re-signed: 0
+   removed: none
+   added:   ['_GLOBAL__sub_I_ctp', '_GLOBAL__sub_I_oled', '_GLOBAL__sub_I_tft']
+      tolerated: _GLOBAL__sub_I_ctp (static initialiser of the new TU)
+      tolerated: _GLOBAL__sub_I_oled (static initialiser of the new TU)
+      tolerated: _GLOBAL__sub_I_tft (static initialiser of the new TU)
+
+2. size deltas: 12 symbols, net -88 bytes
+     -80  _GLOBAL__sub_I_WIFI_SSID_1                     identical references; layout/relaxation
+      -4  checkWiFi()                                    identical references; layout/relaxation
+      -4  handleWebDiags()                               touches published: ['oledAvailable', 'touchAvailable']
+      -4  handleWebGPS()                                 identical references; layout/relaxation
+      -3  lvglTouchReadCb(_lv_indev_t*, lv_indev_data_t* touches published: ['ctp', 'currentScreen', 'lastActivityTime', 'settingsSubScreen']
+      -3  updateDisplay()                                touches published: ['currentScreen', 'lastTFTUpdate', 'oledAvailable', 'oledSleeping']
+      +1  handleWebGpsReset()                            identical references; layout/relaxation
+      +1  handleWebIMU()                                 identical references; layout/relaxation
+      +1  updateGeocacheData()                           touches published: ['currentScreen', 'geocacheSubScreen', 'selectedCacheIndex']
+      +1  updateOLED()                                   touches published: ['currentScreen', 'oled']
+      +2  handleWebGeocaches()                           identical references; layout/relaxation
+      +4  initSD()                                       identical references; layout/relaxation
+   attribution: {'layout only': 7, 'touches published state': 5}
+
+2b. moved functions checked by reference set: 11, 4 references now cross-TU, every other reference kept
+
+3. linked output sections (non-debug) that changed:
+   .flash.rodata             479400 ->    479420 (+20)
+   .flash.text              1274388 ->   1274412 (+24)
+
+RESULT: PASS - move is behaviour-neutral by symbol set and reference sets

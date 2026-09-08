@@ -1,0 +1,136 @@
+scripts/verify_extraction.py -- band 3b (#271, PR #276, merge e6465bb): gps, imu, env, battery
+before = 43e569a rebuilt in a scratch worktree with the fixed reference-graph.py (read-only data counted),
+after = the PR head. Verbatim output. The one tolerated addition, gnrmcFixThisCycle, is write-only dead
+state the compiler had eliminated as a static; it is the owner's call to delete.
+
+1. symbols: 585 before, 589 after (union of 12 objects)
+   relocated: 76
+      src -> battery    battery
+      src -> battery    batteryAvailable
+      src -> battery    initBattery()
+      src -> battery    isBatteryConnected()
+      src -> battery    logBatteryToFRAM()
+      src -> battery    logBatteryToSD()
+      src -> battery    std::__shared_count<(__gnu_cxx::_Lock_policy)2>::~__shared_count()
+      src -> env        bmeAvailable
+      src -> env        bsec2_config
+      src -> env        bsecDataCallback(bme68x_data, bsecOutputs, Bsec2)
+      src -> env        bsecDataCallback(bme68x_data, bsecOutputs, Bsec2)::lastAccuracy
+      src -> env        bsecState
+      src -> env        bsecStateLoaded
+      src -> env        bsecStateSaved
+      src -> env        envData
+      src -> env        envSensor
+      src -> env        getIaqAccuracyText(unsigned char)
+      src -> env        getIaqQualityText(float)
+      src -> env        hPaToInHg(float)
+      src -> env        initBME688()
+      src -> env        initSHT41()
+      src -> env        lastBsecStateSave
+      src -> env        loadBsecFromFRAM()
+      src -> env        loadBsecState()
+      src -> env        readBME688()
+      src -> env        readSHT41()
+      src -> env        saveBsecState()
+      src -> env        saveBsecToFRAM()
+      src -> env        sht4
+      src -> env        shtAvailable
+      src -> env        shtData
+      src -> gps        getGpsAccuracyMeters()
+      src -> gps        gprmcFixThisCycle
+      src -> gps        gpsBuffer
+      src -> gps        gpsBufferIndex
+      src -> gps        gpsData
+      src -> gps        gpsDebugEnabled
+      src -> gps        gpsFirstFixTime
+      src -> gps        gpsFirstReceiveTime
+      src -> gps        gpsHadFirstFix
+      src -> gps        gpsHadFirstReceive
+      src -> gps        gpsLastByteTime
+      src -> gps        gpsSignalLostTime
+      src -> gps        initGPS()
+      src -> gps        lastRmcCycleTime
+      src -> gps        nmeaParse(char*, char**, int)
+      src -> gps        parseNMEA(char*)
+      src -> gps        readGPS()
+      src -> gps        rtcSyncedFromGPS
+      src -> imu        Adafruit_LIS3MDL::~Adafruit_LIS3MDL()
+      src -> imu        Adafruit_LSM6DSOX::~Adafruit_LSM6DSOX()
+      src -> imu        imuAvailable
+      src -> imu        imuData
+      src -> imu        initIMU()
+      src -> imu        lis
+      src -> imu        loadMagCal()
+      src -> imu        lsm
+      src -> imu        magAvailable
+      src -> imu        magCalMaxX
+      src -> imu        magCalMaxY
+      src -> imu        magCalMaxZ
+      src -> imu        magCalMinX
+      src -> imu        magCalMinY
+      src -> imu        magCalMinZ
+      src -> imu        magCalStartTime
+      src -> imu        magCalibrated
+      src -> imu        magCalibrating
+      src -> imu        magLogPrintln(char const*)
+      src -> imu        magOffsetX
+      src -> imu        magOffsetY
+      src -> imu        magOffsetZ
+      src -> imu        readIMU()
+      src -> imu        readIMU()::lastDropoutLog
+      src -> imu        readIMU()::lastMagDebug
+      src -> imu        readIMU()::smoothedHeading
+      src -> imu        saveMagCal()
+   linkage changes: 11
+      bsecStateLoaded                b -> B
+      bsecStateSaved                 b -> B
+      gprmcFixThisCycle              b -> B
+      gpsDebugEnabled                b -> B
+      gpsFirstFixTime                b -> B
+      gpsFirstReceiveTime            b -> B
+      gpsHadFirstFix                 b -> B
+      gpsHadFirstReceive             b -> B
+      gpsLastByteTime                b -> B
+      gpsSignalLostTime              b -> B
+      lastRmcCycleTime               b -> B
+   re-signed: 0
+   removed: none
+   added:   ['_GLOBAL__sub_I_battery', '_GLOBAL__sub_I_envSensor', '_GLOBAL__sub_I_lsm', 'gnrmcFixThisCycle']
+      tolerated: _GLOBAL__sub_I_battery (static initialiser of the new TU)
+      tolerated: _GLOBAL__sub_I_envSensor (static initialiser of the new TU)
+      tolerated: _GLOBAL__sub_I_lsm (static initialiser of the new TU)
+      tolerated: gnrmcFixThisCycle (declared published; absent before because the compiler eliminated an unread static -- dead state, worth deleting)
+
+2. size deltas: 25 symbols, net -88 bytes
+    -106  _GLOBAL__sub_I_WIFI_SSID_1                     identical references; layout/relaxation
+     -12  drawOLEDScreenGeocache()                       touches published: ['gpsData', 'imuData']
+      -9  drawOLEDScreenEnv()                            touches published: ['bmeAvailable', 'envData', 'shtAvailable', 'shtData']
+      -8  updateGeocacheData()                           touches published: ['gpsData', 'imuData']
+      -4  geocacheNavDrawCb(_lv_event_t*)                touches published: ['gpsData', 'imuData']
+      -4  handleWebEnv()                                 calls moved: ['getIaqAccuracyText(unsigned char)']
+      -4  loadBsecState()                                moved function; relaxation in the new TU
+      -4  updateCompassData()                            touches published: ['bmeAvailable', 'envData', 'gpsData', 'imuAvailable']
+      -2  bsecDataCallback(bme68x_data, bsecOutputs, Bse moved function; relaxation in the new TU
+      -2  decodeROT13(char*)                             identical references; layout/relaxation
+      -2  handleWebGeocaches()                           identical references; layout/relaxation
+      -1  handleWebBattLog()                             identical references; layout/relaxation
+      +1  drawOLEDScreenTelemetry()                      touches published: ['gpsData', 'imuAvailable', 'imuData', 'magAvailable']
+      +1  extractXMLField(String const&, char const*, ch identical references; layout/relaxation
+      +1  getTrendArrow()                                identical references; layout/relaxation
+      +1  handleGeocacheButtons(bool, bool)              identical references; layout/relaxation
+      +4  checkWiFi()                                    identical references; layout/relaxation
+      +4  handleGeocacheUploadComplete()                 identical references; layout/relaxation
+      +4  handleWebLogDownload()                         identical references; layout/relaxation
+      +4  handleWebOps()                                 calls moved: ['isBatteryConnected()']
+      +4  initTouch()                                    identical references; layout/relaxation
+      +4  loadCacheFoundStatus()                         identical references; layout/relaxation
+      +8  handleWebGpsReset()                            touches published: ['gprmcFixThisCycle', 'gpsData', 'gpsFirstFixTime', 'gpsFirstReceiveTime']
+     +14  handleWebJSON()                                calls moved: ['getIaqQualityText(float)', 'isBatteryConnected()']
+     +20  parseNMEA(char*)                               moved function; relaxation in the new TU
+   attribution: {'layout only': 12, 'touches published state': 7, 'calls a moved function': 3, 'moved function itself': 3}
+
+3. linked output sections (non-debug) that changed:
+   .flash.rodata             479236 ->    479332 (+96)
+   .flash.text              1274108 ->   1274272 (+164)
+
+RESULT: PASS - move is behaviour-neutral by symbol set and reference sets
