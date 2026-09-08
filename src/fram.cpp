@@ -2,8 +2,11 @@
 #include "fram.h"
 #include "fc_config.h"
 #include "logging.h"
+#include <TFT_eSPI.h>   // FRAM rides on TFT_eSPI's SPI instance (#284)
 
-Adafruit_FRAM_SPI fram = Adafruit_FRAM_SPI(FRAM_CS);  // SPI FRAM 256KB
+// SPI FRAM 256KB, on the bus TFT_eSPI owns. The pointer is only stored here;
+// Adafruit_SPIDevice dereferences it in begin(), after static init is over.
+Adafruit_FRAM_SPI fram = Adafruit_FRAM_SPI(FRAM_CS, &TFT_eSPI::getSPIinstance());
 bool framAvailable = false;           // SPI FRAM 256KB
 FRAMHeader framHeader;
 

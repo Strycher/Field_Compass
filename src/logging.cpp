@@ -2,6 +2,7 @@
 #include "logging.h"
 #include "fc_config.h"
 #include <SPI.h>
+#include <TFT_eSPI.h>   // SD rides on TFT_eSPI's SPI instance (#284)
 
 char serialRing[SERIAL_RING_SIZE];
 volatile uint16_t serialRingHead = 0;
@@ -293,16 +294,13 @@ bool trySDReInit() {
 
   logPrintf("[SD] Attempting re-init #%d...\n", sdHealth.reInitCount);
 
-  // Full SPI bus reset: end SD, end SPI, re-init SPI, then re-mount SD (#116)
-  // This clears any stale bus state from TFT_eSPI's 80MHz DMA transfers
+  // End SD and re-mount it (#116). The bus itself is TFT_eSPI's instance
+  // (#284) and stays up: ending it here would take the display down with it.
   SD.end();
-  SPI.end();
-  delay(100);
-  SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
-  delay(100);  // Allow bus + card to settle
+  delay(200);  // Allow bus + card to settle
 
   // Try to re-initialize with conservative 4MHz clock (#116)
-  if (SD.begin(SD_CS, SPI, 4000000)) {
+  if (SD.begin(SD_CS, TFT_eSPI::getSPIinstance(), 4000000)) {
     sdAvailable = true;
     sdHealth.available = true;
     sdHealth.consecutiveFailures = 0;

@@ -137,8 +137,10 @@ the project can move back to that board.
 
 Two things a UM flash changes that are not pins: the board's shipped TinyUF2 bootloader and
 CircuitPython are replaced (the 16 MB table has no `uf2` partition; restorable from UM's
-releases), and there is no MAX17048 on the FeatherS3 — battery sensing is an ADC divider on
-GPIO 2 — so the battery gauge reads N/A until the battery unit learns that path.
+releases), and the [D] **does** carry a MAX17048 fuel gauge on I2C1 (SDA 8 / SCL 9, INT on
+GPIO 2) per the pinout card — an earlier draft of this paragraph said it had none, which was
+the original FeatherS3's ADC divider, not the [D]. The battery unit's MAX17048 code applies
+unchanged.
 
 **Source.** Everything in this section is copied from the 2026-09-05 session exchange
 (05:44–06:12 EDT), recorded here under #282 after it had lived only in chat for two days.
@@ -171,7 +173,7 @@ the second one's position. Both UM 3.3 V outputs are `3V3.1` (position 2) and `3
 |---|---|
 | `RST` | `RST` |
 | `3V` (pos 2) | `3V3.1` |
-| `3V` (pos 3) | ⛔ **not position 3** — use `3V3.2` |
+| `3V` (pos 3) | ⛔ **not position 3** (that is GPIO 0). ⚠ The sheet originally said "use `3V3.2`", meaning position 16 — **position 16 is `LDO2`, a switched 3.3 V output** that is off until the firmware raises GPIO 39 (pinout card, read 2026-09-07). Always-on 3.3 V is `3V3.1` (position 2) or a STEMMA QT 3V3 pin. See *Corrections from the first boot* below. |
 | `GND` | `GND` |
 | `A0` | **`17`** |
 | `A1` | **`18`** |
@@ -232,7 +234,7 @@ Header B (16 pins), UM order: `RST · 3V3.1 · 0 · GND · 17 · 18 · 14 · 12 
 | 13 | `MI` | 37 | `MI` | **37** | MISO |
 | 14 | `RX` | 38 | `RX` | 44 | GPS RX |
 | 15 | `TX` | 39 | `TX` | 43 | GPS TX |
-| 16 | `DB` (Debug TX) | — | `3V3.2` | — | |
+| 16 | `DB` (Debug TX) | — | `LDO2` (read as `3V3.2` from the features PDF; the pinout card says `LDO2 3V3 OUT ONLY`) | — | switched 3.3 V, on when GPIO 39 is HIGH |
 
 **12-pin header**
 
@@ -291,6 +293,30 @@ SDA/SCL, but TFT_BL lands on GPIO 5 and BUTTON_A on GPIO 1, so nothing clashes.
   `TFT_RST`, `-D TFT_RST=16` in `platformio.ini`.) So Adafruit `A2` → UM `14` carries
   TFT_RST, and the UM build uses `TFT_RST=14`. If the display never comes out of reset
   on the UM board, this is the first wire to check.
+
+### Corrections from the first boot (2026-09-07, #283 / #284)
+
+Source for all of these: UM's FeatherS3D pinout card,
+`github.com/UnexpectedMaker/esp32s3` → `series_d/pinout_cards/feathers3d_pinout.jpg`
+(2025), read on 2026-09-07. It supersedes the features PDF the tables above were read from.
+
+- **Named holes verified.** `SDA` = IO8, `SCL` = IO9, `SCK` = IO36, `MO` = IO35, `MI` = IO37,
+  `RX` = IO44, `TX` = IO43. Numbered holes are the GPIO numbers. The `um_feathers3` variant
+  and the tables above agree with the card.
+- **Two I2C buses.** I2C1 = header `SDA`/`SCL` + the first STEMMA QT connector = IO8/IO9,
+  powered by LDO1 (always on). **I2C2 = the second STEMMA QT connector = IO16 (SDA) /
+  IO15 (SCL), powered by LDO2** (switched, GPIO 39). Stacked FeatherWings and anything on
+  the first connector are on I2C1; a chain on the second connector is on I2C2 and invisible
+  to `Wire`. The firmware opens `Wire1` on I2C2 and scans both (#283).
+- **Header position 16 is `LDO2`,** a 3.3 V *output* that is on only while GPIO 39 is HIGH.
+  The bench sheet above called it `3V3.2` and sent the Adafruit's second 3V wire there. That
+  rail is off during the bootloader and until the first line of `setup()`. Anything that must
+  be powered at all times belongs on `3V3.1` (position 2) or a STEMMA QT 3V3 pin.
+- **MAX17048 present** on I2C1 at the usual address, INT on IO2. Ambient light sensor on
+  IO4, blue LED IO13, RGB LED IO40, VBUS detect IO34. IO0 and IO3 are strapping pins.
+- **First run results** (image 8af7ce5): TFT init and LVGL completed and the backlight lit,
+  but the panel stayed blank, the I2C1 scan found zero devices (the stacked OLED wing
+  included), and the first SD mount never returned. Investigation continues in #283/#284.
 
 ## I2C Device Map
 
