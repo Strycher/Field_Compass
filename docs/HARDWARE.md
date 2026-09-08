@@ -4,7 +4,8 @@
 
 | Component | Adafruit PID | Qty | Interface | I2C Addr | Status |
 |-----------|--------------|-----|-----------|----------|--------|
-| ESP32-S3 Feather 4MB/2MB PSRAM | [5477](https://www.adafruit.com/product/5477) | 1 | - | - | Have |
+| ESP32-S3 Feather 4MB/2MB PSRAM | [5477](https://www.adafruit.com/product/5477) | 1 | - | - | Have — original MCU; pin tables below are for this board |
+| UM FeatherS3D (ESP32-S3 N16R8, 16MB Flash / 8MB PSRAM) | [6399](https://www.adafruit.com/product/6399) | 1 | - | - | Have — on the bench since the 2026-09-05 rewire (see *UM FeatherS3 rewire* below); registered as `um_feather` |
 | GPS FeatherWing (PA1616D) | [3133](https://www.adafruit.com/product/3133) | 1 | UART | - | Have |
 | FeatherWing OLED 128x64 | [6313](https://www.adafruit.com/product/6313) | 1 | I2C | 0x3C | Have |
 | BME688 Breakout | [5046](https://www.adafruit.com/product/5046) | 1 | I2C | 0x77 | Have |
@@ -115,6 +116,172 @@ The Feather form factor breaks out 21 GPIO pins on its headers. **18 are in use;
 | 42 | SS (default SPI) | Not on headers, not used |
 
 **Implication:** 3 free GPIOs can support 3 additional buttons. Adding a 5-way joystick (5 more GPIOs) requires an I2C GPIO expander such as the MCP23017.
+
+## UM FeatherS3 rewire (2026-09-05) — bench sheet and resulting pin changes
+
+**Status.** On 2026-09-05 the breadboard moved from the Adafruit 5477 Feather to a
+**UM FeatherS3D** (Adafruit PID 6399, ESP32-S3 N16R8: 16 MB flash, 8 MB PSRAM), wired
+per the bench sheet below. It is registered in the pio-flash registry as `um_feather`
+(MAC `44:1b:f6:dc:ab:64`, first seen on COM22 in bootloader mode, 2026-09-07).
+
+**The firmware has not been changed for it.** As of `main` @ `1be96cb` (2026-09-07),
+`platformio.ini` has one env, `feather_s3` (`board = adafruit_feather_esp32s3`), and every
+pin above is the Adafruit value. A `feather_s3` image flashed to the UM board drives the
+wrong GPIOs for TFT CS/DC/RST, FRAM_CS, SD_CS, CTP_INT, TFT_BL, the three buttons, I²C and
+the GPS UART. Building for the UM board needs a second `[env:]` (16 MB flash, 8 MB PSRAM,
+a 16 MB partition table) plus the ten defines in the last table changed together — that is
+the board-profile work under #151. The Adafruit tables above are kept unchanged so the
+project can move back to that board.
+
+**Source.** Everything in this section is copied from the 2026-09-05 session exchange
+(05:44–06:12 EDT), recorded here under #282 after it had lived only in chat for two days.
+Tables are verbatim. Where the record left a question open, it is left open here too.
+
+### Why the wires moved (owner's ruling, 05:48)
+
+UM labels its headers with **raw GPIO numbers**. There is no `A0`–`A5` or `D5`–`D13`
+silkscreen on the board, and position 3 of the 16-pin header is `0` (GPIO 0) where the
+Adafruit board has its second 3.3 V pin. The owner ruled that the wiring must match the
+silkscreen so the board can be traced later — "silk screen doesn't match code internals" —
+rather than keeping the wires in the same holes and remapping in firmware. The Adafruit
+assignments are kept so the project can return to the 4MB/2MB Feather.
+
+An earlier table in the same exchange (05:46) mapped `A0`–`A5` to GPIO 1–6 using the
+`um_feathers3` variant header's `A0`–`A12` names. Those names are **ADC channel aliases,
+not header positions**, and that table was retracted at 05:59. Never derive UM header
+positions from the variant's analog aliases. (The same mistake was repeated on 2026-09-07
+and is the reason this section exists.)
+
+### Bench sheet — unplug from, plug into (06:02)
+
+⚠ Adafruit has two `3V` pins. The UM board has `0` — GPIO 0, the BOOT strapping pin — in
+the second one's position. Both UM 3.3 V outputs are `3V3.1` (position 2) and `3V3.2`
+(position 16, the far end).
+
+**16-pin header**
+
+| Adafruit hole | → UM hole |
+|---|---|
+| `RST` | `RST` |
+| `3V` (pos 2) | `3V3.1` |
+| `3V` (pos 3) | ⛔ **not position 3** — use `3V3.2` |
+| `GND` | `GND` |
+| `A0` | **`17`** |
+| `A1` | **`18`** |
+| `A2` | **`14`** |
+| `A3` | **`12`** |
+| `A4` | **`6`** |
+| `A5` | **`5`** |
+| `SCK` | `SCK` |
+| `MO` | `MO` |
+| `MI` | `MI` |
+| `RX` | `RX` |
+| `TX` | `TX` |
+
+**12-pin header**
+
+| Adafruit hole | → UM hole |
+|---|---|
+| `BAT` | `BAT` |
+| `EN` | `En` |
+| `USB` | `5V` |
+| `13` | **`11`** |
+| `12` | **`10`** |
+| `11` | **`7`** |
+| `10` | **`3`** |
+| `9` | **`1`** |
+| `6` | **`38`** |
+| `5` | **`33`** |
+| `SCL` | `SCL` |
+| `SDA` | `SDA` |
+
+Everything named stays named. Everything numbered or lettered changes number.
+`SCK`/`MO`/`MI` are the same GPIO on both boards, so the SPI bus is a straight transfer.
+
+### Header position by position, with GPIOs (05:54)
+
+UM silkscreen as read from the FeatherS3D pinout PDF (Adafruit CDN), Adafruit silkscreen
+from the ESP32-S3 Feather learn-guide pinout. Both were read from images.
+
+Header A (12 pins), UM order: `BAT · En · 5V · 11 · 10 · 7 · 3 · 1 · 38 · 33 · SCL · SDA`
+Header B (16 pins), UM order: `RST · 3V3.1 · 0 · GND · 17 · 18 · 14 · 12 · 6 · 5 · SCK · MO · MI · RX · TX · 3V3.2`
+
+**16-pin header**
+
+| # | Adafruit 5477 | GPIO | UM FeatherS3D | GPIO | Field Compass signal |
+|---|---|---|---|---|---|
+| 1 | `RST` | — | `RST` | — | |
+| 2 | `3V` | — | `3V3.1` | — | |
+| 3 | `3V` | — | **`0`** | 0 | BOOT strapping pin — no signal here |
+| 4 | `GND` | — | `GND` | — | |
+| 5 | `A0` | 18 | `17` | 17 | TFT_CS |
+| 6 | `A1` | 17 | `18` | 18 | TFT_DC |
+| 7 | `A2` | 16 | `14` | 14 | TFT_RST (per source — see open question below) |
+| 8 | `A3` | 15 | `12` | 12 | FRAM_CS |
+| 9 | `A4` | 14 | `6` | 6 | CTP_INT |
+| 10 | `A5` | 8 | `5` | 5 | TFT_BL |
+| 11 | `SCK` | 36 | `SCK` | **36** | SPI clock |
+| 12 | `MO` | 35 | `MO` | **35** | MOSI |
+| 13 | `MI` | 37 | `MI` | **37** | MISO |
+| 14 | `RX` | 38 | `RX` | 44 | GPS RX |
+| 15 | `TX` | 39 | `TX` | 43 | GPS TX |
+| 16 | `DB` (Debug TX) | — | `3V3.2` | — | |
+
+**12-pin header**
+
+| # | Adafruit 5477 | GPIO | UM FeatherS3D | GPIO | Field Compass signal |
+|---|---|---|---|---|---|
+| 1 | `BAT` | — | `BAT` | — | |
+| 2 | `EN` | — | `En` | — | |
+| 3 | `USB` | — | `5V` | — | |
+| 4 | `13` | 13 | `11` | 11 | free |
+| 5 | `12` | 12 | `10` | 10 | free |
+| 6 | `11` | 11 | `7` | 7 | free |
+| 7 | `10` | 10 | `3` | 3 | SD_CS (Adalogger) |
+| 8 | `9` | 9 | `1` | 1 | BUTTON_A |
+| 9 | `6` | 6 | `38` | 38 | BUTTON_B |
+| 10 | `5` | 5 | `33` | 33 | BUTTON_C |
+| 11 | `SCL` | 4 | `SCL` | 9 | I²C clock |
+| 12 | `SDA` | 3 | `SDA` | 8 | I²C data |
+
+### Resulting firmware pin changes (06:12)
+
+Three things need **no source change** once a UM env selects the `um_feathers3` variant:
+
+- `Wire.begin()` takes no arguments, so I²C picks up the variant's SDA/SCL → 8/9 on UM
+- `GPS_RX RX` / `GPS_TX TX` are board constants → 44/43 on UM
+- `SPI_SCK/MOSI/MISO` are 36/35/37 on both boards
+
+Ten hardcoded values are board-specific:
+
+| Define | Adafruit 5477 | UM FeatherS3D | Where it lives on `main` (2026-09-07) |
+|---|---|---|---|
+| `TFT_CS` / `TFT_DC` / `TFT_RST` | 18 / 17 / 16 | 17 / 18 / 14 | `platformio.ini` `build_flags` (per-env by design, #184) |
+| `FRAM_CS` | 15 | 12 | `src/fc_config.h` |
+| `SD_CS` | 10 | 3 | `src/fc_config.h` |
+| `CTP_INT` | 14 | 6 | `src/fc_config.h` |
+| `TFT_BL` | 8 | 5 | `src/fc_config.h` |
+| `BUTTON_A` / `BUTTON_B` / `BUTTON_C` | 9 / 6 / 5 | 1 / 38 / 33 | `src/src.ino` (`src/fc_config.h` once #280 merges) |
+
+Note the old GPIO 8/9 hazard disappears with this wiring: on the UM board GPIO 8/9 are
+SDA/SCL, but TFT_BL lands on GPIO 5 and BUTTON_A on GPIO 1, so nothing clashes.
+
+### Caveats and open questions carried from the record
+
+- **Unverified against hardware.** The UM column was read from the pinout PDF; the owner
+  wired from the 06:02 bench sheet ("I think I have it rewired", 06:11). No build has run
+  on the UM board yet, so the mapping has not been proven by a working peripheral.
+- **GPIO 2 is not on a header** on the UM board — it is the internal battery-voltage
+  divider (`A1` / `VBAT_SENSE` in the variant). 21 header GPIOs match UM's advertised count.
+- **GPIO 33 and 38** (BUTTON_B/C positions) should be confirmed free on the quad-PSRAM
+  FeatherS3 before the buttons are relied on. `[hypothesis: untested]`
+- **Bootloader/partitions.** Whether UM ships a UF2 bootloader that needs a reserved
+  partition like Adafruit's is unknown; the vendored table is 4 MB TinyUF2 and will not
+  fit. `[hypothesis: untested]`
+- **Open question — the A2 wire.** At 06:02 the owner said the wire in Adafruit `A2`
+  "certainly wasn't TFT_RST in function". The source defines `A2` / GPIO 16 as `TFT_RST`
+  (`-D TFT_RST=16` in `platformio.ini`). What that wire actually carries on the display
+  was not settled in the record. Do not fill this in; check the wire.
 
 ## I2C Device Map
 
@@ -325,3 +492,4 @@ The following input components are on hand but not yet committed to the design. 
 | 2025-02-15 | Updated TFT to Hosyond 3.5" ST7796U IPS 480x320 |
 | 2025-02-15 | Added FT6336U touch, updated pin assignments, BOM status |
 | 2025-06-17 | Added GPIO availability audit, thermal/enclosure design notes, potential input upgrades (buttons, joystick, GPIO expander), ambient light sensor to BOM |
+| 2026-09-07 | #282: recorded the 2026-09-05 UM FeatherS3D rewire — bench sheet, header-by-header GPIO tables for both boards, the ten board-specific defines, caveats; UM FeatherS3D added to BOM. Adafruit 5477 tables unchanged |
