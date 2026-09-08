@@ -294,6 +294,32 @@ SDA/SCL, but TFT_BL lands on GPIO 5 and BUTTON_A on GPIO 1, so nothing clashes.
   TFT_RST, and the UM build uses `TFT_RST=14`. If the display never comes out of reset
   on the UM board, this is the first wire to check.
 
+### Display module, wire by wire (Hosyond MSP3526, ST7796U + FT6336U)
+
+Written 2026-09-08 after a display wire was found in hole `1` (BUTTON_A). SDI (MOSI)
+carries data *into* the panel; SDO (MISO) carries data *out* of it. Not the same line. The
+firmware never reads from the panel, so SDO is the one wire that can stay off; MISO is used
+by the SD card and FRAM. Module pin names are the standard ones for this board; the module's
+own header order is not recorded here — read the labels on the module, not the positions.
+
+| Module pin | Signal | UM hole (GPIO) | Adafruit hole |
+|---|---|---|---|
+| VCC | 3.3 V, always on | `3V3.1` (16-pin header pos 2) — **not** `LDO2` | `3V` |
+| GND | ground | `GND` | `GND` |
+| CS | TFT_CS | `17` | `A0` |
+| RESET | TFT_RST | `14` | `A2` |
+| DC / RS | TFT_DC | `18` | `A1` |
+| SDI (MOSI) | SPI data in | `MO` (35) | `MO` |
+| SCK | SPI clock | `SCK` (36) | `SCK` |
+| LED | backlight PWM, TFT_BL | `5` | `A5` |
+| SDO (MISO) | SPI data out, unused by firmware | `MI` (37) or unconnected | `MI` |
+| CTP_SDA | touch I2C data | `SDA` (8) | `SDA` |
+| CTP_SCL | touch I2C clock | `SCL` (9) | `SCL` |
+| CTP_INT | touch interrupt, CTP_INT | `6` | `A4` |
+| CTP_RST | touch reset, not driven by firmware | as on the Adafruit setup (typically 3.3 V or tied to RESET) | same |
+
+Nothing from the display belongs in hole `1`; that is BUTTON_A.
+
 ### Corrections from the first boot (2026-09-07, #283 / #284)
 
 Source for all of these: UM's FeatherS3D pinout card,
@@ -316,7 +342,14 @@ Source for all of these: UM's FeatherS3D pinout card,
   IO4, blue LED IO13, RGB LED IO40, VBUS detect IO34. IO0 and IO3 are strapping pins.
 - **First run results** (image 8af7ce5): TFT init and LVGL completed and the backlight lit,
   but the panel stayed blank, the I2C1 scan found zero devices (the stacked OLED wing
-  included), and the first SD mount never returned. Investigation continues in #283/#284.
+  included), and the first SD mount never returned. The SD hang was two SPI drivers on one
+  controller (#284, fixed). The blank panel and the dead I2C1 were **wiring**: a diagnostic
+  boot (77ab753) showed SCL held low at the chip with the peripheral detached, and the
+  display wires turned out to follow the retracted 05:46 table above (TFT_CS in hole `1`,
+  RST in `3`, CTP_INT in `5`, BL in `6`). Rewired per the wire-by-wire table on 2026-09-08
+  01:13: TFT drawing, OLED and RTC on the bus, SD mounted, GPS fix, nine I2C1 devices,
+  watchdog at 30 s (#285). Still open at that point: FRAM (lost after the last move) and
+  the FT6336U touch at 0x38. OLED boot glitch and layout: #286.
 
 ## I2C Device Map
 
