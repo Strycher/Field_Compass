@@ -169,6 +169,7 @@ arduino-cli upload --fqbn esp32:esp32:adafruit_feather_esp32s3 --port <blPort> F
 | `--before usb-reset` from a running app | does not enter download mode |
 | bulk `read-flash` over native USB | fails repeatedly; small transactions like `chip-id` work |
 | holding a serial handle across a reset | port re-enumerates, handle dies |
+| `pio-flash confirm` with its output redirected to a file or pipe on Windows, default code page | looks like a hang at `Connecting...` with no `Writing at` line for ten minutes. Not the board: PlatformIO's echo thread dies with `UnicodeEncodeError` (cp1252) on esptool's Unicode progress bar, esptool blocks on the full pipe **mid-write**, and the chip is left in the stub. Set `PYTHONUTF8=1 PYTHONIOENCODING=utf-8` for the wrapper call. Seen twice on 2026-09-08 (#289), clean flash on the third run with the variables set |
 
 A full flash image backup needs a UART adapter wired to RX/TX — it is not
 achievable over native USB.
