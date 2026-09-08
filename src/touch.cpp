@@ -9,11 +9,12 @@ bool touchAvailable = false;          // FT6336U capacitive touch
 
 // Dropout tracking (#289). The LVGL indev reads the chip at 30 Hz through
 // touched(), which has no error path (a NACK reads as "not touched"), so the
-// health check is an address probe on its own timer. TOUCH_CHECK_MS x
-// I2C_FAIL_LIMIT is how long a dead chip keeps being read: 5 s, ~150 failed
-// reads, against the 250k of 2026-09-08. Dropping touchAvailable stops both
-// the indev callback and the wake poll.
-static I2CDevice touchDev = {"FT6336U", 0x38, &touchAvailable};
+// health check is a vendor-ID register read on its own timer (the same
+// register begin() verifies). TOUCH_CHECK_MS x I2C_FAIL_LIMIT is how long a
+// dead chip keeps being read: 5 s, ~150 failed reads, against the 250k of
+// 2026-09-08. Dropping touchAvailable stops both the indev callback and the
+// wake poll.
+static I2CDevice touchDev = {"FT6336U", 0x38, &touchAvailable, FT62XX_REG_VENDID, FT62XX_VENDID};
 #define TOUCH_CHECK_MS 1000
 
 // Called every loop pass (#289). initTouch() re-runs begin() and re-attaches
@@ -26,7 +27,7 @@ void serviceTouch() {
   static unsigned long lastCheck = 0;
   if (millis() - lastCheck < TOUCH_CHECK_MS) return;
   lastCheck = millis();
-  if (i2cProbe(touchDev.addr)) i2cNoteOk(touchDev); else i2cNoteFail(touchDev);
+  if (i2cCheck(touchDev)) i2cNoteOk(touchDev); else i2cNoteFail(touchDev);
 }
 
 // CTP_INT is active-low: the FT6336U pulls it low for the duration of a
