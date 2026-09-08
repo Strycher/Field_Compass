@@ -64,7 +64,10 @@ void lvglTouchReadCb(lv_indev_t* indev, lv_indev_data_t* data) {
     return;
   }
 
-  if (ctp.touched()) {
+  bool touched = ctp.touched();
+  if (touchWakeSwallow(touched)) touched = false;  // the touch that woke the panel is not a click (#290)
+
+  if (touched) {
     TS_Point p = ctp.getPoint();
     // Same coordinate transform as legacy pipeline:
     data->point.x = (int32_t)(480 - p.y);  // horizontal 0-479

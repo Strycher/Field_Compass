@@ -404,6 +404,12 @@ void loop() {
   // LVGL timer handler — process animations, redraws, timers (#109)
   if (lvglAvailable && !tftSleeping) {
     lv_timer_handler();
+  } else if (tftSleeping && touchPollForWake()) {
+    // LVGL is parked while the panel sleeps, and it is the only reader of the
+    // touch chip, so without this a tap could never wake the TFT and only the
+    // wing buttons could (#290). Same wake path the buttons use.
+    logPrintln("[SLEEP] Woken by touch");
+    wakeAllDisplays();
   }
 
   // Update display based on current screen

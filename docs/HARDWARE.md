@@ -329,7 +329,7 @@ own header order is not recorded here — read the labels on the module, not the
 | CTP_SDA | touch I2C data | `SDA` (8) | `SDA` |
 | CTP_SCL | touch I2C clock | `SCL` (9) | `SCL` |
 | CTP_INT | touch interrupt, CTP_INT | `6` | `A4` |
-| CTP_RST | touch reset, not driven by firmware | as on the Adafruit setup (typically 3.3 V or tied to RESET) | same |
+| CTP_RST | touch reset, not driven by firmware | `14`, tied to the panel's RESET (owner, 2026-09-08 03:10; it was on the TFT reset line on the Adafruit setup too) | `A2` |
 
 Nothing from the display belongs in hole `1`; that is BUTTON_A.
 
