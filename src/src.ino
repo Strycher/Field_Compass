@@ -135,14 +135,22 @@ void setup() {
   snprintf(banner, sizeof(banner), "=================================\nField Compass Dual %s\n=================================\n\n", FW_VERSION);
   logPrintf("%s", banner);
 
+#ifdef FC_LDO2_PIN
+  // UM FeatherS3 only (#283): the second LDO feeds the vertical STEMMA QT
+  // connector. Bring it up before anything touches I2C. See fc_config.h.
+  pinMode(FC_LDO2_PIN, OUTPUT);
+  digitalWrite(FC_LDO2_PIN, HIGH);
+  logPrintf("[PWR] LDO2 enabled on GPIO %d\n", FC_LDO2_PIN);
+#endif
+
   // Deselect ALL SPI slave CS pins BEFORE any SPI bus activity (#116)
-  // Without this, SD_CS (GPIO 10) and FRAM_CS (GPIO 15) float during TFT init,
-  // allowing 80MHz TFT traffic to corrupt idle SPI slaves on the shared bus.
+  // Without this, SD_CS and FRAM_CS float during TFT init, allowing TFT
+  // traffic to corrupt idle SPI slaves on the shared bus.
   pinMode(SD_CS, OUTPUT);
   digitalWrite(SD_CS, HIGH);
   pinMode(FRAM_CS, OUTPUT);
   digitalWrite(FRAM_CS, HIGH);
-  logPrintln("[SPI] CS pins pre-set HIGH: SD_CS=10, FRAM_CS=15");
+  logPrintf("[SPI] CS pins pre-set HIGH: SD_CS=%d, FRAM_CS=%d\n", SD_CS, FRAM_CS);
 
   LOG_DEBUG("About to init TFT...");
   Serial.flush();
