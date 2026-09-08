@@ -28,5 +28,5 @@ void initTouch() {
   pinMode(CTP_INT, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(CTP_INT), touchISR, CHANGE);
 
-  logPrintln("OK (interrupt on GPIO 14)");
+  logPrintf("OK (interrupt on GPIO %d)\n", CTP_INT);
 }
