@@ -23,7 +23,7 @@ void initBattery() {
   }
 
   batteryAvailable = true;
-  i2cNoteOk(battDev);
+  i2cNoteReady(battDev);
   logPrintln("OK");
 }
 

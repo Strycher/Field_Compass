@@ -55,6 +55,9 @@ struct I2CDevice {
 
 void i2cNoteOk(I2CDevice& d);
 bool i2cNoteFail(I2CDevice& d);      // true on the call that drops the device
+void i2cNoteReady(I2CDevice& d);     // a unit's init calls this on success: clears the count and the window.
+                                     // Nothing else clears the window, so a chip that passes the re-probe
+                                     // but fails its init keeps its history (review finding on #289)
 bool i2cReprobeDue(I2CDevice& d);    // true when a dropped device answers again (d.addr updated if it moved)
 bool i2cCheck(const I2CDevice& d);   // one real transaction at d.addr: ID register read, or probe
 bool i2cReadReg(uint8_t addr, uint8_t reg, uint8_t* val);   // write reg, repeated start, read one byte
