@@ -7,6 +7,7 @@ extern bool touchAvailable;
 
 void IRAM_ATTR touchISR();
 void initTouch();
+void serviceTouch();   // health probe; re-probe a dropped chip and re-init it (#289)
 
 // Wake-from-sleep path (#290). While the TFT sleeps loop() skips
 // lv_timer_handler(), so the LVGL indev callback -- the only reader of the

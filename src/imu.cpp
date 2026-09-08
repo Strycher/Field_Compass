@@ -1,11 +1,18 @@
 // imu.cpp -- extracted from src.ino by scripts/extract_unit.py (E4).
 #include "imu.h"
 #include "logging.h"
+#include "i2c_health.h"
 
 Adafruit_LSM6DSOX lsm;
 Adafruit_LIS3MDL lis;
 bool imuAvailable = false;
 bool magAvailable = false;
+
+// Dropout tracking (#289). Both chips sit on one breakout, so in practice
+// they fail together; they are still tracked by address because they are
+// separate I2C devices. The address is whichever one answered in initIMU().
+static I2CDevice imuDev = {"LSM6DSOX", 0x6A, &imuAvailable};
+static I2CDevice magDev = {"LIS3MDL",  0x1C, &magAvailable};
 float magOffsetX = 0, magOffsetY = 0, magOffsetZ = 0;
 bool magCalibrated = false;
 bool magCalibrating = false;
@@ -24,12 +31,15 @@ void magLogPrintln(const char* msg) {
 void initIMU() {
   logPrint("Initializing LSM6DSOX... ");
 
-  if (!lsm.begin_I2C(0x6A)) {
-    if (!lsm.begin_I2C(0x6B)) {
+  uint8_t addr = 0x6A;
+  if (!lsm.begin_I2C(addr)) {
+    addr = 0x6B;
+    if (!lsm.begin_I2C(addr)) {
       logPrintln("NOT FOUND");
       return;
     }
   }
+  imuDev.addr = addr;
 
   lsm.setAccelRange(LSM6DS_ACCEL_RANGE_4_G);
   lsm.setGyroRange(LSM6DS_GYRO_RANGE_500_DPS);
@@ -37,16 +47,20 @@ void initIMU() {
   lsm.setGyroDataRate(LSM6DS_RATE_104_HZ);
 
   imuAvailable = true;
+  i2cNoteOk(imuDev);
   logPrintln("OK");
 
   logPrint("Initializing LIS3MDL... ");
 
-  if (!lis.begin_I2C(0x1C)) {
-    if (!lis.begin_I2C(0x1E)) {
+  addr = 0x1C;
+  if (!lis.begin_I2C(addr)) {
+    addr = 0x1E;
+    if (!lis.begin_I2C(addr)) {
       logPrintln("NOT FOUND");
       return;
     }
   }
+  magDev.addr = addr;
 
   lis.setPerformanceMode(LIS3MDL_MEDIUMMODE);
   lis.setOperationMode(LIS3MDL_CONTINUOUSMODE);
@@ -54,7 +68,19 @@ void initIMU() {
   lis.setRange(LIS3MDL_RANGE_4_GAUSS);
 
   magAvailable = true;
+  i2cNoteOk(magDev);
   logPrintln("OK");
+}
+
+// Called every loop pass (#289). Nothing to do while both chips answer; once
+// one has been dropped, re-probe it on the slow timer and run the normal
+// init when it answers. initIMU() re-initialises both chips, which is what a
+// breakout that lost power or its bus needs anyway.
+void serviceIMU() {
+  if ((!imuAvailable && i2cReprobeDue(imuDev)) ||
+      (!magAvailable && i2cReprobeDue(magDev))) {
+    initIMU();
+  }
 }
 
 // Load magnetometer calibration from SD card
@@ -113,6 +139,18 @@ void saveMagCal() {
 
 void readIMU() {
   sensors_event_t accel, gyro, temp, mag;
+
+  // Both getEvent() calls return true unconditionally (checked in the pinned
+  // Adafruit_LSM6DS / Adafruit_LIS3MDL sources) and read into an uninitialised
+  // buffer on a NACK, so the bus failure has to be caught before the read:
+  // one address probe per chip per pass, ~0.1 ms each on a healthy bus. On a
+  // dead chip the probe fails fast, and after I2C_FAIL_LIMIT passes the loop
+  // gate (imuAvailable && magAvailable) stops calling this until serviceIMU()
+  // brings the breakout back (#289).
+  if (!i2cProbe(imuDev.addr)) { i2cNoteFail(imuDev); return; }
+  i2cNoteOk(imuDev);
+  if (!i2cProbe(magDev.addr)) { i2cNoteFail(magDev); return; }
+  i2cNoteOk(magDev);
 
   lsm.getEvent(&accel, &gyro, &temp);
   lis.getEvent(&mag);

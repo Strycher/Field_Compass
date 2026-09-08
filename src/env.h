@@ -41,6 +41,8 @@ bool saveBsecToFRAM();
 bool loadBsecFromFRAM();
 void readSHT41();
 void readBME688();
+void serviceSHT41();    // re-probe a dropped sensor and re-init it (#289)
+void serviceBME688();
 const char* getIaqAccuracyText(uint8_t accuracy);
 const char* getIaqQualityText(float iaq);
 float hPaToInHg(float hPa);

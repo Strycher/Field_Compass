@@ -2,9 +2,32 @@
 #include "touch.h"
 #include "fc_config.h"
 #include "logging.h"
+#include "i2c_health.h"
 
 Adafruit_FT6206 ctp = Adafruit_FT6206();
 bool touchAvailable = false;          // FT6336U capacitive touch
+
+// Dropout tracking (#289). The LVGL indev reads the chip at 30 Hz through
+// touched(), which has no error path (a NACK reads as "not touched"), so the
+// health check is an address probe on its own timer. TOUCH_CHECK_MS x
+// I2C_FAIL_LIMIT is how long a dead chip keeps being read: 5 s, ~150 failed
+// reads, against the 250k of 2026-09-08. Dropping touchAvailable stops both
+// the indev callback and the wake poll.
+static I2CDevice touchDev = {"FT6336U", 0x38, &touchAvailable};
+#define TOUCH_CHECK_MS 1000
+
+// Called every loop pass (#289). initTouch() re-runs begin() and re-attaches
+// the CTP_INT interrupt (the core replaces the handler on re-attach).
+void serviceTouch() {
+  if (!touchAvailable) {
+    if (i2cReprobeDue(touchDev)) initTouch();
+    return;
+  }
+  static unsigned long lastCheck = 0;
+  if (millis() - lastCheck < TOUCH_CHECK_MS) return;
+  lastCheck = millis();
+  if (i2cProbe(touchDev.addr)) i2cNoteOk(touchDev); else i2cNoteFail(touchDev);
+}
 
 // CTP_INT is active-low: the FT6336U pulls it low for the duration of a
 // touch. The interrupt is attached FALLING (initTouch), so the ISR runs once

@@ -9,6 +9,7 @@ extern Adafruit_MAX17048 battery;
 extern bool batteryAvailable;
 
 void initBattery();
+void serviceBattery();   // health check; re-probe a dropped gauge and re-init it (#289)
 void logBatteryToSD();
 void logBatteryToFRAM();
 bool isBatteryConnected();

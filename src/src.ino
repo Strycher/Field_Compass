@@ -69,6 +69,7 @@
 #include "display.h"
 #include "ui_state.h"
 #include "touch.h"
+#include "i2c_health.h"   // reset reason at boot; the units own their device records (#289)
 #include "web.h"
 #include "lvgl_port.h"
 #include "oled_screens.h"
@@ -134,6 +135,7 @@ void setup() {
   char banner[128];
   snprintf(banner, sizeof(banner), "=================================\nField Compass Dual %s\n=================================\n\n", FW_VERSION);
   logPrintf("%s", banner);
+  logResetReason();   // panic / watchdog / brownout / power-on -- so a crash boot is attributable (#289)
 
 #ifdef FC_LDO2_PIN
   // UM FeatherS3 only (#283): the second LDO feeds the vertical STEMMA QT
@@ -309,6 +311,15 @@ void loop() {
   if (bmeAvailable) readBME688();
   if (shtAvailable) readSHT41();   // SHT41 temp/humidity (#48)
   if (imuAvailable && magAvailable) readIMU();
+
+  // I2C health (#289): a device that stops answering is dropped after
+  // I2C_FAIL_LIMIT consecutive failures (its reads above stop), re-probed
+  // every I2C_REPROBE_MS, and re-initialised when it answers again.
+  serviceIMU();
+  serviceSHT41();
+  serviceBME688();
+  serviceBattery();
+  serviceTouch();
 
   // Weather logging (every 5 minutes)
   if (sdAvailable && bmeAvailable && (millis() - lastWeatherLog > WEATHER_LOG_INTERVAL)) {

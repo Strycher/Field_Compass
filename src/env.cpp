@@ -2,6 +2,7 @@
 #include "env.h"
 #include "fram.h"
 #include "logging.h"
+#include "i2c_health.h"
 
 // BSEC2 IAQ config for BME680/688 at 3.3V, 3-second sample rate, 4-day calibration
 const uint8_t bsec2_config[] = {
@@ -12,6 +13,15 @@ Bsec2 envSensor;
 Adafruit_SHT4x sht4 = Adafruit_SHT4x();  // SHT41 temp/humidity (#48)
 bool bmeAvailable = false;
 bool shtAvailable = false;          // SHT41 temp/humidity (#48)
+
+// Dropout tracking (#289). The BME688 address is whichever answered in
+// initBME688(); the SHT41 has only one.
+static I2CDevice shtDev = {"SHT41",  0x44, &shtAvailable};
+static I2CDevice bmeDev = {"BME688", 0x77, &bmeAvailable};
+// The BME688 is touched once per BSEC sample (LP mode = 3 s) and its status
+// persists until the next access, so its health is sampled on that cadence;
+// sampling every loop pass would count one failed read five times over.
+#define BME_HEALTH_MS 3000
 static uint8_t bsecState[BSEC_MAX_STATE_BLOB_SIZE];
 static unsigned long lastBsecStateSave = 0;
 bool bsecStateLoaded = false;
@@ -88,14 +98,18 @@ void initBME688() {
   };
 
   // Try primary address (0x77), then secondary (0x76)
-  if (!envSensor.begin(0x77, Wire)) {
-    if (!envSensor.begin(0x76, Wire)) {
+  uint8_t addr = 0x77;
+  if (!envSensor.begin(addr, Wire)) {
+    addr = 0x76;
+    if (!envSensor.begin(addr, Wire)) {
       logPrintln("NOT FOUND");
       logPrintf("  BSEC status: %d\n", envSensor.status);
       logPrintf("  Sensor status: %d\n", envSensor.sensor.status);
       return;
     }
   }
+  bmeDev.addr = addr;
+  i2cNoteOk(bmeDev);
 
   // Load BSEC2 IAQ config
   if (!envSensor.setConfig(bsec2_config)) {
@@ -261,6 +275,9 @@ void readSHT41() {
   if (sht4.getEvent(&humEv, &tempEv)) {
     shtData.temperature = tempEv.temperature;
     shtData.humidity = humEv.relative_humidity;
+    i2cNoteOk(shtDev);
+  } else {
+    i2cNoteFail(shtDev);   // false on a NACK (before the measurement delay) or a bad CRC
   }
 }
 
@@ -272,6 +289,26 @@ void readBME688() {
       LOG_ERROR("BSEC error: %d", envSensor.status);
     }
   }
+
+  // Bus health (#289): the BME68x driver checks endTransmission() and leaves
+  // BME68X_E_COM_FAIL in sensor.status when the chip stops answering.
+  static unsigned long lastHealth = 0;
+  if (millis() - lastHealth >= BME_HEALTH_MS) {
+    lastHealth = millis();
+    if (envSensor.sensor.status < BME68X_OK) i2cNoteFail(bmeDev); else i2cNoteOk(bmeDev);
+  }
+}
+
+// Called every loop pass (#289): re-probe a dropped sensor on the slow timer
+// and run its normal init when it answers.
+void serviceSHT41() {
+  if (!shtAvailable && i2cReprobeDue(shtDev)) initSHT41();
+}
+
+void serviceBME688() {
+  if (bmeAvailable || !i2cReprobeDue(bmeDev)) return;
+  initBME688();   // fresh BSEC instance: restore its state the way setup() does
+  if (bmeAvailable && !loadBsecFromFRAM() && sdHealth.available) loadBsecState();
 }
 
 // Helper function to get IAQ accuracy as short text
