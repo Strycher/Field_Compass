@@ -9,23 +9,29 @@ names. If a number here is not printed on the board, it does not belong here.
 Firmware: env `um_feathers3`; the GPIO view of the same wiring is in `CLAUDE.md`
 → Pin Assignments and `src/fc_config.h`.
 
-## Display module (Hosyond 3.5" ST7796U + FT6336U touch)
+## Display module (Hosyond MSP3526: 3.5" ST7796U + FT6336U touch)
 
-| Module pin (as printed on the module) | UM hole |
-|---|---|
-| VCC | `3V3` next to `RST` |
-| GND | `GND` |
-| CS | `17` |
-| RS (DC, D/C, RS/DC — same pin) | `18` |
-| RESET (RST) | `14` |
-| SDI (MOSI) | `MO` |
-| SCK | `SCK` |
-| LED | `5`, or leave off |
-| SDO (MISO) | `MI` (as on the Adafruit setup; the firmware never reads the panel, but keep what worked) |
-| CTP_SDA | `SDA` |
-| CTP_SCL | `SCL` |
-| CTP_INT | `6` |
-| CTP_RST | `14`, with the panel's RESET (as on the Adafruit setup; rewired 2026-09-08 03:10, boots clean) |
+Pin numbers and names are the module maker's, from
+<https://www.lcdwiki.com/3.5inch_IPS_SPI_Module_ST7796> (MSP3525 = no touch, MSP3526 =
+touch). The 14-pin 2.54 mm header and the 14-contact 0.5 mm FPC socket on the module
+carry the same 14 signals; either one connects the module.
+
+| # | Module pin | UM hole |
+|---|---|---|
+| 1 | VCC | `3V3` next to `RST` (works, and is what the bench runs on). The maker's manual §4.2 recommends 5 V: the module has its own 3.3 V regulator and a 5 V→3.3 V level shifter, and on a 3.3 V feed the internal rail sits below 3.3 V and the backlight is dimmer. The UM `5V` hole is USB power only, absent on battery, so 5 V is a USB-tethered option, not a field one. |
+| 2 | GND | `GND` |
+| 3 | LCD_CS | `17` |
+| 4 | LCD_RST | `14` |
+| 5 | LCD_RS (the DC line) | `18` |
+| 6 | SDI (MOSI) | `MO` |
+| 7 | SCK | `SCK` |
+| 8 | LED | `5`, or leave off |
+| 9 | SDO (MISO) | `MI` (as on the Adafruit setup; the firmware never reads the panel, but keep what worked) |
+| 10 | CTP_SCL | `SCL` |
+| 11 | CTP_RST | `14`, with LCD_RST (as on the Adafruit setup; rewired 2026-09-08 03:10, boots clean) |
+| 12 | CTP_SDA | `SDA` |
+| 13 | CTP_INT | `6` |
+| 14 | SD_CS | nothing — the module's own SD slot is not used; the Adalogger's card is |
 
 ## FRAM breakout (Adafruit SPI FRAM)
 
