@@ -41,6 +41,14 @@
 
 ## Pin Assignments
 
+> ⚠ **These tables are the Adafruit 5477 board.** Every number in them is an Adafruit
+> GPIO, and the Adafruit GPIO numbers collide with the UM board's silkscreen numbers
+> (Adafruit GPIO 14 = CTP_INT, UM hole `14` = TFT RESET; Adafruit GPIO 17 = TFT_DC, UM
+> hole `17` = TFT_CS). **Do not wire the UM board from these tables.** The UM board's
+> wiring, in silkscreen labels only, is under *UM FeatherS3 rewire (2026-09-05)* →
+> *Display module, wire by wire* and the bench sheet there. Reading these Adafruit
+> numbers as UM holes cost the 2026-09-08 bench session several hours.
+
 ### I2C Bus (STEMMA QT)
 | Pin | Function |
 |-----|----------|
