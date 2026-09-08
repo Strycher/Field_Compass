@@ -291,11 +291,17 @@ void readBME688() {
   }
 
   // Bus health (#289): the BME68x driver checks endTransmission() and leaves
-  // BME68X_E_COM_FAIL in sensor.status when the chip stops answering.
+  // BME68X_E_COM_FAIL in sensor.status when the chip stops answering. Only
+  // that code counts: the other negative codes (null pointer, self-test,
+  // invalid length) are not bus faults and a re-probe would not clear them
+  // (review finding on #289). BSEC touches the chip in one burst per sample
+  // (setTPH, heater profile, forced mode, then fetchData), so a status
+  // sampled on the same 3 s cadence sees at most one or two samples per
+  // burst: one transient failure cannot reach I2C_FAIL_LIMIT.
   static unsigned long lastHealth = 0;
   if (millis() - lastHealth >= BME_HEALTH_MS) {
     lastHealth = millis();
-    if (envSensor.sensor.status < BME68X_OK) i2cNoteFail(bmeDev); else i2cNoteOk(bmeDev);
+    if (envSensor.sensor.status == BME68X_E_COM_FAIL) i2cNoteFail(bmeDev); else i2cNoteOk(bmeDev);
   }
 }
 
