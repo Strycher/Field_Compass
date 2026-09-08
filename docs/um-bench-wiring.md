@@ -16,7 +16,7 @@ Firmware: env `um_feathers3`, branch `fc/283-um-feathers3-env`.
 | SDI (MOSI) | `MO` |
 | SCK | `SCK` |
 | LED | `5`, or leave off |
-| SDO (MISO) | leave off |
+| SDO (MISO) | `MI` (as on the Adafruit setup; the firmware never reads the panel, but keep what worked) |
 | CTP_SDA | `SDA` |
 | CTP_SCL | `SCL` |
 | CTP_INT | `6` |
