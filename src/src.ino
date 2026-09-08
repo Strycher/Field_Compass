@@ -424,6 +424,28 @@ void scanI2C() {
 #ifdef FC_I2C2_SDA
   total += scanI2CBus(Wire1, "I2C2 (Wire1)");
 #endif
+#if defined(ARDUINO_FEATHERS3)
+  if (total == 0) {
+    // Diagnostic (#283): devices are on the bus but nothing answered. One
+    // boot log says whether the lines are held low, crossed, or too slow:
+    // idle levels with the peripheral detached, a rescan with SDA/SCL
+    // swapped, and a rescan at 10 kHz. Then the bus is restored.
+    Wire.end();
+    pinMode(SDA, INPUT_PULLUP);
+    pinMode(SCL, INPUT_PULLUP);
+    delay(5);
+    logPrintf("[I2C] idle levels with I2C1 detached: SDA(GPIO%d)=%d SCL(GPIO%d)=%d  (1 = released)\n",
+              SDA, digitalRead(SDA), SCL, digitalRead(SCL));
+    Wire.begin(SCL, SDA);   // deliberately crossed
+    scanI2CBus(Wire, "I2C1 with SDA/SCL SWAPPED (diagnostic)");
+    Wire.end();
+    Wire.begin();
+    Wire.setClock(10000);
+    scanI2CBus(Wire, "I2C1 at 10 kHz (diagnostic)");
+    Wire.end();
+    Wire.begin();           // back to the variant's SDA/SCL at the default clock
+  }
+#endif
   logPrintf("  Total devices: %d\n\n", total);
 }
 
