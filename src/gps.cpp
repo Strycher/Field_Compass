@@ -67,7 +67,7 @@ void readGPS() {
   }
 }
 
-int nmeaParse(char* sentence, char* fields[], int maxFields) {
+int nmeaParse(char* sentence, const char* fields[], int maxFields) {
   // Strip checksum (*XX) if present
   char* star = strchr(sentence, '*');
   if (star) *star = '\0';
@@ -86,7 +86,11 @@ int nmeaParse(char* sentence, char* fields[], int maxFields) {
 }
 
 void parseNMEA(char* sentence) {
-  char* fields[NMEA_MAX_FIELDS];
+  // const char*: the parser only ever reads through fields[] (nmeaParse
+  // writes the terminators through `sentence`), and the padding below points
+  // unfilled slots at a string literal. const makes a future write through
+  // fields[] a compile error instead of a StoreProhibited (review finding).
+  const char* fields[NMEA_MAX_FIELDS];
   int nFields = nmeaParse(sentence, fields, NMEA_MAX_FIELDS);
 
   // nmeaParse fills only the first nFields slots. A short or mangled
@@ -96,9 +100,9 @@ void parseNMEA(char* sentence) {
   // hours, LoadProhibited at strlen(fields[7]) (#291, twice on 2026-09-08).
   // Point every unfilled slot at an empty string so every strlen()/atof()
   // site treats a missing field as empty, which is already what an empty
-  // field means to this parser. Nothing below writes through fields[].
+  // field means to this parser.
   static const char kEmptyField[] = "";
-  for (int i = nFields; i < NMEA_MAX_FIELDS; i++) fields[i] = (char*)kEmptyField;
+  for (int i = nFields; i < NMEA_MAX_FIELDS; i++) fields[i] = kEmptyField;
 
   // Identify sentence type from field 0 (e.g., "$GNRMC", "$GPGGA")
   const char* talker = fields[0];  // e.g., "$GNRMC"
