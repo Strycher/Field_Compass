@@ -7,3 +7,14 @@ extern bool touchAvailable;
 
 void IRAM_ATTR touchISR();
 void initTouch();
+
+// Wake-from-sleep path (#290). While the TFT sleeps loop() skips
+// lv_timer_handler(), so the LVGL indev callback -- the only reader of the
+// chip -- never runs. touchPollForWake() reads the chip on a slow timer and
+// returns true once per new touch; the caller wakes the displays. The touch
+// that woke the panel is then swallowed until the finger lifts, so it does
+// not also land as a click on whatever is under it (same as the buttons,
+// which wake and return). touchWakeSwallow(touchedNow) returns true while
+// that swallow is in force.
+bool touchPollForWake();
+bool touchWakeSwallow(bool touchedNow);

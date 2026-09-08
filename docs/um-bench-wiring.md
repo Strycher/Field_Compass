@@ -25,7 +25,7 @@ Firmware: env `um_feathers3`; the GPIO view of the same wiring is in `CLAUDE.md`
 | CTP_SDA | `SDA` |
 | CTP_SCL | `SCL` |
 | CTP_INT | `6` |
-| CTP_RST | `3V3` |
+| CTP_RST | `14`, with the panel's RESET (as on the Adafruit setup; rewired 2026-09-08 03:10, boots clean) |
 
 ## FRAM breakout (Adafruit SPI FRAM)
 
