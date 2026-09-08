@@ -311,9 +311,25 @@ SDA/SCL, but TFT_BL lands on GPIO 5 and BUTTON_A on GPIO 1, so nothing clashes.
 
 Written 2026-09-08 after a display wire was found in hole `1` (BUTTON_A). SDI (MOSI)
 carries data *into* the panel; SDO (MISO) carries data *out* of it. Not the same line. The
-firmware never reads from the panel, so SDO is the one wire that can stay off; MISO is used
-by the SD card and FRAM. Module pin names are the standard ones for this board; the module's
-own header order is not recorded here — read the labels on the module, not the positions.
+firmware never reads from the panel; MISO is used by the SD card and FRAM.
+
+**Module documentation (found 2026-09-08 11:40):** the module is the LCDWIKI / Hosyond
+**MSP3526** (MSP3525 is the same board without touch): <https://www.lcdwiki.com/3.5inch_IPS_SPI_Module_ST7796>.
+Schematic: `res/MSP3525_MSP3526/3.5inch_SPI_Module_MSP3525_MSP3526_Schematic.pdf`; manual:
+`..._User_Manual_EN.pdf` on the same host. Its 14-pin header order is **1 VCC, 2 GND,
+3 LCD_CS, 4 LCD_RST, 5 LCD_RS, 6 SDI(MOSI), 7 SCK, 8 LED, 9 SDO(MISO), 10 CTP_SCL,
+11 CTP_RST, 12 CTP_SDA, 13 CTP_INT, 14 SD_CS**. The module also has a 14-contact 0.5 mm
+FPC socket, P2, whose 14 contacts are **the same signals in the same 1–14 order** as header
+J2 (verified 2026-09-08 from the manual's §4.6/§4.7 schematics, rendered and read). A
+14P 0.5 mm FFC-to-2.54 mm adapter board plus a 14-way 0.5 mm FFC is therefore the
+latching-cable option; a same-side-contact cable keeps 1→1, an opposite-side cable
+reverses the order, so check VCC continuity from the module to the adapter before powering.
+Pin 14 (the module's own SD slot select, pulled up on the module by R8) is unused: the SD
+card in this project is on the Adalogger. Manual §4.2: VCC accepts 3.3 V or 5 V and
+recommends 5 V; on 3.3 V the module's own regulator output sits below 3.3 V and the
+backlight is dimmer. The bench runs it on `3V3` and works. Control signals pass through a
+74LVC245 level shifter on the module (5 V→3.3 V one-way), so 3.3 V logic from the ESP32-S3
+is fine. `docs/um-bench-wiring.md` carries this order.
 
 | Module pin | Signal | UM hole (GPIO) | Adafruit hole |
 |---|---|---|---|
