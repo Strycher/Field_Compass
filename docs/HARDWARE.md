@@ -278,10 +278,12 @@ SDA/SCL, but TFT_BL lands on GPIO 5 and BUTTON_A on GPIO 1, so nothing clashes.
 - **Bootloader/partitions.** Whether UM ships a UF2 bootloader that needs a reserved
   partition like Adafruit's is unknown; the vendored table is 4 MB TinyUF2 and will not
   fit. `[hypothesis: untested]`
-- **Open question — the A2 wire.** At 06:02 the owner said the wire in Adafruit `A2`
-  "certainly wasn't TFT_RST in function". The source defines `A2` / GPIO 16 as `TFT_RST`
-  (`-D TFT_RST=16` in `platformio.ini`). What that wire actually carries on the display
-  was not settled in the record. Do not fill this in; check the wire.
+- **The A2 wire — owner's ruling 2026-09-07:** *"I'm accepting that A2 is TFT_RST until
+  proven otherwise."* (At 06:02 on 2026-09-05 the owner had said the wire in Adafruit
+  `A2` "certainly wasn't TFT_RST in function"; the source defines `A2` / GPIO 16 as
+  `TFT_RST`, `-D TFT_RST=16` in `platformio.ini`.) So Adafruit `A2` → UM `14` carries
+  TFT_RST, and the UM build uses `TFT_RST=14`. If the display never comes out of reset
+  on the UM board, this is the first wire to check.
 
 ## I2C Device Map
 
