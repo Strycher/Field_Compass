@@ -124,14 +124,21 @@ The Feather form factor breaks out 21 GPIO pins on its headers. **18 are in use;
 per the bench sheet below. It is registered in the pio-flash registry as `um_feather`
 (MAC `44:1b:f6:dc:ab:64`, first seen on COM22 in bootloader mode, 2026-09-07).
 
-**The firmware has not been changed for it.** As of `main` @ `1be96cb` (2026-09-07),
-`platformio.ini` has one env, `feather_s3` (`board = adafruit_feather_esp32s3`), and every
-pin above is the Adafruit value. A `feather_s3` image flashed to the UM board drives the
-wrong GPIOs for TFT CS/DC/RST, FRAM_CS, SD_CS, CTP_INT, TFT_BL, the three buttons, I²C and
-the GPS UART. Building for the UM board needs a second `[env:]` (16 MB flash, 8 MB PSRAM,
-a 16 MB partition table) plus the ten defines in the last table changed together — that is
-the board-profile work under #151. The Adafruit tables above are kept unchanged so the
-project can move back to that board.
+**Which build goes on which board.** `pio run -e um_feathers3` builds for this board
+(#283): `board = um_feathers3`, 16 MB flash, quad PSRAM (`qio_qspi`), the vendored
+`partitions/default_16MB.csv`, TFT CS/DC/RST 17/18/14 as per-env `build_flags`, and the
+other seven pins from the `ARDUINO_FEATHERS3` block in `src/fc_config.h`. On the UM board
+the firmware also drives the second LDO (GPIO 39) HIGH at boot, because it feeds the vertical
+STEMMA QT connector. `pio run -e feather_s3` is unchanged and builds the Adafruit 5477 image.
+**A `feather_s3` image on the UM board drives the wrong GPIOs for TFT CS/DC/RST, FRAM_CS,
+SD_CS, CTP_INT, TFT_BL, the three buttons, I²C and the GPS UART** — that was the state of
+`main` @ `1be96cb` (2026-09-07), before #283. The Adafruit tables above are kept unchanged so
+the project can move back to that board.
+
+Two things a UM flash changes that are not pins: the board's shipped TinyUF2 bootloader and
+CircuitPython are replaced (the 16 MB table has no `uf2` partition; restorable from UM's
+releases), and there is no MAX17048 on the FeatherS3 — battery sensing is an ADC divider on
+GPIO 2 — so the battery gauge reads N/A until the battery unit learns that path.
 
 **Source.** Everything in this section is copied from the 2026-09-05 session exchange
 (05:44–06:12 EDT), recorded here under #282 after it had lived only in chat for two days.

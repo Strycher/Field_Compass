@@ -60,7 +60,7 @@ Pre-migration commit SHAs quoted in old issues refer to the archive, not here.
 |-----------|-------|
 | PROJECT_NAME | Field Compass |
 | PROJECT_DIR | `/c/Dev/Field_Compass` |
-| BUILD_COMMAND | `pio run -e feather_s3` |
+| BUILD_COMMAND | `pio run -e feather_s3` (Adafruit 5477) · `pio run -e um_feathers3` (UM FeatherS3, the bench board since 2026-09-05 — #283) |
 | CITADEL_PROJECT | `Field_Compass` |
 | GITHUB_PROJECT_ID | `PVT_kwHODGcOBc4BOJgD` |
 | INFRA_PROFILE | Maker |
@@ -102,6 +102,14 @@ Standard PlatformIO layout. There is no `Field_Compass/` sketch directory any mo
 
 ## Build & Flash
 
+Two envs, one per board (#283). The bench has been the UM FeatherS3 (registry name
+`um_feather`) since the 2026-09-05 rewire; the Adafruit env still builds and is unchanged.
+Pin mapping for both: `docs/HARDWARE.md`.
+
+```bash
+pio run -e um_feathers3
+```
+
 ```bash
 pio run -e feather_s3
 ```
@@ -116,8 +124,13 @@ identity against the registry before it writes anything, and
 upload` and `esptool` invocations. Preview then confirm:
 
 ```bash
-python scripts/pio-flash.py preview <device> --env feather_s3
+python scripts/pio-flash.py preview um_feather --env um_feathers3
 ```
+
+The env must match the board the device name resolves to: `um_feather` takes
+`um_feathers3`, `field_compass` (the Adafruit board) takes `feather_s3`. The wrapper
+checks identity, not purpose — it will not stop a `feather_s3` image going onto the UM
+board, and that image drives the wrong pins there (`docs/HARDWARE.md`).
 
 Never hardcode a COM port — app and bootloader modes enumerate on *different*
 ports, so re-detect every time. The board needs a manual RESET press after a
@@ -287,9 +300,10 @@ dw --project Field_Compass claim FC-<id>            # Claim one task
 git checkout -b fc/<issue>-short-desc               # Per-issue branch
 
 # ── Compile + flash ────────────────────────────────────────
-pio run -e feather_s3                               # Build (#186 layout)
+pio run -e um_feathers3                             # Build for the UM FeatherS3 bench board (#283)
+pio run -e feather_s3                               # Build for the Adafruit 5477 board
 python scripts/pio-flash.py list                    # Enumerate + match registry
-python scripts/pio-flash.py preview <device> --env feather_s3
+python scripts/pio-flash.py preview um_feather --env um_feathers3   # env must match the board
 python scripts/pio-flash.py confirm <device> --token <token-file>
 # Raw arduino-cli/esptool/pio upload are refused by block-raw-flash.py
 
