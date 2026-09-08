@@ -356,8 +356,11 @@ Source for all of these: UM's FeatherS3D pinout card,
   display wires turned out to follow the retracted 05:46 table above (TFT_CS in hole `1`,
   RST in `3`, CTP_INT in `5`, BL in `6`). Rewired per the wire-by-wire table on 2026-09-08
   01:13: TFT drawing, OLED and RTC on the bus, SD mounted, GPS fix, nine I2C1 devices,
-  watchdog at 30 s (#285). Still open at that point: FRAM (lost after the last move) and
-  the FT6336U touch at 0x38. OLED boot glitch and layout: #286.
+  watchdog at 30 s (#285). At 02:16 the same night, after the display and FRAM wires were
+  redone from `docs/um-bench-wiring.md`, **every peripheral was up**: TFT, touch (0x38),
+  OLED, SD, FRAM, RTC, GPS, BME688, SHT41, IMU and magnetometer, fuel gauge; ten devices on
+  I2C1. Wire the UM board from that page and nothing else. OLED boot glitch and layout: #286.
+  Fuel-gauge percentage reads 140 % on the [D] and needs its own compensation: follow-up.
 
 ## I2C Device Map
 
