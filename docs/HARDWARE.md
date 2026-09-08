@@ -385,6 +385,13 @@ Source for all of these: UM's FeatherS3D pinout card,
   75 minutes either side of it, and it moved from the LIS3MDL read (garbage magnetometer
   data until 17:49) to the other read on the same board with no reboot. The scan's 0x29 is
   that TSL2591, not a VEML7700 (label fixed in #289).
+  The 4517 itself (adafruit.com/product/4517 and learn.adafruit.com/st-9-dof-combo/pinouts,
+  read 2026-09-08): one on-board 3.3 V regulator for both chips (AP2112K, or a ≥150 mA
+  substitute since the 2022-06 parts shortage), FET level shifters on SDA/SCL with 10 kΩ
+  pull-ups, address jumpers on the back — `ADM` bridges the LIS3MDL 0x1C → 0x1E, `ADAG`
+  bridges the LSM6DSOX 0x6A → 0x6B, both open on the bench — and INT1/INT2/INTM/DRDY pins,
+  none wired. Regulator and level shifters are shared by both chips, so a fault in either
+  would hit both reads at once; the bench fault takes one chip at a time.
 - **First run results** (image 8af7ce5): TFT init and LVGL completed and the backlight lit,
   but the panel stayed blank, the I2C1 scan found zero devices (the stacked OLED wing
   included), and the first SD mount never returned. The SD hang was two SPI drivers on one
