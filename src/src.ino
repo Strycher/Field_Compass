@@ -492,7 +492,7 @@ static int scanI2CBus(TwoWire &bus, const char *label) {
       } else if (address == 0x44) {
         desc = " (SHT41 - Temp/Humidity)";
       } else if (address == 0x29) {
-        desc = " (VEML7700 - Light Sensor)";
+        desc = " (TSL2591 - Light Sensor, unused)";   // the bench device at 0x29 (#289); a VEML7700 lives at 0x10
       } else if (address == 0x68) {
         desc = " (PCF8523 - RTC)";
       } else if (address == 0x7E) {

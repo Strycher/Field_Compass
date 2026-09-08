@@ -378,6 +378,13 @@ Source for all of these: UM's FeatherS3D pinout card,
   needs an external boost from `BAT`. IO34 "5V SENSE" reads the USB net through a
   2 kΩ / 3.3 kΩ divider. STEMMA1 (LDO1) = IO9 SCL / IO8 SDA; STEMMA2 (LDO2) = IO15 SCL /
   IO16 SDA, as the wiring page says.
+- **STEMMA QT chain order on the bench** (owner, 2026-09-08 18:5x, during #289): Feather →
+  BME688 → SHT41 → LSM6DSOX/LIS3MDL (one 4517 board) → TSL2591 (unused). The IMU board was
+  moved up the chain to this position. The bus failure it was moved for did not change
+  with the move: one failed transaction to the IMU board per loop pass, 22.4/s, steady for
+  75 minutes either side of it, and it moved from the LIS3MDL read (garbage magnetometer
+  data until 17:49) to the other read on the same board with no reboot. The scan's 0x29 is
+  that TSL2591, not a VEML7700 (label fixed in #289).
 - **First run results** (image 8af7ce5): TFT init and LVGL completed and the backlight lit,
   but the panel stayed blank, the I2C1 scan found zero devices (the stacked OLED wing
   included), and the first SD mount never returned. The SD hang was two SPI drivers on one
