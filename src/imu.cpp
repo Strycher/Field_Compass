@@ -72,7 +72,7 @@ void initIMU() {
   }
 
   imuAvailable = true;
-  i2cNoteOk(imuDev);
+  i2cNoteReady(imuDev);
   logPrintln("OK");
 
   logPrint("Initializing LIS3MDL... ");
@@ -93,13 +93,16 @@ void initIMU() {
   lis.setDataRate(LIS3MDL_DATARATE_155_HZ);
   lis.setRange(LIS3MDL_RANGE_4_GAUSS);
 
-  if (lis.getDataRate() != LIS3MDL_DATARATE_155_HZ) {   // same read-back as the LSM6DSOX above
+  // Same read-back as the LSM6DSOX above, on the setting that matters: a
+  // chip left in power-down (the register default, and what a failed read
+  // returns as all-ones) reports zeros for every axis.
+  if (lis.getOperationMode() != LIS3MDL_CONTINUOUSMODE) {
     logPrintln("CONFIG NOT ACCEPTED (read-back mismatch)");
     return;
   }
 
   magAvailable = true;
-  i2cNoteOk(magDev);
+  i2cNoteReady(magDev);
   logPrintln("OK");
 }
 

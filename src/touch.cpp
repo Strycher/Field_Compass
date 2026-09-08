@@ -53,6 +53,7 @@ void initTouch() {
   }
 
   touchAvailable = true;
+  i2cNoteReady(touchDev);
 
   // Configure interrupt pin (CTP_INT is active-low, open-drain). FALLING:
   // one interrupt per finger-down, nothing on release (#290).

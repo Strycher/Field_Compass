@@ -113,7 +113,7 @@ void initBME688() {
   }
   bmeDev.addr = addr;
   bmeDev.altAddr = (addr == 0x77) ? 0x76 : 0x77;
-  i2cNoteOk(bmeDev);
+  i2cNoteReady(bmeDev);
 
   // Load BSEC2 IAQ config
   if (!envSensor.setConfig(bsec2_config)) {
@@ -155,6 +155,7 @@ void initSHT41() {
   sht4.setHeater(SHT4X_NO_HEATER);
 
   shtAvailable = true;
+  i2cNoteReady(shtDev);
   logPrintln("OK (0x44)");
 
   // Read initial values immediately

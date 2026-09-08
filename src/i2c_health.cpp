@@ -9,6 +9,11 @@ void i2cNoteOk(I2CDevice& d) {
   d.recent <<= 1;
 }
 
+void i2cNoteReady(I2CDevice& d) {
+  d.fails = 0;
+  d.recent = 0;
+}
+
 bool i2cNoteFail(I2CDevice& d) {
   d.totalFails++;
   if (d.fails < 255) d.fails++;
@@ -98,9 +103,7 @@ bool i2cReprobeDue(I2CDevice& d) {
   }
   logPrintf("[I2C] %s (0x%02X) answers again after %lu s (drop #%lu, %lu failed checks so far); re-initialising\n",
             d.name, d.addr, (now - d.droppedAt) / 1000, (unsigned long)d.drops, (unsigned long)d.totalFails);
-  d.fails = 0;
-  d.recent = 0;                              // a fresh window, or the old one drops it on its first miss
-  return true;
+  return true;                               // the caller's init clears the history via i2cNoteReady() if it succeeds
 }
 
 void logResetReason() {
