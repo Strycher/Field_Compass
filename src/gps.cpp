@@ -89,6 +89,17 @@ void parseNMEA(char* sentence) {
   char* fields[NMEA_MAX_FIELDS];
   int nFields = nmeaParse(sentence, fields, NMEA_MAX_FIELDS);
 
+  // nmeaParse fills only the first nFields slots. A short or mangled
+  // sentence -- one cut off by a UART hiccup, e.g. "$GNRMC,123456.00,A" --
+  // passes the RMC gate below with status 'A' and the position code then
+  // reads fields[3..7] from whatever was on the stack: NULL once every few
+  // hours, LoadProhibited at strlen(fields[7]) (#291, twice on 2026-09-08).
+  // Point every unfilled slot at an empty string so every strlen()/atof()
+  // site treats a missing field as empty, which is already what an empty
+  // field means to this parser. Nothing below writes through fields[].
+  static const char kEmptyField[] = "";
+  for (int i = nFields; i < NMEA_MAX_FIELDS; i++) fields[i] = (char*)kEmptyField;
+
   // Identify sentence type from field 0 (e.g., "$GNRMC", "$GPGGA")
   const char* talker = fields[0];  // e.g., "$GNRMC"
   bool isRMC = (nFields >= 3 && strstr(talker, "RMC") != NULL);
