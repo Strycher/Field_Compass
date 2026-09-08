@@ -26,12 +26,21 @@
 #define BUTTON_B  38  // UM hole 38 (was 6)
 #define BUTTON_C  33  // UM hole 33 (was 5)
 
-// The FeatherS3's second LDO (IO39) powers the vertical STEMMA QT connector
-// and the RGB LED. Nothing in the Arduino variant or UM's helper enables it at
-// boot and its power-up default is undocumented, so setup() drives it HIGH
-// before any I2C traffic. On the Adafruit board GPIO 39 is the GPS TX line,
-// which is why this exists only here.
+// The FeatherS3[D]'s second LDO (IO39) powers the second STEMMA QT connector
+// (I2C2), the RGB LED and the header hole labelled LDO2. Nothing in the
+// Arduino variant or UM's helper enables it at boot and its power-up default
+// is undocumented, so setup() drives it HIGH before any I2C traffic. On the
+// Adafruit board GPIO 39 is the GPS TX line, which is why this exists only
+// here.
 #define FC_LDO2_PIN 39
+
+// The [D] has two I2C buses (FeatherS3D pinout card, UM github series_d):
+// I2C1 = header SDA/SCL + first STEMMA QT = GPIO 8/9 = Wire; I2C2 = second
+// STEMMA QT, LDO2-powered = GPIO 16/15. Wire1 is opened on I2C2 so the scan
+// reports what is plugged into either connector. The Adafruit board has one
+// bus, so these are absent there.
+#define FC_I2C2_SDA 16
+#define FC_I2C2_SCL 15
 
 #elif defined(ARDUINO_ADAFRUIT_FEATHER_ESP32S3)
 // Adafruit ESP32-S3 Feather 4MB/2MB (PID 5477), env feather_s3.

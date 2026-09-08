@@ -164,8 +164,14 @@ void setup() {
   // Initialize LVGL (coexistence: runs alongside sprite pipeline)
   initLVGL();
 
-  // Initialize I2C
+  // Initialize I2C (I2C1: the variant's SDA/SCL = header + first STEMMA QT)
   Wire.begin();
+#ifdef FC_I2C2_SDA
+  // UM FeatherS3[D] only: the second STEMMA QT connector is its own bus.
+  Wire1.begin(FC_I2C2_SDA, FC_I2C2_SCL);
+  logPrintf("[I2C] I2C1 on SDA=%d SCL=%d, I2C2 on SDA=%d SCL=%d\n",
+            SDA, SCL, FC_I2C2_SDA, FC_I2C2_SCL);
+#endif
 
   // Show init screen
   tft.fillScreen(COLOR_BG);
@@ -196,11 +202,13 @@ void setup() {
   initBattery();
   initTouch();   // FT6336U capacitive touch (I2C 0x38)
 
-  // Initialize hardware SPI for SD card (Adalogger uses different CS pin)
-  // CS pins already set HIGH at top of setup() — SPI.begin() re-confirms SD_CS
-  SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
-  logPrintf("[SPI] Bus started: SCK=%d MISO=%d MOSI=%d SS=%d\n",
-            SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
+  // SD and FRAM share the bus TFT_eSPI already started (SCK/MISO/MOSI from
+  // its build_flags, the same 36/37/35 on both boards). One SPIClass per
+  // controller: with USE_FSPI_PORT (#284) TFT_eSPI owns its own SPIClass on
+  // GPSPI2, and starting the Arduino SPI object on the same controller was a
+  // second driver on one bus. Its instance is used everywhere instead.
+  logPrintf("[SPI] Using TFT_eSPI's bus instance: SCK=%d MISO=%d MOSI=%d (SD_CS=%d FRAM_CS=%d)\n",
+            SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS, FRAM_CS);
   initSD();
   initFRAM();   // SPI FRAM 256KB (shared bus with TFT/SD)
   initRTC();    // Adalogger RTC - sets system time if RTC has valid time
@@ -395,13 +403,24 @@ void loop() {
 
 // ============== I2C Scanner ==============
 
+static int scanI2CBus(TwoWire &bus, const char *label);
+
 void scanI2C() {
-  logPrintln("Scanning I2C bus...");
+  int total = scanI2CBus(Wire, "I2C1 (Wire)");
+#ifdef FC_I2C2_SDA
+  total += scanI2CBus(Wire1, "I2C2 (Wire1)");
+#endif
+  logPrintf("  Total devices: %d\n\n", total);
+}
+
+// One pass over 0x01-0x7E on the given bus; returns the device count.
+static int scanI2CBus(TwoWire &bus, const char *label) {
+  logPrintf("Scanning %s...\n", label);
 
   int deviceCount = 0;
   for (byte address = 1; address < 127; address++) {
-    Wire.beginTransmission(address);
-    byte error = Wire.endTransmission();
+    bus.beginTransmission(address);
+    byte error = bus.endTransmission();
 
     if (error == 0) {
       const char* desc = "";
@@ -430,7 +449,8 @@ void scanI2C() {
       deviceCount++;
     }
   }
-  logPrintf("  Total devices: %d\n\n", deviceCount);
+  logPrintf("  %s: %d device(s)\n", label, deviceCount);
+  return deviceCount;
 }
 
 // ============== LVGL Initialization (#105) ==============
@@ -583,7 +603,7 @@ void initSD() {
       SD.end();
       delay(100 * attempt);  // 200ms, 300ms, 400ms, 500ms
     }
-    if (SD.begin(SD_CS, SPI, SD_SPI_FREQ)) {
+    if (SD.begin(SD_CS, TFT_eSPI::getSPIinstance(), SD_SPI_FREQ)) {
       mounted = true;
       break;
     }
