@@ -64,9 +64,14 @@ bool i2cCheck(const I2CDevice& d) {
 // end()/begin() pair the #283 bus diagnostic uses, verified on both boards.
 void i2cBusRecover() {
   Wire.end();
-  digitalWrite(SDA, HIGH);                   // output latch high before the mode change,
-  digitalWrite(SCL, HIGH);                   // so neither line dips when it becomes GPIO
+  // Pins back to GPIO as inputs first: the core refuses digitalWrite() on a
+  // pin still routed to the I2C peripheral (seen in the first recovery on the
+  // bench, 2026-09-08 20:44). Then set the latch high while nothing drives,
+  // then switch SCL to open-drain output so it does not dip on the change.
   pinMode(SDA, INPUT_PULLUP);
+  pinMode(SCL, INPUT_PULLUP);
+  digitalWrite(SDA, HIGH);
+  digitalWrite(SCL, HIGH);
   pinMode(SCL, OUTPUT_OPEN_DRAIN);
   delayMicroseconds(5);
   for (int i = 0; i < 9; i++) {
