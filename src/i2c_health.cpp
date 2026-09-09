@@ -7,6 +7,11 @@
 void i2cNoteOk(I2CDevice& d) {
   d.fails = 0;
   d.recent <<= 1;
+  // Probation ends with good behaviour, not only at the next drop: a device
+  // that has answered for I2C_FLAP_MS since it came back is off the back-off
+  // ladder (review finding on #289: otherwise only the timing of the next
+  // failure could clear it).
+  if (d.backoff && millis() - d.lastReturn >= I2C_FLAP_MS) d.backoff = 0;
 }
 
 void i2cNoteReady(I2CDevice& d) {
