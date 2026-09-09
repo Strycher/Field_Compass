@@ -13,25 +13,38 @@ static int credCount = 0;
 int  wifiImportedCount = 0;
 bool wifiImportFilePresent = false;
 
-// Keys: "n" = count, "s0".."s4" = SSIDs, "p0".."p4" = passwords. Every entry
-// is written in place and the count last, so a power cut mid-write leaves the
-// previous count pointing at previous entries rather than an emptied
-// namespace (review finding on #295). Stale keys above the count are ignored
-// on load. NVS skips a write whose value is unchanged, so five put calls cost
-// only the slots that moved.
+// Two banks, one atomic switch. Bank 0 uses keys "n0", "s0".."s4", "p0".."p4";
+// bank 1 uses "n1", "t0".."t4", "q0".."q4"; "bank" says which is live. A change
+// is written whole into the bank that is NOT live, then "bank" is flipped, one
+// NVS key write, which NVS makes atomic. A power cut anywhere before the flip
+// leaves the live bank untouched; after it, the new bank is complete. The
+// earlier in-place scheme could pair an old SSID with a new password when a
+// cut landed between the two keys of a shifted entry (review finding on #295).
+static uint8_t liveBank = 0;
+
+static void bankKey(char* key, size_t len, uint8_t bank, char kind, int i) {
+  // kind 's' = SSID, 'p' = password; bank 1 uses 't' and 'q'
+  char c = (bank == 0) ? kind : (kind == 's' ? 't' : 'q');
+  snprintf(key, len, "%c%d", c, i);
+}
+
 static void persist() {
   if (!prefs.begin(kNamespace, false)) {
     logPrintln("[WIFI] store: NVS open for write failed; change not saved");
     return;
   }
+  uint8_t target = liveBank ? 0 : 1;
   char key[4];
   for (int i = 0; i < credCount; i++) {
-    snprintf(key, sizeof key, "p%d", i);
-    prefs.putString(key, creds[i].pass);   // password first: a cut between the two leaves the
-    snprintf(key, sizeof key, "s%d", i);   // old SSID with the old password, never a new SSID
-    prefs.putString(key, creds[i].ssid);   // with a stale one
+    bankKey(key, sizeof key, target, 's', i);
+    prefs.putString(key, creds[i].ssid);
+    bankKey(key, sizeof key, target, 'p', i);
+    prefs.putString(key, creds[i].pass);
   }
-  prefs.putUChar("n", (uint8_t)credCount);
+  snprintf(key, sizeof key, "n%d", target);
+  prefs.putUChar(key, (uint8_t)credCount);
+  prefs.putUChar("bank", target);            // the switch
+  liveBank = target;
   prefs.end();
 }
 
@@ -44,14 +57,22 @@ void wifiStoreInit() {
     logPrintln("[WIFI] store: empty (nothing saved yet)");
     return;
   }
-  int n = prefs.getUChar("n", 0);
-  if (n > WIFI_STORE_MAX) n = WIFI_STORE_MAX;
+  liveBank = prefs.getUChar("bank", 0) ? 1 : 0;
   char key[4];
+  snprintf(key, sizeof key, "n%d", liveBank);
+  int n = prefs.getUChar(key, 0);
+  if (!prefs.isKey("bank") && prefs.isKey("n")) {
+    // Written by the first #295 build (deac3d1, one bank, count under "n"):
+    // read it as bank 0; the next change rewrites it in the two-bank form.
+    n = prefs.getUChar("n", 0);
+    liveBank = 0;
+  }
+  if (n > WIFI_STORE_MAX) n = WIFI_STORE_MAX;
   for (int i = 0; i < n; i++) {
     WifiCred c = {};
-    snprintf(key, sizeof key, "s%d", i);
+    bankKey(key, sizeof key, liveBank, 's', i);
     prefs.getString(key, c.ssid, sizeof c.ssid);
-    snprintf(key, sizeof key, "p%d", i);
+    bankKey(key, sizeof key, liveBank, 'p', i);
     prefs.getString(key, c.pass, sizeof c.pass);
     if (c.ssid[0]) creds[credCount++] = c;   // compacts any hole left by a bad write
   }
@@ -163,14 +184,12 @@ int wifiStoreImportFromSD() {
   char line[WIFI_SSID_MAX + WIFI_PASS_MAX + 8];
   WifiCred cur = {};
   bool open = false;
-  bool first = true;
   int imported = 0;
   while (readLine(f, line, sizeof line)) {
     char* p = line;
-    if (first) {   // Notepad and friends write a UTF-8 BOM; it is not part of "ssid="
-      first = false;
-      if ((uint8_t)p[0] == 0xEF && (uint8_t)p[1] == 0xBB && (uint8_t)p[2] == 0xBF) p += 3;
-    }
+    // Notepad and friends write a UTF-8 BOM at the top of a file, and a block
+    // pasted from such a file carries one mid-file; neither is part of "ssid=".
+    if ((uint8_t)p[0] == 0xEF && (uint8_t)p[1] == 0xBB && (uint8_t)p[2] == 0xBF) p += 3;
     if (!p[0] || p[0] == '#' || p[0] == '[') continue;
     if (strncmp(p, "ssid=", 5) == 0) {
       if (open && cur.ssid[0] && wifiStoreAdd(cur.ssid, cur.pass)) imported++;
