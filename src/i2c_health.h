@@ -35,7 +35,13 @@
 #define I2C_FAIL_WINDOW  8       // ...or this many of the last 16 checks: an intermittent
                                  // chip (the bench LIS3MDL answered ~1 read in 100) must
                                  // not keep resetting the count with the odd success
-#define I2C_REPROBE_MS   10000   // how often a dropped device is probed again
+#define I2C_REPROBE_MS   10000   // how often a dropped device is probed again...
+#define I2C_FLAP_MS      30000   // ...doubling each time it drops again within this long of a
+#define I2C_BACKOFF_MAX  5       // return, up to I2C_REPROBE_MS << 5 = 320 s. The bench
+                                 // LIS3MDL with its floating address pad came back and
+                                 // dropped again every 11 s, a re-init and a burst of failed
+                                 // reads each time (2026-09-08 20:44). The first good spell
+                                 // of I2C_FLAP_MS resets it.
 #define I2C_NO_REG       0xFF    // idReg value for a chip without an ID register
 
 struct I2CDevice {
@@ -49,8 +55,10 @@ struct I2CDevice {
   uint16_t recent = 0;           // last 16 results, 1 = failed, newest in bit 0
   uint32_t totalFails = 0;
   uint32_t drops = 0;
+  uint8_t backoff = 0;           // re-probe interval is I2C_REPROBE_MS << backoff
   unsigned long droppedAt = 0;
   unsigned long lastProbe = 0;
+  unsigned long lastReturn = 0;  // when it last answered a re-probe; 0 = never dropped
 };
 
 void i2cNoteOk(I2CDevice& d);

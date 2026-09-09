@@ -24,8 +24,15 @@ bool i2cNoteFail(I2CDevice& d) {
   d.drops++;
   d.droppedAt = millis();
   d.lastProbe = d.droppedAt;                 // first re-probe one interval from now
-  logPrintf("[I2C] %s (0x%02X) stopped answering: %u consecutive failures, %d of the last 16 checks; dropped, re-probing every %d s\n",
-            d.name, d.addr, (unsigned)d.fails, __builtin_popcount(d.recent), I2C_REPROBE_MS / 1000);
+  // Flapping: dropped again soon after it came back, so wait longer each time.
+  if (d.lastReturn && d.droppedAt - d.lastReturn < I2C_FLAP_MS) {
+    if (d.backoff < I2C_BACKOFF_MAX) d.backoff++;
+  } else {
+    d.backoff = 0;
+  }
+  logPrintf("[I2C] %s (0x%02X) stopped answering: %u consecutive failures, %d of the last 16 checks; dropped, re-probing in %lu s\n",
+            d.name, d.addr, (unsigned)d.fails, __builtin_popcount(d.recent),
+            (unsigned long)(I2C_REPROBE_MS << d.backoff) / 1000);
   return true;
 }
 
@@ -94,7 +101,7 @@ void i2cBusRecover() {
 bool i2cReprobeDue(I2CDevice& d) {
   if (*d.available || d.drops == 0) return false;
   unsigned long now = millis();
-  if (now - d.lastProbe < I2C_REPROBE_MS) return false;
+  if (now - d.lastProbe < (unsigned long)(I2C_REPROBE_MS << d.backoff)) return false;
   d.lastProbe = now;
   if (!checkAt(d.addr, d)) {
     i2cBusRecover();
@@ -108,6 +115,7 @@ bool i2cReprobeDue(I2CDevice& d) {
   }
   logPrintf("[I2C] %s (0x%02X) answers again after %lu s (drop #%lu, %lu failed checks so far); re-initialising\n",
             d.name, d.addr, (now - d.droppedAt) / 1000, (unsigned long)d.drops, (unsigned long)d.totalFails);
+  d.lastReturn = now;                        // a drop within I2C_FLAP_MS of this raises the back-off
   return true;                               // the caller's init clears the history via i2cNoteReady() if it succeeds
 }
 
