@@ -46,11 +46,14 @@ consequences that matter day to day:
   and in Citadel's `external_issue_number` still resolves. Numbers that were pull
   requests exist as **closed placeholders** pointing at the archive — the PRs themselves
   could not be recreated. See #245 for the list.
-- **`src/web.cpp` holds placeholder credentials** (`REDACTED_SSID_1` and friends; they
-  were in `src.ino` until E4 band 3e, #274). A build from `main` compiles and **cannot
-  join WiFi**, which also means no `fieldcompass.local` diagnostics. Until #99 moves
-  credentials to runtime storage, flashing needs a local uncommitted edit — and nothing
-  in `.gitignore` protects such an edit from being committed by accident.
+- **No WiFi credentials in the source any more** (#295, epic #99). Saved networks live in
+  NVS on the chip (`src/wifi_store.cpp`, namespace `wifi`, five entries, plain text by
+  decision). A fresh board joins nothing until it is provisioned: put `/config/wifi.txt`
+  on the SD card in the format in `wifi_store.h` (the owner types it, never an agent),
+  boot once, and the entries are imported; the file stays until you choose Remove on
+  the device or the `/wifi` page. Until then there is no `fieldcompass.local`. The
+  placeholders that sat here from the #245 rebuild until #295 are gone, so a `main`
+  build no longer needs a local uncommitted edit to get on the network.
 
 Pre-migration commit SHAs quoted in old issues refer to the archive, not here.
 

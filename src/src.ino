@@ -215,7 +215,7 @@ void setup() {
   initFRAM();   // SPI FRAM 256KB (shared bus with TFT/SD)
   initRTC();    // Adalogger RTC - sets system time if RTC has valid time
   initSerialLog(rtcAvailable);  // Serial log to SD (#59) - needs SD + RTC; RTC state passed in (#263)
-  initWiFi();   // Will sync NTP if connected, then sync RTC
+  initWiFi();   // Loads saved networks (NVS, SD import) and starts the first attempt; checkWiFi() in loop() does the rest (#295)
 
   // Flush any FRAM data from previous session to SD
   if (framAvailable && sdAvailable) {
