@@ -13,22 +13,25 @@ static int credCount = 0;
 int  wifiImportedCount = 0;
 bool wifiImportFilePresent = false;
 
-// Keys: "n" = count, "s0".."s4" = SSIDs, "p0".."p4" = passwords. The whole
-// list is rewritten on every change; five entries is not worth a delta.
+// Keys: "n" = count, "s0".."s4" = SSIDs, "p0".."p4" = passwords. Every entry
+// is written in place and the count last, so a power cut mid-write leaves the
+// previous count pointing at previous entries rather than an emptied
+// namespace (review finding on #295). Stale keys above the count are ignored
+// on load. NVS skips a write whose value is unchanged, so five put calls cost
+// only the slots that moved.
 static void persist() {
   if (!prefs.begin(kNamespace, false)) {
     logPrintln("[WIFI] store: NVS open for write failed; change not saved");
     return;
   }
-  prefs.clear();
-  prefs.putUChar("n", (uint8_t)credCount);
   char key[4];
   for (int i = 0; i < credCount; i++) {
-    snprintf(key, sizeof key, "s%d", i);
-    prefs.putString(key, creds[i].ssid);
     snprintf(key, sizeof key, "p%d", i);
-    prefs.putString(key, creds[i].pass);
+    prefs.putString(key, creds[i].pass);   // password first: a cut between the two leaves the
+    snprintf(key, sizeof key, "s%d", i);   // old SSID with the old password, never a new SSID
+    prefs.putString(key, creds[i].ssid);   // with a stale one
   }
+  prefs.putUChar("n", (uint8_t)credCount);
   prefs.end();
 }
 
@@ -160,16 +163,31 @@ int wifiStoreImportFromSD() {
   char line[WIFI_SSID_MAX + WIFI_PASS_MAX + 8];
   WifiCred cur = {};
   bool open = false;
+  bool first = true;
   int imported = 0;
   while (readLine(f, line, sizeof line)) {
-    if (!line[0] || line[0] == '#' || line[0] == '[') continue;
-    if (strncmp(line, "ssid=", 5) == 0) {
+    char* p = line;
+    if (first) {   // Notepad and friends write a UTF-8 BOM; it is not part of "ssid="
+      first = false;
+      if ((uint8_t)p[0] == 0xEF && (uint8_t)p[1] == 0xBB && (uint8_t)p[2] == 0xBF) p += 3;
+    }
+    if (!p[0] || p[0] == '#' || p[0] == '[') continue;
+    if (strncmp(p, "ssid=", 5) == 0) {
       if (open && cur.ssid[0] && wifiStoreAdd(cur.ssid, cur.pass)) imported++;
       memset(&cur, 0, sizeof cur);
-      strlcpy(cur.ssid, line + 5, sizeof cur.ssid);
+      strlcpy(cur.ssid, p + 5, sizeof cur.ssid);
+      for (int n = strlen(cur.ssid); n > 0 && (cur.ssid[n - 1] == ' ' || cur.ssid[n - 1] == '\t'); n--) {
+        cur.ssid[n - 1] = '\0';   // an SSID never ends in whitespace on purpose; an editor's does
+      }
       open = true;
-    } else if (strncmp(line, "pass=", 5) == 0) {
-      strlcpy(cur.pass, line + 5, sizeof cur.pass);
+    } else if (strncmp(p, "pass=", 5) == 0) {
+      strlcpy(cur.pass, p + 5, sizeof cur.pass);
+      // A passphrase may legitimately contain spaces, so it is kept exactly;
+      // but say so, because a stray trailing space is the classic "rejected".
+      size_t n = strlen(cur.pass);
+      if (n && (cur.pass[0] == ' ' || cur.pass[n - 1] == ' ' || cur.pass[n - 1] == '\t')) {
+        logPrintf("[WIFI] import: password for %s begins or ends with whitespace, kept as written\n", cur.ssid);
+      }
     }
   }
   if (open && cur.ssid[0] && wifiStoreAdd(cur.ssid, cur.pass)) imported++;
