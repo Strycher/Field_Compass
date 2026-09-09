@@ -18,6 +18,7 @@
 #include "touch.h"
 #include "geo.h"
 #include "wifi_store.h"   // saved networks live in NVS, not here (#295, epic #99)
+#include <esp_sntp.h>     // sntp_get_sync_status(): did a time server actually answer
 
 const char* NTP_SERVER = "pool.ntp.org";
 WebServer webServer(WEB_SERVER_PORT);
@@ -47,7 +48,6 @@ static bool ntpPending = false;
 static unsigned long ntpSince = 0;
 #define WIFI_CONNECT_TIMEOUT_MS 8000    // per network, about what the old 15 x 500 ms gave
 #define NTP_TIMEOUT_MS          15000
-#define NTP_EPOCH_SANE          1700000000UL   // 2023-11-14: the SNTP client has answered
 
 static void wifiStartAttempt(int idx) {
   WifiCred c;
@@ -95,7 +95,11 @@ static void wifiOnConnected() {
 
 static void wifiServiceNtp() {
   if (!ntpPending) return;
-  if ((unsigned long)time(nullptr) > NTP_EPOCH_SANE) {
+  // The clock being sane proves nothing here: the RTC sets system time at
+  // boot and GPS may have too (review finding on #295). The SNTP client's own
+  // status says whether a server answered; it reads COMPLETED once, then
+  // resets, so it is polled every pass and acted on the pass it appears.
+  if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
     ntpPending = false;
     ntpSynced = true;
     logPrintln("[NTP] Synced");
