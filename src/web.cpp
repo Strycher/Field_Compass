@@ -17,16 +17,10 @@
 #include "display.h"
 #include "touch.h"
 #include "geo.h"
+#include "wifi_store.h"   // saved networks live in NVS, not here (#295, epic #99)
 
-const char* WIFI_SSID_1 = "REDACTED_SSID_1";
-const char* WIFI_PASS_1 = "REDACTED_WIFI_PASSWORD";
-const char* WIFI_SSID_2 = "REDACTED_SSID_2";
-const char* WIFI_PASS_2 = "REDACTED_WIFI_PASSWORD";
-const char* WIFI_SSID_3 = "REDACTED_SSID_3";
-const char* WIFI_PASS_3 = "REDACTED_HOTSPOT_PASSWORD";
 const char* NTP_SERVER = "pool.ntp.org";
 WebServer webServer(WEB_SERVER_PORT);
-unsigned long lastWiFiAttempt = 0;
 bool wifiConnected = false;
 bool ntpSynced = false;
 bool webServerStarted = false;
@@ -36,89 +30,133 @@ static String gpxUploadBuffer;
 static bool gpxUploadSuccess = false;
 static String gpxUploadError;
 
-void initWiFi() {
-  logPrint("Connecting to WiFi");
+// ---- WiFi: one non-blocking state machine (#295, epic #99) -----------------
+// The old initWiFi() blocked setup() for up to 22.5 s and checkWiFi() blocked
+// loop() for 5 s every 30 s while the network was down (#292 measured it).
+// Nothing here waits: initWiFi() starts the first attempt and returns, and
+// checkWiFi(), called every loop pass, moves the machine along by looking at
+// WiFi.status() and the clock. Saved networks are tried in store order; when
+// none answers the machine rests WIFI_RECONNECT_INTERVAL and starts over. A
+// network added at runtime (#296, #297) is picked up from IDLE or on the next
+// round. NTP is started on connect and checked on later passes, never waited on.
+enum WifiState { WIFI_ST_IDLE, WIFI_ST_CONNECTING, WIFI_ST_CONNECTED, WIFI_ST_WAIT };
+static WifiState wifiState = WIFI_ST_IDLE;
+static int wifiTryIndex = 0;
+static unsigned long wifiStateSince = 0;
+static bool ntpPending = false;
+static unsigned long ntpSince = 0;
+#define WIFI_CONNECT_TIMEOUT_MS 8000    // per network, about what the old 15 x 500 ms gave
+#define NTP_TIMEOUT_MS          15000
+#define NTP_EPOCH_SANE          1700000000UL   // 2023-11-14: the SNTP client has answered
 
-  // Try networks in order
-  const char* ssids[] = {WIFI_SSID_1, WIFI_SSID_2, WIFI_SSID_3};
-  const char* passwords[] = {WIFI_PASS_1, WIFI_PASS_2, WIFI_PASS_3};
-
-  for (int net = 0; net < 3; net++) {
-    logPrintf(" [%s]", ssids[net]);
-
-    WiFi.begin(ssids[net], passwords[net]);
-
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 15) {
-      delay(500);
-      logPrint(".");
-      attempts++;
-    }
-
-    if (WiFi.status() == WL_CONNECTED) break;
+static void wifiStartAttempt(int idx) {
+  WifiCred c;
+  if (!wifiStoreGet(idx, c)) {
+    wifiState = WIFI_ST_WAIT;
+    wifiStateSince = millis();
+    return;
   }
+  logPrintf("[WIFI] Connecting to %s (%d of %d)\n", c.ssid, idx + 1, wifiStoreCount());
+  WiFi.begin(c.ssid, c.pass);
+  wifiTryIndex = idx;
+  wifiState = WIFI_ST_CONNECTING;
+  wifiStateSince = millis();
+}
 
-  if (WiFi.status() == WL_CONNECTED) {
-    wifiConnected = true;
-    logPrintln(" OK");
-    logPrintf("  IP: %s\n", WiFi.localIP().toString().c_str());
+void initWiFi() {
+  WiFi.mode(WIFI_STA);
+  WiFi.persistent(false);         // the core keeps no copy of the credentials in its own NVS area
+  WiFi.setAutoReconnect(false);   // this machine is the only thing that reconnects, so the log is truthful
+  wifiStoreInit();
+  wifiStoreImportFromSD();
+  if (wifiStoreCount() == 0) {
+    logPrintf("[WIFI] No saved networks. Put %s on the SD card (see docs/plans/2026-09-09-wifi-configuration.md)\n",
+              WIFI_IMPORT_PATH);
+    wifiState = WIFI_ST_IDLE;
+    return;
+  }
+  wifiStartAttempt(0);
+}
 
-    // Sync NTP time
-    logPrint("Syncing NTP time... ");
+static void wifiOnConnected() {
+  wifiConnected = true;
+  wifiState = WIFI_ST_CONNECTED;
+  wifiStateSince = millis();
+  logPrintf("[WIFI] Connected to %s, IP %s, RSSI %d dBm\n",
+            WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.RSSI());
+  if (!ntpSynced) {
     configTime(0, 0, NTP_SERVER);   // NTP provides UTC; POSIX TZ handles offset (#98)
     applyTimezone();                 // Ensure TZ is set after configTime
-
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo, 5000)) {
-      ntpSynced = true;
-      logPrintln("OK");
-
-      // Sync RTC from NTP (if GPS hasn't already synced it)
-      if (!rtcSyncedFromGPS && !rtcSyncedFromNTP) {
-        syncRTCFromSystemTime("NTP");
-        rtcSyncedFromNTP = true;
-      }
-    } else {
-      logPrintln("FAILED");
-    }
-  } else {
-    logPrintln(" FAILED");
+    ntpPending = true;
+    ntpSince = millis();
   }
+  if (!webServerStarted) initWebServer();
+}
 
-  lastWiFiAttempt = millis();
+static void wifiServiceNtp() {
+  if (!ntpPending) return;
+  if ((unsigned long)time(nullptr) > NTP_EPOCH_SANE) {
+    ntpPending = false;
+    ntpSynced = true;
+    logPrintln("[NTP] Synced");
+    // Sync RTC from NTP (if GPS hasn't already synced it)
+    if (!rtcSyncedFromGPS && !rtcSyncedFromNTP) {
+      syncRTCFromSystemTime("NTP");
+      rtcSyncedFromNTP = true;
+    }
+  } else if (millis() - ntpSince > NTP_TIMEOUT_MS) {
+    ntpPending = false;
+    logPrintln("[NTP] No answer in 15 s; GPS/RTC time stands");
+  }
 }
 
 void checkWiFi() {
-  // Update connection status
-  wifiConnected = (WiFi.status() == WL_CONNECTED);
+  wl_status_t st = WiFi.status();
+  unsigned long now = millis();
+  switch (wifiState) {
+    case WIFI_ST_IDLE:
+      if (wifiStoreCount() > 0) wifiStartAttempt(0);   // a network was added since boot
+      break;
 
-  // Attempt reconnect if disconnected
-  if (!wifiConnected && (millis() - lastWiFiAttempt > WIFI_RECONNECT_INTERVAL)) {
-    logPrintln("WiFi disconnected, attempting reconnect...");
-    WiFi.reconnect();
-    lastWiFiAttempt = millis();
-
-    // Wait briefly for connection
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 10) {
-      delay(500);
-      attempts++;
-    }
-
-    wifiConnected = (WiFi.status() == WL_CONNECTED);
-    if (wifiConnected) {
-      logPrintln("WiFi reconnected!");
-      // Start web server if not already running
-      if (!webServerStarted) {
-        initWebServer();
+    case WIFI_ST_CONNECTING:
+      if (st == WL_CONNECTED) {
+        wifiOnConnected();
+        break;
       }
-    }
+      if (st == WL_CONNECT_FAILED || st == WL_NO_SSID_AVAIL ||
+          now - wifiStateSince > WIFI_CONNECT_TIMEOUT_MS) {
+        WifiCred c;
+        wifiStoreGet(wifiTryIndex, c);
+        logPrintf("[WIFI] %s: %s\n", c.ssid,
+                  st == WL_NO_SSID_AVAIL ? "not in range" :
+                  st == WL_CONNECT_FAILED ? "rejected (password?)" : "no answer in 8 s");
+        int next = wifiTryIndex + 1;
+        if (next < wifiStoreCount()) {
+          wifiStartAttempt(next);
+        } else {
+          WiFi.disconnect();
+          wifiState = WIFI_ST_WAIT;
+          wifiStateSince = now;
+          logPrintf("[WIFI] No saved network reachable; trying again in %d s\n", WIFI_RECONNECT_INTERVAL / 1000);
+        }
+      }
+      break;
+
+    case WIFI_ST_CONNECTED:
+      if (st != WL_CONNECTED) {
+        wifiConnected = false;
+        logPrintln("[WIFI] Connection lost; reconnecting");
+        wifiStartAttempt(0);
+      }
+      break;
+
+    case WIFI_ST_WAIT:
+      if (now - wifiStateSince > WIFI_RECONNECT_INTERVAL) wifiStartAttempt(0);
+      break;
   }
 
-  // Ensure web server is started if WiFi is connected
-  if (wifiConnected && !webServerStarted) {
-    initWebServer();
-  }
+  wifiServiceNtp();
+  if (wifiConnected && !webServerStarted) initWebServer();
 }
 
 void handleWebRoot() {
